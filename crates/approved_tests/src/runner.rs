@@ -45,6 +45,7 @@ pub struct Outcome {
     pub lifecycle: Vec<Event>,
     pub script: Vec<Event>,
     pub runtime: Option<Event>,
+    pub minecraft: Vec<Event>,
 }
 
 pub fn run(launch: Launch<'_>) -> Outcome {
@@ -54,6 +55,7 @@ pub fn run(launch: Launch<'_>) -> Outcome {
         lifecycle: Vec::new(),
         script: Vec::new(),
         runtime: None,
+        minecraft: Vec::new(),
     };
     let stdout_file = std::fs::File::create(launch.cwd.join("child_stdout.txt"));
     let stderr_file = std::fs::File::create(launch.cwd.join("child_stderr.txt"));
@@ -122,6 +124,9 @@ pub fn run(launch: Launch<'_>) -> Outcome {
                 } else if let Some(event) = parse(&line, "runtime:", at_ms) {
                     println!("[{:>7.1}s] {}", at_ms as f64 / 1000.0, line);
                     outcome.runtime.get_or_insert(event);
+                } else if let Some(event) = parse(&line, "minecraft-state:", at_ms) {
+                    last_progress = Instant::now();
+                    outcome.minecraft.push(event);
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -138,6 +143,8 @@ pub fn run(launch: Launch<'_>) -> Outcome {
                     outcome.lifecycle.push(event);
                 } else if let Some(event) = parse(&line, "gsc:", at_ms) {
                     outcome.script.push(event);
+                } else if let Some(event) = parse(&line, "minecraft-state:", at_ms) {
+                    outcome.minecraft.push(event);
                 }
             }
             outcome.end = end;

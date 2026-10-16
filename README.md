@@ -17,6 +17,7 @@ Modern Warfare 2, Skate 3 and Minecraft in one game, all running on
 - Broken blocks drop items that you pick up.
 - A Minecraft inventory and hotbar restyled in MW2's look. Your guns sit in the hotbar as items, and your MW2 character stands in the inventory window.
 - Hold a block to place it. With an empty hand you punch and mine with your bare MW2 hands.
+- Crafting tables: right click one, or press E or Use at it, for vanilla's 3x3 crafting grid in MW2's look.
 - Minecraft's block, mob and footstep sounds.
 - Unlimited ammo and grenades. The Intervention, SPAS-12 and UMP45 are always in your inventory. No time or score limit.
 - The minimap shows the Minecraft world around you.
@@ -45,10 +46,11 @@ You don't need Minecraft installed. The first time the game starts, it downloads
 | Mouse / WASD | Sticks | MW2 movement and shooting |
 | 1–9, mouse wheel | D-pad left / right | Select a hotbar slot |
 | | Y | Swap between the first two hotbar slots |
-| E | | Open or close the inventory |
+| E | | Open or close the inventory, or the crafting table you look at |
 | Q | | Drop the selected item |
 | Left click (block or empty hand) | Right trigger | Mine or punch |
 | Right click (holding a block) | Left trigger | Place the block |
+| Right click or E on a crafting table | Use | Open its 3x3 crafting grid; crouched, right click places against it |
 | J | Click both sticks in | Skate 3 mode |
 
 More about skating in [docs/SKATE.md](docs/SKATE.md).

@@ -63,6 +63,9 @@ pub struct MinecraftUi {
     /// MW2's Use went down this frame, outside any screen (the world's to
     /// clear): it opens the crafting table the player looks at.
     pub use_pressed: bool,
+    /// The crafting table the player looks at within reach: E opens it
+    /// rather than the inventory.
+    pub table_in_view: Option<(i32, i32, i32)>,
     /// The selected hotbar slot.
     pub selected: usize,
     pub slots: Vec<Option<McStack>>,
@@ -78,6 +81,13 @@ pub struct MinecraftUi {
     pub names: HashMap<String, String>,
     /// Clicks the HUD took this frame, for the inventory's owner.
     pub clicks: Vec<McClick>,
+    /// Items the console gives the player: item id and count.
+    pub give: Vec<(String, u8)>,
+    /// The console empties the inventory of everything but the guns.
+    pub clear_items: bool,
+    /// Boxes of blocks the console sets, corners relative to the block at
+    /// the player's feet; no id is air.
+    pub fill: Vec<([i32; 3], [i32; 3], Option<String>)>,
     /// A hotbar slot the player picked (scroll or number key).
     pub select: Option<usize>,
     /// A drop of the selected stack (`Q`; with the whole stack on control).

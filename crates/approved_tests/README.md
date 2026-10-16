@@ -18,6 +18,14 @@ workspace.
 | name | what it does |
 | --- | --- |
 | `heavy_gameplay_lifecycle` | cold load `mp_overgrown` with 16 players, three input scenes, production disconnect, a watched menu, a second map with three scenes, production quit |
+| `crafting_table` | the Minecraft map at a fixed seed: builds a small arena, opens a crafting table with E, crafts a chest on its 3x3 grid, closes with Escape (the grid empties back, no MW2 menu), opens with E holding a gun, right click with a gun aims, right click with an item opens, crouched right click places against it, a key rebound to Use opens it, and the screen closes when the table breaks or the player moves away |
+
+`crafting_table` checks each step from a `minecraft-state:` line the game prints
+(`mc state <label>`); its steps and expectations are in
+`src/scenarios/crafting_table.rs`, with unit tests there for the judging (they
+need no game data: `cargo test -p approved_tests`). It needs MW2 under the
+games root and fetches Minecraft's files once into `iw4l-artifacts/minecraft-26.3`.
+On a headless machine run it through `scripts/headless-display.sh`.
 
 The scenario's steps are in `src/scenarios/heavy_gameplay_lifecycle.rs` and
 nowhere else: maps, seed rule, scenes, positions, angles, weapons, durations
@@ -36,6 +44,7 @@ make approved                                  # cold cache, fresh seed
 make approved ARGS='--seed 1234'               # fixed seed
 make approved ARGS='--replay iw4l-artifacts/approved-tests/<run>/run.json'
 make approved ARGS='--cache shared'            # reuse the repo cache (not cold)
+make approved SCENARIO=crafting_table           # the crafting table scenario
 ```
 
 The runner builds nothing; `make approved` builds `target/play/iw4l` first.

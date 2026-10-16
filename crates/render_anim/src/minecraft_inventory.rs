@@ -104,6 +104,19 @@ impl InventoryUi {
         selected: &mut usize,
     ) -> Vec<ItemStack> {
         let mut thrown = Vec::new();
+        if std::mem::take(&mut ui.clear_items) {
+            for slot in &mut inventory.slots {
+                if slot.as_ref().is_some_and(|s| weapon_of(s).is_none()) {
+                    *slot = None;
+                }
+            }
+        }
+        for (id, count) in std::mem::take(&mut ui.give) {
+            let stack = inventory.recipes.stack(&id, count);
+            if let Some(rest) = inventory.add_item(stack, *selected) {
+                thrown.push(rest);
+            }
+        }
         for click in std::mem::take(&mut ui.clicks) {
             match click {
                 McClick::Slot { slot: McSlot::Inventory(index), right, shift } => {

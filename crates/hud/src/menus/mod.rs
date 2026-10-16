@@ -115,6 +115,7 @@ pub(crate) struct MenuInputs<'w, 's> {
     compass: Option<Res<'w, assets::SessionCompass>>,
     party: Res<'w, frame::UiPartyState>,
     frontend_strings: Option<Res<'w, asset_game::LocalizeCatalog>>,
+    minecraft: Option<Res<'w, frame::MinecraftUi>>,
 }
 
 #[derive(Default)]
@@ -312,7 +313,13 @@ pub(crate) fn update_script_menus(
     let pointer = !console_open;
     if pointer {
         let keys = &input.keys;
-        pressed.escape |= keys.just_pressed(KeyCode::Escape);
+        // Escape out of a Minecraft screen closes only that screen; this
+        // runs before `update_minecraft_hud` closes it, so it is still open.
+        let minecraft_screen = input
+            .minecraft
+            .as_ref()
+            .is_some_and(|ui| ui.active && ui.inventory_open);
+        pressed.escape |= keys.just_pressed(KeyCode::Escape) && !minecraft_screen;
         pressed.enter |=
             keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter);
         pressed.up |= keys.just_pressed(KeyCode::ArrowUp);

@@ -442,6 +442,7 @@ fn update(
         ui.active = false;
         ui.inventory_open = false;
         ui.workbench = None;
+        ui.table_in_view = None;
         puppet.active = false;
         return;
     };
@@ -610,13 +611,14 @@ fn update(
     // A crafting table in reach opens on MW2's Use whatever the hand holds,
     // and on a right click with an item or an empty hand unless crouched:
     // crouching stands in for vanilla's sneak, which places against it.
+    ui.table_in_view = (alive && !ui.inventory_open)
+        .then(|| table_in_reach(&world.scene, feet, mc_yaw, ps.viewangles[0]))
+        .flatten();
     let use_pressed = std::mem::take(&mut ui.use_pressed);
     let crouched = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
     if use_pressed
-        && alive
-        && !ui.inventory_open
         && entities.is_some()
-        && let Some(pos) = table_in_reach(&world.scene, feet, mc_yaw, ps.viewangles[0])
+        && let Some(pos) = ui.table_in_view
     {
         open_table(&mut ui, hand, pos);
     }
@@ -655,10 +657,7 @@ fn update(
         hand.place_delay = hand.place_delay.saturating_sub(hand_ticks);
         let place = (buttons.just_pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, true))
             || ((buttons.pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, false)) && hand.place_delay == 0);
-        let table = (place && !crouched)
-            .then(|| table_in_reach(&world.scene, feet, mc_yaw, ps.viewangles[0]))
-            .flatten();
-        if let Some(pos) = table {
+        if let Some(pos) = ui.table_in_view.filter(|_| place && !crouched) {
             hand.place_delay = 4;
             open_table(&mut ui, hand, pos);
         } else if place {
@@ -853,8 +852,35 @@ fn update(
         };
         let bright_outside = world.environment.sky_light_level() > 11.0;
         let ticks_before = entities.client_ticks();
-        let (changes, hits) = entities.tick(dt, day.ticks as i64, bright_outside, &player);
+        let (mut changes, hits) = entities.tick(dt, day.ticks as i64, bright_outside, &player);
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
+        let mut filled = Vec::new();
+        for (a, b, id) in std::mem::take(&mut ui.fill) {
+            let block_of = match id
+                .as_deref()
+                .map(minecraft_terrain::pack::ResourceId::parse)
+            {
+                None => None,
+                Some(Ok(id)) => Some(minecraft_terrain::scene::Block {
+                    id,
+                    properties: Default::default(),
+                }),
+                Some(Err(error)) => {
+                    diag::warn!(World, "Minecraft fill: {error}");
+                    continue;
+                }
+            };
+            let span = |i: usize| a[i].min(b[i])..=a[i].max(b[i]);
+            for x in span(0) {
+                for y in span(1) {
+                    for z in span(2) {
+                        let pos = (block.0 + x, block.1 + y, block.2 + z);
+                        changes.push((pos, block_of.clone()));
+                        filled.push(pos);
+                    }
+                }
+            }
+        }
         if !changes.is_empty() {
             let blocks = &world.registries.blocks;
             let mut positions = Vec::with_capacity(changes.len());
@@ -881,6 +907,9 @@ fn update(
                 positions.push(pos);
             }
             world.stream.mark_edited(&world.scene, &positions);
+        }
+        for pos in filled {
+            entities.placed(&world.scene, pos);
         }
         for (amount, from) in hits {
             sim::voxel::push_player_damage(local.0.0, amount, from.map(|b| sim::voxel::to_map(origin, b)));

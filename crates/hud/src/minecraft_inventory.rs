@@ -316,6 +316,9 @@ pub(crate) fn update_minecraft_hud(
     let open_before = ui.inventory_open;
     if keys.just_pressed(KeyCode::KeyE) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape)) {
         ui.inventory_open = !ui.inventory_open && !keys.just_pressed(KeyCode::Escape);
+        if ui.inventory_open {
+            ui.workbench = ui.table_in_view;
+        }
     }
     if open_before && !ui.inventory_open {
         ui.clicks.push(McClick::Close);

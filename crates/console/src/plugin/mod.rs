@@ -168,7 +168,10 @@ impl Plugin for ConsolePlugin {
                             .chain(),
                         crate::debug_move::route_debug_move_commands,
                         crate::debug_script_mover::route_debug_script_mover_commands,
-                        crate::debug_draw_method::route_debug_draw_method_commands,
+                        (
+                            crate::debug_draw_method::route_debug_draw_method_commands,
+                            crate::debug_minecraft::route_debug_minecraft_commands,
+                        ),
                         crate::debug_view_proj::route_view_proj_commands,
                         (
                             crate::debug_dof::route,
@@ -369,7 +372,10 @@ fn publish_client_action_input(
         && ui.active
         && !captured
         && binds.iter().any(|(button, _)| {
-            matches!(binds.binding_name(button), Some("+activate" | "+usereload")) && inputs.just_pressed(button)
+            // E is the Minecraft screens' own key.
+            button != crate::binds::BindButton::Key(KeyCode::KeyE)
+                && matches!(binds.binding_name(button), Some("+activate" | "+usereload"))
+                && inputs.just_pressed(button)
         })
     {
         ui.use_pressed = true;
@@ -743,6 +749,7 @@ fn setup_console(
     crate::debug_move::register_debug_move_commands(&mut registry);
     crate::debug_script_mover::register_debug_script_mover_commands(&mut registry);
     crate::debug_draw_method::register_debug_draw_method_commands(&mut registry);
+    crate::debug_minecraft::register_debug_minecraft_commands(&mut registry);
     crate::debug_view_proj::register_view_proj_commands(&mut registry);
     crate::debug_dof::register(&mut registry);
     crate::debug_glow::register(&mut registry);
