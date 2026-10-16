@@ -44,7 +44,7 @@ pub enum McClick {
     Swap { slot: McSlot, hotbar: usize },
     /// A drag across slots with a carried stack: shares it out.
     Spread { slots: Vec<usize>, right: bool },
-    /// The screen closed: the carried stack and the crafting grid go back.
+    /// The screen closed: the carried stack and the crafting grids go back.
     Close,
 }
 
@@ -57,10 +57,14 @@ pub struct MinecraftUi {
     pub loading_world: bool,
     /// The inventory screen is open (the HUD's to change).
     pub inventory_open: bool,
+    /// The open screen is a crafting table's, at this block, rather than the
+    /// inventory's (the world's to change).
+    pub workbench: Option<(i32, i32, i32)>,
     /// The selected hotbar slot.
     pub selected: usize,
     pub slots: Vec<Option<McStack>>,
-    pub crafting: [Option<McStack>; 4],
+    /// The open screen's crafting grid: 2x2 in the inventory, 3x3 at a table.
+    pub crafting: Vec<Option<McStack>>,
     pub result: Option<McStack>,
     /// The stack on the cursor.
     pub cursor: Option<McStack>,

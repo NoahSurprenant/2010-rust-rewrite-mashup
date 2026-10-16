@@ -279,6 +279,11 @@ fn celestial_image(packs: &PackStack) -> anyhow::Result<image::RgbaImage> {
 
 /// A controller trigger, held or just pressed: with a block or an empty hand
 /// the right trigger mines and the left places, as the mouse buttons do.
+fn is_crafting_table(scene: &HandcraftedScene, pos: (i32, i32, i32)) -> bool {
+    minecraft_terrain::scene::Scene::block(scene, pos)
+        .is_some_and(|block| block.id.namespace == "minecraft" && block.id.path == "crafting_table")
+}
+
 fn pad_trigger(pad: Option<&bevy::input::gamepad::Gamepad>, button: GamepadButton, just: bool) -> bool {
     pad.is_some_and(|pad| if just { pad.just_pressed(button) } else { pad.pressed(button) })
 }
@@ -422,6 +427,7 @@ fn update(
     let Some(world) = world.as_mut() else {
         ui.active = false;
         ui.inventory_open = false;
+        ui.workbench = None;
         puppet.active = false;
         return;
     };
@@ -622,7 +628,17 @@ fn update(
         hand.place_delay = hand.place_delay.saturating_sub(hand_ticks);
         let place = (buttons.just_pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, true))
             || ((buttons.pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, false)) && hand.place_delay == 0);
-        if place {
+        let table = place
+            .then(|| player.target(&world.scene, 4.5))
+            .flatten()
+            .map(|hit| hit.pos)
+            .filter(|&pos| is_crafting_table(&world.scene, pos));
+        if let Some(pos) = table {
+            hand.place_delay = 4;
+            hand.swing = Some(0.0);
+            ui.inventory_open = true;
+            ui.workbench = Some(pos);
+        } else if place {
             hand.place_delay = 4;
             if let Some(pos) = player.place_selected(
                 &mut world.scene,
@@ -856,8 +872,16 @@ fn update(
             .filter(|&w| authority.0.weapon_combat_row(w).is_some_and(|facts| facts.inventory_type == 0))
             .collect();
         ui.active = alive;
-        if !alive {
+        // A crafting table's screen holds while its table stands within
+        // eight blocks of the player, as vanilla's `stillValid`.
+        let table_lost = ui.workbench.is_some_and(|pos| {
+            let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
+            let far = (0..3).map(|i| (feet[i] - centre[i]).powi(2)).sum::<f64>() > 64.0;
+            far || !is_crafting_table(&world.scene, pos)
+        });
+        if ui.inventory_open && (!alive || table_lost) {
             ui.inventory_open = false;
+            ui.clicks.push(frame::McClick::Close);
         }
         inventory_ui.sync_weapons(&mut entities.inventory, &owned);
         let mut selected = entities.selected;
