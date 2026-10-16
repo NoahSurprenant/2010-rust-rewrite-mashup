@@ -466,14 +466,20 @@ fn update(
     } else if !alive {
         *was_alive = false;
     }
-    ui.in_world = alive && *was_alive && ps.velocity[2].abs() < 1.0;
-
     let feet = sim::voxel::to_block(origin, ps.origin);
     let block = (
         feet[0].floor() as i32,
         feet[1].floor() as i32,
         feet[2].floor() as i32,
     );
+    // Standing: a block under some corner of the player's box. Right after the move to the
+    // spawn the player can still be above the ground with no speed yet.
+    let below = (feet[1] - 0.05).floor() as i32;
+    let grounded = [(-0.3, -0.3), (-0.3, 0.3), (0.3, -0.3), (0.3, 0.3)].iter().any(|(dx, dz)| {
+        let pos = ((feet[0] + dx).floor() as i32, below, (feet[2] + dz).floor() as i32);
+        minecraft_terrain::scene::Scene::block(&world.scene, pos).is_some()
+    });
+    ui.in_world = alive && *was_alive && grounded && ps.velocity[2].abs() < 1.0;
     let (loaded, forgotten) = world.stream.server_tick(block, &mut world.scene);
     for chunk in loaded {
         let blocks = &world.registries.blocks;
