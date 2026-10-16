@@ -1815,7 +1815,7 @@ fn dispatch_console_command(
     scene: Option<Res<WorldScene>>,
     screen: Option<Res<AppScreen>>,
     has_world: Option<Res<HasWorld>>,
-    ambient_booted: Option<Res<audio::MapAmbientBooted>>,
+    (ambient_booted, minecraft): (Option<Res<audio::MapAmbientBooted>>, Option<Res<frame::MinecraftUi>>),
     presented: Option<Res<PresentedSnapshot>>,
     (authority, clock): (
         Option<Res<net::AuthorityWorld>>,
@@ -1837,6 +1837,7 @@ fn dispatch_console_command(
         || dispatch.wait_spawn_admit
         || dispatch.wait_torn
         || dispatch.wait_ambient
+        || dispatch.wait_minecraft
         || dispatch.wait_move.is_some()
         || dispatch.wait_playing
         || dispatch.wait_tick.is_some()
@@ -1942,6 +1943,31 @@ fn dispatch_console_command(
                 abort_script_on_wait_timeout(
                     "wait ambient",
                     "MapAmbientBooted=0",
+                    &mut queue,
+                    &mut console,
+                    capacity,
+                );
+            } else {
+                return;
+            }
+        }
+    }
+    let in_minecraft = minecraft.as_ref().is_some_and(|ui| ui.in_world);
+    if dispatch.wait_minecraft {
+        if in_minecraft {
+            dispatch.wait_minecraft = false;
+            diag::info!(
+                Console,
+                "wait minecraft: on the world spawn after {:.1}s",
+                dispatch.wait_minecraft_elapsed
+            );
+        } else {
+            dispatch.wait_minecraft_elapsed += time.delta_secs();
+            if dispatch.wait_minecraft_elapsed >= WAIT_WORLD_TIMEOUT_SECS {
+                dispatch.wait_minecraft = false;
+                abort_script_on_wait_timeout(
+                    "wait minecraft",
+                    "not on the Minecraft world spawn",
                     &mut queue,
                     &mut console,
                     capacity,
@@ -2200,6 +2226,15 @@ fn dispatch_console_command(
                         dispatch.wait_ambient = true;
                         dispatch.wait_ambient_elapsed = 0.0;
                         diag::info!(Console, "wait ambient: until MapAmbientBooted");
+                    }
+                }
+                WaitKind::Minecraft => {
+                    if in_minecraft {
+                        diag::info!(Console, "wait minecraft: already on the world spawn");
+                    } else {
+                        dispatch.wait_minecraft = true;
+                        dispatch.wait_minecraft_elapsed = 0.0;
+                        diag::info!(Console, "wait minecraft: until on the world spawn");
                     }
                 }
                 WaitKind::Ticks(n) => match clock.as_ref() {

@@ -54,7 +54,8 @@ jobs:
           ln -sfn /skate-assets/mw2 "$RUNNER_TEMP/games/mw2"
           echo "IW4L_GAMES=$RUNNER_TEMP/games" >> "$GITHUB_ENV"
           echo "XDG_CONFIG_HOME=$RUNNER_TEMP/config" >> "$GITHUB_ENV"
-      - run: cargo build --profile play -p launcher --bin iw4l -p approved_tests
+      - run: cargo build --profile play -p launcher --bin iw4l
+      - run: cargo build --profile play -p approved_tests
       - name: crafting_table
         run: scripts/headless-display.sh target/play/approved_tests crafting_table
       # The run's verdict and logs; not its screenshots, which are pictures

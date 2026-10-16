@@ -50,7 +50,7 @@ You don't need Minecraft installed. The first time the game starts, it downloads
 | Q | | Drop the selected item |
 | Left click (block or empty hand) | Right trigger | Mine or punch |
 | Right click (holding a block) | Left trigger | Place the block |
-| Right click or E on a crafting table | Use | Open its 3x3 crafting grid; crouched, right click places against it |
+| Right click or E on a crafting table | Use | Open its 3x3 crafting grid; crouched with something in hand, right click places against it |
 | J | Click both sticks in | Skate 3 mode |
 
 More about skating in [docs/SKATE.md](docs/SKATE.md).

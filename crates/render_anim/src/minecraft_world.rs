@@ -443,11 +443,13 @@ fn update(
         ui.inventory_open = false;
         ui.workbench = None;
         ui.table_in_view = None;
+        ui.in_world = false;
         puppet.active = false;
         return;
     };
     let Some(ps) = presented.player(local.0) else {
         ui.active = false;
+        ui.in_world = false;
         puppet.active = false;
         return;
     };
@@ -464,6 +466,7 @@ fn update(
     } else if !alive {
         *was_alive = false;
     }
+    ui.in_world = alive && *was_alive && ps.velocity[2].abs() < 1.0;
 
     let feet = sim::voxel::to_block(origin, ps.origin);
     let block = (
@@ -609,8 +612,9 @@ fn update(
     let hand_ticks = (hand.clock / TICK_SECONDS) as u32;
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
     // A crafting table in reach opens on MW2's Use whatever the hand holds,
-    // and on a right click with an item or an empty hand unless crouched:
-    // crouching stands in for vanilla's sneak, which places against it.
+    // and on a right click with an item or an empty hand, unless crouched with
+    // something in hand: crouching stands in for vanilla's sneak, which then
+    // places against it.
     ui.table_in_view = (alive && !ui.inventory_open)
         .then(|| table_in_reach(&world.scene, feet, mc_yaw, ps.viewangles[0]))
         .flatten();
@@ -657,7 +661,7 @@ fn update(
         hand.place_delay = hand.place_delay.saturating_sub(hand_ticks);
         let place = (buttons.just_pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, true))
             || ((buttons.pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, false)) && hand.place_delay == 0);
-        if let Some(pos) = ui.table_in_view.filter(|_| place && !crouched) {
+        if let Some(pos) = ui.table_in_view.filter(|_| place && (!crouched || ui.empty_hand)) {
             hand.place_delay = 4;
             open_table(&mut ui, hand, pos);
         } else if place {
@@ -908,6 +912,7 @@ fn update(
             }
             world.stream.mark_edited(&world.scene, &positions);
         }
+        world.stream.record_edits(&world.scene, &filled);
         for pos in filled {
             entities.placed(&world.scene, pos);
         }

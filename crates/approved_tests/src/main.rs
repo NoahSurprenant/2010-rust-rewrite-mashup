@@ -392,6 +392,10 @@ fn run_crafting_table(root: &Path, args: &Args) -> Result<bool, String> {
         return Ok(false);
     }
 
+    let profile = run_dir.join("iw4l-artifacts/profile");
+    std::fs::create_dir_all(&profile).map_err(|e| format!("create {}: {e}", profile.display()))?;
+    std::fs::write(profile.join("classes.txt"), crafting_table::CLASSES)
+        .map_err(|e| format!("write the class file: {e}"))?;
     manifest["cache"] = prepare_cache(root, &run_dir, args.cache)?;
     manifest["minecraft_files"] = share_minecraft_files(root, &run_dir)?.into();
     let bin = stage_binary(&args.bin, &run_dir)?;

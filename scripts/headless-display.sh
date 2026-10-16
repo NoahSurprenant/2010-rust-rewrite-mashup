@@ -10,20 +10,28 @@
 # (VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json) renders.
 set -euo pipefail
 
-display=${HEADLESS_DISPLAY:-:99}
-export DISPLAY=$display
-if ! xdpyinfo -display "$display" >/dev/null 2>&1; then
-  Xvfb "$display" -screen 0 1920x1080x24 -nolisten tcp >/dev/null 2>&1 &
-  xvfb=$!
-  trap 'kill "$xvfb" 2>/dev/null || true' EXIT
-  for _ in $(seq 50); do
-    xdpyinfo -display "$display" >/dev/null 2>&1 && break
-    sleep 0.2
-  done
-fi
+# A display of its own: a shared one dies with whichever run started it.
+# No abstract socket either (`-nolisten local`): those live in the network
+# namespace, which host-network containers share, so a client could reach
+# another container's server of the same number.
+number=99
+while [[ -e /tmp/.X11-unix/X$number || -e /tmp/.X$number-lock ]]; do
+  number=$((number + 1))
+done
+export DISPLAY=:$number
+Xvfb "$DISPLAY" -screen 0 1920x1080x24 -nolisten tcp -nolisten local >/dev/null 2>&1 &
+xvfb=$!
+trap 'kill "$xvfb" 2>/dev/null || true' EXIT
+for _ in $(seq 50); do
+  xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 && break
+  sleep 0.2
+done
 
 # Focus each new top-level window as it maps.
 (
+  # Not the script's exit trap, which stops Xvfb, nor its errexit.
+  trap - EXIT
+  set +e
   focused=""
   while true; do
     window=$(xdotool search --onlyvisible --name . 2>/dev/null | tail -1 || true)
@@ -34,6 +42,6 @@ fi
   done
 ) &
 focus=$!
-trap 'kill "$focus" 2>/dev/null || true; kill "${xvfb:-}" 2>/dev/null || true' EXIT
+trap 'kill "$focus" "$xvfb" 2>/dev/null || true' EXIT
 
 "$@"

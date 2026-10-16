@@ -7,7 +7,8 @@
 //! chest on its 3x3 grid, leaves a plank in the grid and closes with Escape
 //! (the plank comes back, no MW2 menu opens), opens it with E holding a gun,
 //! finds that a right click with a gun aims instead, opens it with a right
-//! click holding an item, places a plank against it crouched, opens it with
+//! click holding an item, places a plank against it crouched (and opens it
+//! crouched with an empty hand), opens it with
 //! a key rebound to Use, and sees the screen close when the table is broken
 //! and when the player is moved away.
 
@@ -18,6 +19,11 @@ pub const MAP: &str = "minecraft:overworld";
 pub const SEED: &str = "12345";
 pub const PHASE_TIMEOUT_SECS: u64 = 300;
 pub const QUIT_TIMEOUT_SECS: u64 = 30;
+
+/// The class the player spawns with, written as the run's class file: a
+/// fresh profile draws its classes at random, and an akimbo gun fires on a
+/// right click rather than aiming.
+pub const CLASSES: &str = "iw4l-classes 1\nmg4_bling\tiw4:weapon/mg4_mp\tgrip,heartbeat\tiw4:weapon/at4_mp\t\tiw4:weapon/frag_grenade_mp\tiw4:weapon/smoke_grenade_mp\tspecialty_bling\tspecialty_bulletdamage\tspecialty_detectexplosive\tspecialty_copycat\n";
 
 /// The planks' slot once the inventory is cleared: after MW2's five guns.
 const PLANKS: usize = 5;
@@ -49,7 +55,7 @@ pub enum Screen {
 
 pub const STEPS: &[Step] = &[
     Step {
-        commands: "wait world; spawn 0; force_match_start; wait 3s; \
+        commands: "wait world; spawn 0; force_match_start; wait minecraft; wait 1s; \
                    mc fill -1 0 -2 4 3 2 air; mc fill -1 -1 -2 4 -1 2 stone; \
                    mc fill 3 0 0 3 0 0 crafting_table; wait 2s; \
                    mc clear; mc give oak_planks 16; wait 1s; look 0 23; wait 1s",
@@ -123,7 +129,7 @@ pub const STEPS: &[Step] = &[
         expect: &[Expect::Screen(Screen::None)],
     },
     Step {
-        commands: "key 6; wait 1s; look 0 23; wait 2t; key mouse2; wait 1s",
+        commands: "key 6; wait 1s; look 0 23; wait 2t; key mouse2; wait 1s; screenshot approved/03_right_click_with_item",
         label: "right_click_with_item_opens",
         expect: &[Expect::Screen(Screen::Table)],
     },
@@ -142,7 +148,19 @@ pub const STEPS: &[Step] = &[
         ],
     },
     Step {
-        commands: "release +movedown; wait 1s; mc fill 2 0 0 2 0 0 air; wait 1s; \
+        commands: "mc fill 2 0 0 2 0 0 air; wait 1s; key 7; wait 1s; look 0 23; wait 2t",
+        label: "crouched_empty_hand",
+        expect: &[Expect::Stance("crouch"), Expect::Screen(Screen::None), Expect::Slot(PLANKS + 1, "-")],
+    },
+    // An open screen lets go of held MW2 inputs, so the stance is checked
+    // before the click.
+    Step {
+        commands: "key mouse2; wait 1s",
+        label: "crouched_empty_hand_opens",
+        expect: &[Expect::Screen(Screen::Table)],
+    },
+    Step {
+        commands: "key e; wait 1s; release +movedown; wait 1s; \
                    bind g +activate; key 1; wait 1s; look 0 23; wait 2t; key g; wait 1s",
         label: "rebound_use_opens",
         expect: &[Expect::Stance("stand"), Expect::Screen(Screen::Table)],
@@ -400,6 +418,22 @@ mod tests {
                 slots("minecraft:oak_planks*7", ""),
             ),
             line(
+                "crouched_empty_hand",
+                "crouch",
+                "none",
+                &empty4,
+                "-",
+                slots("minecraft:oak_planks*7", ""),
+            ),
+            line(
+                "crouched_empty_hand_opens",
+                "crouch",
+                table,
+                &empty9,
+                "-",
+                slots("minecraft:oak_planks*7", ""),
+            ),
+            line(
                 "rebound_use_opens",
                 "stand",
                 table,
@@ -432,6 +466,12 @@ mod tests {
                 slots("minecraft:oak_planks*7", ""),
             ),
         ]
+    }
+
+    #[test]
+    fn the_class_has_no_akimbo_gun() {
+        assert!(CLASSES.starts_with("iw4l-classes 1\n"));
+        assert!(!CLASSES.contains("akimbo"));
     }
 
     #[test]
