@@ -284,6 +284,20 @@ fn is_crafting_table(scene: &HandcraftedScene, pos: (i32, i32, i32)) -> bool {
         .is_some_and(|block| block.id.namespace == "minecraft" && block.id.path == "crafting_table")
 }
 
+/// The crafting table the player looks at, within survival reach.
+fn table_in_reach(scene: &HandcraftedScene, feet: [f64; 3], yaw: f32, pitch: f32) -> Option<(i32, i32, i32)> {
+    let mut player = minecraftoss_player::Player::new(glam::DVec3::from_array(feet));
+    player.yaw = f64::from(yaw);
+    player.pitch = f64::from(pitch);
+    player.target(scene, 4.5).map(|hit| hit.pos).filter(|&pos| is_crafting_table(scene, pos))
+}
+
+fn open_table(ui: &mut frame::MinecraftUi, hand: &mut HandState, pos: (i32, i32, i32)) {
+    hand.swing = Some(0.0);
+    ui.inventory_open = true;
+    ui.workbench = Some(pos);
+}
+
 fn pad_trigger(pad: Option<&bevy::input::gamepad::Gamepad>, button: GamepadButton, just: bool) -> bool {
     pad.is_some_and(|pad| if just { pad.just_pressed(button) } else { pad.pressed(button) })
 }
@@ -593,6 +607,19 @@ fn update(
     hand.clock += dt_hand;
     let hand_ticks = (hand.clock / TICK_SECONDS) as u32;
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
+    // A crafting table in reach opens on MW2's Use whatever the hand holds,
+    // and on a right click with an item or an empty hand unless crouched:
+    // crouching stands in for vanilla's sneak, which places against it.
+    let use_pressed = std::mem::take(&mut ui.use_pressed);
+    let crouched = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
+    if use_pressed
+        && alive
+        && !ui.inventory_open
+        && entities.is_some()
+        && let Some(pos) = table_in_reach(&world.scene, feet, mc_yaw, ps.viewangles[0])
+    {
+        open_table(&mut ui, hand, pos);
+    }
     if let Some(entities) = entities.as_mut()
         && ui.holding_item
         && !ui.inventory_open
@@ -628,16 +655,12 @@ fn update(
         hand.place_delay = hand.place_delay.saturating_sub(hand_ticks);
         let place = (buttons.just_pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, true))
             || ((buttons.pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, false)) && hand.place_delay == 0);
-        let table = place
-            .then(|| player.target(&world.scene, 4.5))
-            .flatten()
-            .map(|hit| hit.pos)
-            .filter(|&pos| is_crafting_table(&world.scene, pos));
+        let table = (place && !crouched)
+            .then(|| table_in_reach(&world.scene, feet, mc_yaw, ps.viewangles[0]))
+            .flatten();
         if let Some(pos) = table {
             hand.place_delay = 4;
-            hand.swing = Some(0.0);
-            ui.inventory_open = true;
-            ui.workbench = Some(pos);
+            open_table(&mut ui, hand, pos);
         } else if place {
             hand.place_delay = 4;
             if let Some(pos) = player.place_selected(

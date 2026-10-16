@@ -293,7 +293,7 @@ fn publish_client_action_input(
     binds: Res<KeyBinds>,
     mut scripted: ResMut<ConsoleInputState>,
     console: Res<ConsoleState>,
-    (script_menus, minecraft): (Option<Res<hud::ScriptMenus>>, Option<Res<frame::MinecraftUi>>),
+    (script_menus, mut minecraft): (Option<Res<hud::ScriptMenus>>, Option<ResMut<frame::MinecraftUi>>),
     mut hud_input: ResMut<frame::HudInputView>,
     settings: Res<frame::GameSettings>,
     mut out: ResMut<ClientActionInput>,
@@ -347,7 +347,7 @@ fn publish_client_action_input(
         *wheel_carry = 0.0;
     }
     let script_menu = script_menus.is_some_and(|menus| menus.captures_input());
-    let inventory_open = minecraft.is_some_and(|ui| ui.active && ui.inventory_open);
+    let inventory_open = minecraft.as_ref().is_some_and(|ui| ui.active && ui.inventory_open);
     skate.input_blocked = console.open || script_menu;
     // J, or clicking both sticks in together, toggles skating.
     let sticks_clicked = pad.is_some_and(|pad| {
@@ -365,6 +365,15 @@ fn publish_client_action_input(
         || keys.just_pressed(KeyCode::Escape)
         || pad.is_some_and(|pad| pad.just_pressed(bevy::input::gamepad::GamepadButton::Start));
     let captured = !devices.focused || modal_captured;
+    if let Some(ui) = minecraft.as_mut()
+        && ui.active
+        && !captured
+        && binds.iter().any(|(button, _)| {
+            matches!(binds.binding_name(button), Some("+activate" | "+usereload")) && inputs.just_pressed(button)
+        })
+    {
+        ui.use_pressed = true;
+    }
     hud_input.console_open = console.open;
     physical.blocked.retain(|button| inputs.pressed(*button));
 

@@ -60,6 +60,9 @@ pub struct MinecraftUi {
     /// The open screen is a crafting table's, at this block, rather than the
     /// inventory's (the world's to change).
     pub workbench: Option<(i32, i32, i32)>,
+    /// MW2's Use went down this frame, outside any screen (the world's to
+    /// clear): it opens the crafting table the player looks at.
+    pub use_pressed: bool,
     /// The selected hotbar slot.
     pub selected: usize,
     pub slots: Vec<Option<McStack>>,
