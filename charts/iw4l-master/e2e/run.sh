@@ -43,12 +43,19 @@ diagnose() {
 }
 # the SHA-256 of a PEM certificate's public key, as players pin it
 pin_of() { openssl x509 -pubkey -noout | openssl pkey -pubin -outform der | sha256sum | cut -d' ' -f1; }
-# the pin the running master logged at its start
+# the pin the running master logged at its start (the newest pod: an old one may still be going)
 logged_pin() {
-  kubectl -n "$ns" logs "$deploy" | sed -n 's/.*iw4l-master key-sha256=\([0-9a-f]*\).*/\1/p' | tail -n 1
+  kubectl -n "$ns" logs "$(newest)" | sed -n 's/.*iw4l-master key-sha256=\([0-9a-f]*\).*/\1/p' | tail -n 1
 }
 secret_pin() {
   kubectl -n "$ns" get secret "$1" -o jsonpath='{.data.tls\.crt}' | base64 -d | pin_of
+}
+# the newest pod of the release
+newest() { kubectl -n "$ns" get pods -l app.kubernetes.io/instance=$release --sort-by=.metadata.creationTimestamp -o name | tail -n 1; }
+# uninstalls the release and waits for its pod to be gone (helm waits for the Deployment only)
+uninstall() {
+  helm uninstall "$release" -n "$ns" --wait
+  kubectl -n "$ns" wait --for=delete pod -l app.kubernetes.io/instance=$release --timeout=120s
 }
 install() {
   helm upgrade --install "$release" "$chart" -n "$ns" \
@@ -100,7 +107,7 @@ echo "status from $client_ns, trusting the pin: ok"
 step "cert-manager: the chart's self-signed Issuer and Certificate"
 helm install cert-manager cert-manager --repo https://charts.jetstack.io --version "$cert_manager_version" \
   -n cert-manager --create-namespace --set crds.enabled=true --wait --timeout 5m
-helm uninstall "$release" -n "$ns" --wait
+uninstall
 install
 kubectl -n "$ns" wait certificate/$release --for=condition=Ready --timeout=120s || fail "the Certificate is not ready"
 [ "$(kubectl -n "$ns" get certificate $release -o jsonpath='{.spec.secretName}')" = iw4l-master-tls ] || fail "the Secret is not <release>-tls"
@@ -112,7 +119,7 @@ first=$(secret_pin iw4l-master-tls)
 echo "ECDSA P-256, self-signed for iw4l-prod, ready; pin $first"
 
 step "the pin survives the release"
-helm uninstall "$release" -n "$ns" --wait
+uninstall
 kubectl -n "$ns" get secret iw4l-master-tls >/dev/null || fail "uninstalling deleted cert-manager's Secret"
 install
 kubectl -n "$ns" wait certificate/$release --for=condition=Ready --timeout=120s || fail "the Certificate is not ready"
@@ -122,13 +129,12 @@ again=$(secret_pin iw4l-master-tls)
 echo "the same key and pin after a reinstall: $again"
 
 step "restart: the old pod goes, a new one gets ready"
-newest() { kubectl -n "$ns" get pods -l app.kubernetes.io/instance=$release --sort-by=.metadata.creationTimestamp -o name | tail -n 1; }
 pod=$(newest)
 kubectl -n "$ns" rollout restart "$deploy"
 kubectl -n "$ns" rollout status "$deploy" --timeout=180s || fail "the new pod did not get ready"
 [ "$(newest)" != "$pod" ] || fail "no new pod"
 
 step "uninstall"
-helm uninstall "$release" -n "$ns" --wait
+uninstall
 echo
 echo PASS

@@ -7,7 +7,8 @@
 # server needs it to load its match, so the release runs with ci/minimal-values.yaml's emptyDir in
 # its place, beside a real master (charts/iw4l-master, with a certificate made here):
 #   1. no MW2: in a namespace that enforces Pod Security's restricted profile, the pod is admitted
-#      under the chart's security context, and never gets ready (its room never opens);
+#      under the chart's security context, never gets ready (its room never opens), and the server
+#      says it found no MW2 zone under /games, where the chart mounts it;
 #   2. the pod's hardening, its probe and its NetworkPolicy: the Deployment patched so that an init
 #      container (the master's image, the pod's security context) runs `iw4l-master status` against
 #      the master's Service, trusting the pin - out through this chart's policy and in through the
@@ -86,8 +87,12 @@ for _ in $(seq 1 30); do
     || fail "the server got ready without MW2"
   sleep 2
 done
-kubectl -n "$ns" logs "$pod" --tail=20 || true
-echo "admitted under the restricted profile, never ready: $pod"
+log=$( { kubectl -n "$ns" logs "$pod" --previous 2>/dev/null || true; kubectl -n "$ns" logs "$pod" 2>/dev/null || true; } )
+echo "$log" | tail -n 20
+# (the server looks for MW2 under IW4L_GAMES=/games, where the chart mounts it, and says what it
+# did not find)
+grep -q "dedicated server: zone .* not found; games root: /games" <<<"$log" || fail "the log does not say MW2 was not found under /games"
+echo "admitted under the restricted profile, never ready, MW2 not found under /games: $pod"
 
 step "hardening, probe and policy: the server swapped for its room state, an init container checking the master"
 security=$(kubectl -n "$ns" get "$deploy" -o jsonpath='{.spec.template.spec.containers[0].securityContext}')

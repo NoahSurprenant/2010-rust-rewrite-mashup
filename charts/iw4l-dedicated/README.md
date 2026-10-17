@@ -125,7 +125,7 @@ default.
 - `e2e/run.sh`: installs the chart on a k3s cluster with the published image, beside a real master
   (the iw4l-master chart), in namespaces that enforce Pod Security's `restricted` profile. There is
   no MW2 in CI, so `ci/minimal-values.yaml` mounts an emptyDir in its place, and the test checks the
-  pod is admitted and never gets ready. Then it patches the Deployment: an init container runs
+  pod is admitted, never gets ready, and that the server says it found no MW2 zone under `/games`. Then it patches the Deployment: an init container runs
   `iw4l-master status` against the master's Service, trusting its pin, through both charts'
   NetworkPolicies, and the server's container writes the room state the server writes once its room
   is open, then sleeps. The pod gets ready on its probe; the test checks its hardening and a restart.
