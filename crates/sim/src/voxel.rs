@@ -286,6 +286,20 @@ pub(crate) fn take_player_damage() -> Vec<(u32, i32, Option<[f32; 3]>)> {
     PLAYER_DAMAGE.lock().map(|mut d| std::mem::take(&mut *d)).unwrap_or_default()
 }
 
+/// Minecraft intents the authority took from its clients: client, request
+/// id and the intent's bytes, in the order the simulation applied them.
+static INTENTS: std::sync::Mutex<Vec<(u32, u32, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
+
+pub(crate) fn push_intent(client: u32, request_id: u32, bytes: Vec<u8>) {
+    if let Ok(mut intents) = INTENTS.lock() {
+        intents.push((client, request_id, bytes));
+    }
+}
+
+pub fn take_intents() -> Vec<(u32, u32, Vec<u8>)> {
+    INTENTS.lock().map(|mut i| std::mem::take(&mut *i)).unwrap_or_default()
+}
+
 pub fn take_events() -> Vec<VoxelEvent> {
     EVENTS.lock().map(|mut events| std::mem::take(&mut *events)).unwrap_or_default()
 }
@@ -327,6 +341,7 @@ pub fn deactivate() {
     }
     let _ = take_events();
     let _ = take_player_damage();
+    let _ = take_intents();
     set_mob_boxes(Vec::new());
 }
 

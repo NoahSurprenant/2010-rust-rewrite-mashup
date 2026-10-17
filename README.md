@@ -55,6 +55,14 @@ You don't need Minecraft installed. The first time the game starts, it downloads
 
 More about skating in [docs/SKATE.md](docs/SKATE.md).
 
+### Playing the Minecraft map together
+
+Host a lobby on **overworld** and your friends play the same world: the host's game picks the seed and runs the world, and every block placed or broken, every crafting click and every item on the ground goes through it. Players who join late get every change made so far.
+
+The host keeps the world. Hosting again continues it: the same seed, every block that changed, and each player's inventory, kept by player name. It is saved in `minecraft-worlds/world` beside your `settings.cfg` (in `iw4l-artifacts` on Windows, `~/.config/iw4l` on Linux) every few seconds and when the game closes. To keep several worlds, name one with `IW4L_MINECRAFT_WORLD=<name>` or the console's `mc world <name>` before hosting; `IW4L_MINECRAFT_WORLDS=<folder>` moves them all. Playing alone keeps nothing unless you name a world. Only the host writes the world; joining players keep nothing.
+
+Mobs are the host's alone for now: the host sees and fights them, players who join don't.
+
 ## Controller
 
 Plug in a controller and play; the game follows whichever controller you last touched. Menus work with the D-pad or left stick, **A** to select and **B** to go back.

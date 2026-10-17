@@ -66,6 +66,15 @@ pub(crate) struct Entities {
     /// volume, pitch.
     pub(crate) sounds: Vec<(String, DVec3, f32, f32)>,
     random: minecraftoss_player::rng::LegacyRandom,
+    /// A multiplayer client's copy: the host runs the level, so no server
+    /// tick, chunk or edit goes to this one, and the items on the ground are
+    /// the host's.
+    pub(crate) remote: bool,
+    /// A host's other players who pick items up this tick: key, feet, a copy
+    /// of the inventory and the selected slot.
+    pub(crate) others: Vec<(u64, [f64; 3], Inventory, usize)>,
+    /// What those players picked up, by key.
+    pub(crate) others_picked: Vec<(u64, ItemStack)>,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -144,20 +153,32 @@ impl Entities {
             seed,
             sounds: Vec::new(),
             random: minecraftoss_player::rng::LegacyRandom::new((seed ^ 0x1735) as u64),
+            remote: false,
+            others: Vec::new(),
+            others_picked: Vec::new(),
         }
     }
 
     pub(crate) fn load_chunk(&mut self, chunk: &std::sync::Arc<minecraftoss_core::Chunk>) {
+        if self.remote {
+            return;
+        }
         self.server.load_chunk(chunk);
     }
 
     pub(crate) fn unload_chunk(&mut self, pos: minecraftoss_core::ChunkPos) {
+        if self.remote {
+            return;
+        }
         self.server.unload_chunk(pos);
     }
 
     /// Block loot for what the weapons broke, dropped as vanilla drops it
     /// (`Block.popResource`); a blast keeps each drop one time in four.
     pub(crate) fn drop_blocks(&mut self, broken: &[((i32, i32, i32), Block, bool)]) {
+        if self.remote {
+            return;
+        }
         let Some(loot) = self.loot.as_ref() else {
             return;
         };
@@ -314,6 +335,9 @@ impl Entities {
 
     /// A block the player placed, for the level the mobs walk in.
     pub(crate) fn placed(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32)) {
+        if self.remote {
+            return;
+        }
         self.server.player_edit(scene, pos, PlayerEdit::Place);
     }
 
@@ -324,6 +348,9 @@ impl Entities {
 
     /// Blocks the player's weapons broke, for the level the mobs walk in.
     pub(crate) fn broke(&mut self, scene: &HandcraftedScene, positions: &[(i32, i32, i32)]) {
+        if self.remote {
+            return;
+        }
         for &pos in positions {
             self.server.player_edit(scene, pos, PlayerEdit::Break);
         }
@@ -374,6 +401,10 @@ impl Entities {
             if self.ticks % 600 == 0 {
                 diag::info!(World, "Minecraft mobs: {} tracked", self.boxes().len());
             }
+            if self.remote {
+                self.world_items.tick_pickup_effects(DVec3::from_array(player.feet) + DVec3::Y * 0.81);
+                return (Vec::new(), Vec::new());
+            }
             let feet = DVec3::from_array(player.feet);
             let center = ((feet.x.floor() as i32) >> 4, (feet.z.floor() as i32) >> 4);
             let candidate = PlayerCandidate {
@@ -405,6 +436,10 @@ impl Entities {
                 pickup: player
                     .alive
                     .then(|| (player.feet, Box::new(self.inventory.clone()), self.selected)),
+                others: std::mem::take(&mut self.others)
+                    .into_iter()
+                    .map(|(key, feet, inventory, selected)| (key, feet, Box::new(inventory), selected))
+                    .collect(),
                 mob_players: vec![candidate],
                 mob_views: vec![(
                     PLAYER,
@@ -435,6 +470,15 @@ impl Entities {
                 self.server_snapshot = Some(snapshot);
             }
             self.server_picked.extend(output.picked);
+            let recipes = self.inventory.recipes.clone();
+            for (key, (_, _, item, count, components)) in output.others_picked {
+                let mut stack = ItemStack::new(&item, count.clamp(0, 255) as u8);
+                stack.components = components.as_deref().and_then(|c| serde_json::from_str(c).ok());
+                if stack.components.is_none() {
+                    stack.max = stack.max.min(recipes.max_stack(&item));
+                }
+                self.others_picked.push((key, stack));
+            }
             changes.extend(output.changes);
             for sound in &output.mob_sounds {
                 self.sounds.push((sound.event.clone(), sound.position, sound.volume, sound.pitch));

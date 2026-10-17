@@ -9,6 +9,8 @@ description = "The owner-approved end-to-end scenarios, run against a real iw4l 
 [dependencies]
 asset_transport.workspace = true
 serde_json.workspace = true
+# Minting the certificate of the master a two-player scenario runs.
+rcgen = "0.13"
 
 [dev-dependencies]
 master_pin.workspace = true

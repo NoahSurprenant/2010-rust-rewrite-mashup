@@ -534,6 +534,12 @@ pub(crate) fn encode_action(out: &mut WireWriter, action: &ClientAction) {
             out.put_u32(request_id);
             out.put_bytes(&name);
         }
+        ClientAction::Minecraft { request_id, intent } => {
+            out.put_u8(21);
+            out.put_u32(request_id);
+            out.put_u8(intent.len);
+            out.put_bytes(intent.as_bytes());
+        }
     }
 }
 
@@ -632,6 +638,18 @@ pub(crate) fn decode_action(input: &mut WireReader<'_>) -> Result<ClientAction, 
             let mut name = [0u8; sim::MENU_RESPONSE_BYTES];
             input.get_bytes(&mut name)?;
             Ok(ClientAction::GiveKillstreak { request_id, name })
+        }
+        21 => {
+            let request_id = input.get_u32()?;
+            let len = usize::from(input.get_u8()?);
+            if len > sim::MINECRAFT_INTENT_BYTES {
+                return Err(WireError::Malformed("Minecraft intent too long"));
+            }
+            let mut bytes = vec![0u8; len];
+            input.get_bytes(&mut bytes)?;
+            let intent = sim::MinecraftIntent::new(&bytes)
+                .ok_or(WireError::Malformed("Minecraft intent too long"))?;
+            Ok(ClientAction::Minecraft { request_id, intent })
         }
         14 => {
             let request_id = input.get_u32()?;

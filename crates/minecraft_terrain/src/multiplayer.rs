@@ -152,7 +152,11 @@ impl Reader<'_> {
         String::from_utf8(self.take(len)?.to_vec()).map_err(|_| DecodeError::Malformed("utf-8"))
     }
     fn opt_str(&mut self) -> Result<Option<String>, DecodeError> {
-        Ok(if self.bool()? { Some(self.str()?) } else { None })
+        Ok(if self.bool()? {
+            Some(self.str()?)
+        } else {
+            None
+        })
     }
     fn done(&self) -> Result<(), DecodeError> {
         if self.0.is_empty() {
@@ -167,7 +171,11 @@ impl Reader<'_> {
 pub fn block_text(block: &Block) -> String {
     let mut text = block.id.key();
     if !block.properties.is_empty() {
-        let props: Vec<String> = block.properties.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        let props: Vec<String> = block
+            .properties
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
         text.push('[');
         text.push_str(&props.join(","));
         text.push(']');
@@ -181,8 +189,15 @@ pub fn parse_block(text: &str) -> Option<Block> {
         Some((id, rest)) => (id, Some(rest.strip_suffix(']')?)),
         None => (text, None),
     };
-    let mut block = Block { id: ResourceId::parse(id).ok()?, properties: BTreeMap::new() };
-    for pair in props.into_iter().flat_map(|p| p.split(',')).filter(|p| !p.is_empty()) {
+    let mut block = Block {
+        id: ResourceId::parse(id).ok()?,
+        properties: BTreeMap::new(),
+    };
+    for pair in props
+        .into_iter()
+        .flat_map(|p| p.split(','))
+        .filter(|p| !p.is_empty())
+    {
         let (k, v) = pair.split_once('=')?;
         block.properties.insert(k.to_owned(), v.to_owned());
     }
@@ -200,11 +215,25 @@ pub enum SlotRef {
 /// A click on the inventory screen, as `frame::McClick`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Click {
-    Slot { slot: SlotRef, right: bool, shift: bool },
-    Outside { right: bool },
-    Gather { right: bool },
-    Swap { slot: SlotRef, hotbar: u8 },
-    Spread { slots: Vec<u8>, right: bool },
+    Slot {
+        slot: SlotRef,
+        right: bool,
+        shift: bool,
+    },
+    Outside {
+        right: bool,
+    },
+    Gather {
+        right: bool,
+    },
+    Swap {
+        slot: SlotRef,
+        hotbar: u8,
+    },
+    Spread {
+        slots: Vec<u8>,
+        right: bool,
+    },
     Close,
 }
 
@@ -212,22 +241,42 @@ pub enum Click {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
     /// The client finished breaking this block by hand.
-    Break { pos: BlockPos },
+    Break {
+        pos: BlockPos,
+    },
     /// A right click with the held stack, from where the client stood and
     /// looked (block space and Minecraft degrees): the host places as the
     /// client did.
-    Place { feet: [f64; 3], yaw: f32, pitch: f32, selected: u8 },
+    Place {
+        feet: [f64; 3],
+        yaw: f32,
+        pitch: f32,
+        selected: u8,
+    },
     Click(Click),
-    Select { slot: u8 },
-    Drop { whole: bool },
+    Select {
+        slot: u8,
+    },
+    Drop {
+        whole: bool,
+    },
     /// The client opened the crafting table at this block.
-    OpenTable { pos: BlockPos },
+    OpenTable {
+        pos: BlockPos,
+    },
     /// The console's `mc give`.
-    Give { id: String, count: u8 },
+    Give {
+        id: String,
+        count: u8,
+    },
     /// The console's `mc clear`.
     Clear,
     /// The console's block box, in world blocks; no block is air.
-    Fill { a: BlockPos, b: BlockPos, block: Option<String> },
+    Fill {
+        a: BlockPos,
+        b: BlockPos,
+        block: Option<String>,
+    },
 }
 
 fn encode_slot(w: &mut Writer, slot: SlotRef) {
@@ -264,7 +313,12 @@ impl Intent {
                 w.u8(1);
                 w.pos(*pos);
             }
-            Self::Place { feet, yaw, pitch, selected } => {
+            Self::Place {
+                feet,
+                yaw,
+                pitch,
+                selected,
+            } => {
                 w.u8(2);
                 for v in feet {
                     w.f64(*v);
@@ -352,14 +406,24 @@ impl Intent {
                 selected: r.u8()?,
             },
             3 => Self::Click(match r.u8()? {
-                0 => Click::Slot { slot: decode_slot(&mut r)?, right: r.bool()?, shift: r.bool()? },
+                0 => Click::Slot {
+                    slot: decode_slot(&mut r)?,
+                    right: r.bool()?,
+                    shift: r.bool()?,
+                },
                 1 => Click::Outside { right: r.bool()? },
                 2 => Click::Gather { right: r.bool()? },
-                3 => Click::Swap { slot: decode_slot(&mut r)?, hotbar: r.u8()? },
+                3 => Click::Swap {
+                    slot: decode_slot(&mut r)?,
+                    hotbar: r.u8()?,
+                },
                 4 => {
                     let right = r.bool()?;
                     let n = r.u8()? as usize;
-                    Click::Spread { slots: r.take(n)?.to_vec(), right }
+                    Click::Spread {
+                        slots: r.take(n)?.to_vec(),
+                        right,
+                    }
                 }
                 5 => Click::Close,
                 _ => return Err(DecodeError::Malformed("click")),
@@ -367,9 +431,16 @@ impl Intent {
             4 => Self::Select { slot: r.u8()? },
             5 => Self::Drop { whole: r.bool()? },
             6 => Self::OpenTable { pos: r.pos()? },
-            7 => Self::Give { id: r.str()?, count: r.u8()? },
+            7 => Self::Give {
+                id: r.str()?,
+                count: r.u8()?,
+            },
             8 => Self::Clear,
-            9 => Self::Fill { a: r.pos()?, b: r.pos()?, block: r.opt_str()? },
+            9 => Self::Fill {
+                a: r.pos()?,
+                b: r.pos()?,
+                block: r.opt_str()?,
+            },
             _ => return Err(DecodeError::Malformed("intent")),
         };
         r.done()?;
@@ -400,7 +471,10 @@ impl WireStack {
     pub fn to_stack(&self) -> ItemStack {
         let mut stack = ItemStack::new(self.id.clone(), self.count);
         stack.max = self.max;
-        stack.components = self.components.as_deref().and_then(|c| serde_json::from_str(c).ok());
+        stack.components = self
+            .components
+            .as_deref()
+            .and_then(|c| serde_json::from_str(c).ok());
         stack
     }
 }
@@ -420,7 +494,12 @@ fn encode_stack(w: &mut Writer, stack: &Option<WireStack>) {
 
 fn decode_stack(r: &mut Reader<'_>) -> Result<Option<WireStack>, DecodeError> {
     Ok(if r.bool()? {
-        Some(WireStack { id: r.str()?, count: r.u8()?, max: r.u8()?, components: r.opt_str()? })
+        Some(WireStack {
+            id: r.str()?,
+            count: r.u8()?,
+            max: r.u8()?,
+            components: r.opt_str()?,
+        })
     } else {
         None
     })
@@ -502,9 +581,16 @@ pub enum HostMessage {
     Edits(Vec<(BlockPos, Option<String>)>),
     /// The client's own inventory after the host applied its intents up to
     /// `applied` (a request id), and the crafting table it has open.
-    Inventory { applied: u32, table: Option<BlockPos>, state: InventoryState },
+    Inventory {
+        applied: u32,
+        table: Option<BlockPos>,
+        state: InventoryState,
+    },
     /// The item entities near the client.
     Items(Vec<WireItem>),
+    /// The host moved the client here (map units) for its arrival in the
+    /// world.
+    Placed { at: [f32; 3] },
 }
 
 impl HostMessage {
@@ -526,7 +612,11 @@ impl HostMessage {
                     w.opt_str(block.as_deref());
                 }
             }
-            Self::Inventory { applied, table, state } => {
+            Self::Inventory {
+                applied,
+                table,
+                state,
+            } => {
                 w.u8(3);
                 w.u32(*applied);
                 match table {
@@ -561,6 +651,12 @@ impl HostMessage {
                     w.u8(u8::from(item.on_ground));
                 }
             }
+            Self::Placed { at } => {
+                w.u8(5);
+                for v in at {
+                    w.f32(*v);
+                }
+            }
         }
         w.0
     }
@@ -568,7 +664,10 @@ impl HostMessage {
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut r = Reader(bytes);
         let message = match r.u8()? {
-            1 => Self::World { seed: r.i64()?, origin: [r.f64()?, r.f64()?, r.f64()?] },
+            1 => Self::World {
+                seed: r.i64()?,
+                origin: [r.f64()?, r.f64()?, r.f64()?],
+            },
             2 => {
                 let n = r.u32()? as usize;
                 // Each edit is at least 13 bytes: a short count cannot claim more.
@@ -594,14 +693,25 @@ impl HostMessage {
                 }
                 let cursor = decode_stack(&mut r)?;
                 let [slots, crafting, workbench] = lists;
-                Self::Inventory { applied, table, state: InventoryState { selected, slots, crafting, workbench, cursor } }
+                Self::Inventory {
+                    applied,
+                    table,
+                    state: InventoryState {
+                        selected,
+                        slots,
+                        crafting,
+                        workbench,
+                        cursor,
+                    },
+                }
             }
             4 => {
                 let n = r.u16()? as usize;
                 let mut items = Vec::with_capacity(n.min(MAX_ITEMS));
                 for _ in 0..n {
                     let id = r.u32()?;
-                    let stack = decode_stack(&mut r)?.ok_or(DecodeError::Malformed("item without stack"))?;
+                    let stack = decode_stack(&mut r)?
+                        .ok_or(DecodeError::Malformed("item without stack"))?;
                     items.push(WireItem {
                         id,
                         stack,
@@ -613,6 +723,9 @@ impl HostMessage {
                 }
                 Self::Items(items)
             }
+            5 => Self::Placed {
+                at: [r.f32()?, r.f32()?, r.f32()?],
+            },
             _ => return Err(DecodeError::Malformed("host message")),
         };
         r.done()?;
@@ -726,7 +839,13 @@ pub fn sanitize_world_name(name: &str) -> String {
     let mut out: String = name
         .trim()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(64)
         .collect();
     while out.starts_with('.') {
@@ -756,7 +875,11 @@ fn io_error(error: impl std::fmt::Display) -> std::io::Error {
 impl SavedWorld {
     pub fn new(seed: i64, origin: [f64; 3]) -> Self {
         Self {
-            level: Level { version: SAVE_VERSION, seed, origin },
+            level: Level {
+                version: SAVE_VERSION,
+                seed,
+                origin,
+            },
             edits: EditLog::default(),
             players: BTreeMap::new(),
         }
@@ -771,7 +894,10 @@ impl SavedWorld {
         };
         let level: Level = serde_json::from_slice(&level).map_err(io_error)?;
         if level.version != SAVE_VERSION {
-            return Err(io_error(format!("level.json version {} (this game reads {SAVE_VERSION})", level.version)));
+            return Err(io_error(format!(
+                "level.json version {} (this game reads {SAVE_VERSION})",
+                level.version
+            )));
         }
         let edits = match std::fs::read(dir.join(EDITS_FILE)) {
             Ok(bytes) => EditLog::decode(&bytes).map_err(io_error)?,
@@ -783,7 +909,11 @@ impl SavedWorld {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
             Err(e) => return Err(e),
         };
-        Ok(Some(Self { level, edits, players }))
+        Ok(Some(Self {
+            level,
+            edits,
+            players,
+        }))
     }
 
     /// Writes all three files, each replaced whole; the edits compacted.
@@ -803,23 +933,59 @@ mod tests {
 
     fn every_intent() -> Vec<Intent> {
         vec![
-            Intent::Break { pos: (-3, 70, 1_000_000) },
-            Intent::Place { feet: [0.5, 64.0, -12.25], yaw: 91.5, pitch: -30.0, selected: 8 },
-            Intent::Click(Click::Slot { slot: SlotRef::Inventory(35), right: true, shift: false }),
-            Intent::Click(Click::Slot { slot: SlotRef::Crafting(8), right: false, shift: true }),
-            Intent::Click(Click::Slot { slot: SlotRef::Result, right: false, shift: false }),
+            Intent::Break {
+                pos: (-3, 70, 1_000_000),
+            },
+            Intent::Place {
+                feet: [0.5, 64.0, -12.25],
+                yaw: 91.5,
+                pitch: -30.0,
+                selected: 8,
+            },
+            Intent::Click(Click::Slot {
+                slot: SlotRef::Inventory(35),
+                right: true,
+                shift: false,
+            }),
+            Intent::Click(Click::Slot {
+                slot: SlotRef::Crafting(8),
+                right: false,
+                shift: true,
+            }),
+            Intent::Click(Click::Slot {
+                slot: SlotRef::Result,
+                right: false,
+                shift: false,
+            }),
             Intent::Click(Click::Outside { right: true }),
             Intent::Click(Click::Gather { right: false }),
-            Intent::Click(Click::Swap { slot: SlotRef::Inventory(20), hotbar: 3 }),
-            Intent::Click(Click::Spread { slots: vec![1, 2, 3, 40], right: true }),
+            Intent::Click(Click::Swap {
+                slot: SlotRef::Inventory(20),
+                hotbar: 3,
+            }),
+            Intent::Click(Click::Spread {
+                slots: vec![1, 2, 3, 40],
+                right: true,
+            }),
             Intent::Click(Click::Close),
             Intent::Select { slot: 4 },
             Intent::Drop { whole: true },
             Intent::OpenTable { pos: (3, 0, 0) },
-            Intent::Give { id: "minecraft:oak_planks".into(), count: 16 },
+            Intent::Give {
+                id: "minecraft:oak_planks".into(),
+                count: 16,
+            },
             Intent::Clear,
-            Intent::Fill { a: (-1, 0, -2), b: (4, 3, 2), block: None },
-            Intent::Fill { a: (0, 0, 0), b: (0, 0, 0), block: Some("minecraft:stone".into()) },
+            Intent::Fill {
+                a: (-1, 0, -2),
+                b: (4, 3, 2),
+                block: None,
+            },
+            Intent::Fill {
+                a: (0, 0, 0),
+                b: (0, 0, 0),
+                block: Some("minecraft:stone".into()),
+            },
         ]
     }
 
@@ -827,7 +993,11 @@ mod tests {
     fn every_intent_round_trips_within_its_size() {
         for intent in every_intent() {
             let bytes = intent.encode().expect("fits");
-            assert!(bytes.len() <= INTENT_BYTES, "{intent:?}: {} bytes", bytes.len());
+            assert!(
+                bytes.len() <= INTENT_BYTES,
+                "{intent:?}: {} bytes",
+                bytes.len()
+            );
             assert_eq!(Intent::decode(&bytes).unwrap(), intent);
         }
     }
@@ -835,27 +1005,70 @@ mod tests {
     #[test]
     fn an_intent_too_long_to_send_is_refused() {
         let id = format!("minecraft:{}", "a".repeat(MAX_ID_BYTES));
-        assert_eq!(Intent::Give { id: id.clone(), count: 1 }.encode(), None);
-        assert_eq!(Intent::Fill { a: (0, 0, 0), b: (0, 0, 0), block: Some(id) }.encode(), None);
+        assert_eq!(
+            Intent::Give {
+                id: id.clone(),
+                count: 1
+            }
+            .encode(),
+            None
+        );
+        assert_eq!(
+            Intent::Fill {
+                a: (0, 0, 0),
+                b: (0, 0, 0),
+                block: Some(id)
+            }
+            .encode(),
+            None
+        );
         let slots = vec![0; INTENT_BYTES];
-        assert_eq!(Intent::Click(Click::Spread { slots, right: false }).encode(), None);
+        assert_eq!(
+            Intent::Click(Click::Spread {
+                slots,
+                right: false
+            })
+            .encode(),
+            None
+        );
     }
 
     #[test]
     fn a_damaged_intent_is_an_error() {
         let bytes = Intent::Break { pos: (1, 2, 3) }.encode().unwrap();
-        assert_eq!(Intent::decode(&bytes[..bytes.len() - 1]), Err(DecodeError::Truncated));
+        assert_eq!(
+            Intent::decode(&bytes[..bytes.len() - 1]),
+            Err(DecodeError::Truncated)
+        );
         let mut longer = bytes.clone();
         longer.push(0);
-        assert!(matches!(Intent::decode(&longer), Err(DecodeError::Malformed(_))));
-        assert!(matches!(Intent::decode(&[200]), Err(DecodeError::Malformed(_))));
+        assert!(matches!(
+            Intent::decode(&longer),
+            Err(DecodeError::Malformed(_))
+        ));
+        assert!(matches!(
+            Intent::decode(&[200]),
+            Err(DecodeError::Malformed(_))
+        ));
         assert_eq!(Intent::decode(&[]), Err(DecodeError::Truncated));
     }
 
     fn inventory_state() -> InventoryState {
-        let stack = |id: &str, count| Some(WireStack { id: id.into(), count, max: 64, components: None });
+        let stack = |id: &str, count| {
+            Some(WireStack {
+                id: id.into(),
+                count,
+                max: 64,
+                components: None,
+            })
+        };
         let mut slots = vec![None; 43];
-        slots[0] = Some(WireStack { id: "iw4:weapon/7".into(), count: 1, max: 1, components: None });
+        slots[0] = Some(WireStack {
+            id: "iw4:weapon/7".into(),
+            count: 1,
+            max: 1,
+            components: None,
+        });
         slots[5] = stack("minecraft:oak_planks", 12);
         slots[20] = Some(WireStack {
             id: "minecraft:diamond_pickaxe".into(),
@@ -865,29 +1078,57 @@ mod tests {
         });
         let mut workbench = vec![None; 9];
         workbench[4] = stack("minecraft:stick", 2);
-        InventoryState { selected: 5, slots, crafting: vec![None; 4], workbench, cursor: stack("minecraft:dirt", 1) }
+        InventoryState {
+            selected: 5,
+            slots,
+            crafting: vec![None; 4],
+            workbench,
+            cursor: stack("minecraft:dirt", 1),
+        }
     }
 
     #[test]
     fn every_host_message_round_trips() {
         let messages = vec![
-            HostMessage::World { seed: -4_172_144_997_902_289_642, origin: [98.5, 134.0, -22.5] },
+            HostMessage::World {
+                seed: -4_172_144_997_902_289_642,
+                origin: [98.5, 134.0, -22.5],
+            },
             HostMessage::Edits(vec![
                 ((1, 64, -1), Some("minecraft:stone".into())),
                 ((1, 65, -1), None),
-                ((2, 64, 9), Some("minecraft:oak_stairs[facing=east,half=bottom]".into())),
+                (
+                    (2, 64, 9),
+                    Some("minecraft:oak_stairs[facing=east,half=bottom]".into()),
+                ),
             ]),
             HostMessage::Edits(Vec::new()),
-            HostMessage::Inventory { applied: 41, table: Some((3, 0, 0)), state: inventory_state() },
-            HostMessage::Inventory { applied: 0, table: None, state: InventoryState::default() },
+            HostMessage::Inventory {
+                applied: 41,
+                table: Some((3, 0, 0)),
+                state: inventory_state(),
+            },
+            HostMessage::Inventory {
+                applied: 0,
+                table: None,
+                state: InventoryState::default(),
+            },
             HostMessage::Items(vec![WireItem {
                 id: 9,
-                stack: WireStack { id: "minecraft:cobblestone".into(), count: 3, max: 64, components: None },
+                stack: WireStack {
+                    id: "minecraft:cobblestone".into(),
+                    count: 3,
+                    max: 64,
+                    components: None,
+                },
                 position: [1.5, 64.2, -3.25],
                 velocity: [0.0, -0.04, 0.1],
                 age: 120,
                 on_ground: true,
             }]),
+            HostMessage::Placed {
+                at: [0.0, -108.0, 36.5],
+            },
         ];
         for message in messages {
             assert_eq!(HostMessage::decode(&message.encode()).unwrap(), message);
@@ -903,8 +1144,13 @@ mod tests {
 
     #[test]
     fn blocks_read_back_from_their_text() {
-        let block = Block::new("minecraft:oak_stairs").with("facing", "east").with("half", "bottom");
-        assert_eq!(block_text(&block), "minecraft:oak_stairs[facing=east,half=bottom]");
+        let block = Block::new("minecraft:oak_stairs")
+            .with("facing", "east")
+            .with("half", "bottom");
+        assert_eq!(
+            block_text(&block),
+            "minecraft:oak_stairs[facing=east,half=bottom]"
+        );
         assert_eq!(parse_block(&block_text(&block)), Some(block));
         assert_eq!(parse_block("stone"), Some(Block::new("minecraft:stone")));
         assert_eq!(parse_block("minecraft:stone[facing"), None);
@@ -955,14 +1201,20 @@ mod tests {
     #[test]
     fn the_edit_file_round_trips_and_refuses_damage() {
         let mut log = EditLog::default();
-        log.push((-5, -64, 7), Some("minecraft:chest[facing=north,type=single,waterlogged=false]".into()));
+        log.push(
+            (-5, -64, 7),
+            Some("minecraft:chest[facing=north,type=single,waterlogged=false]".into()),
+        );
         log.push((-5, -63, 7), None);
         let bytes = log.encode();
         assert_eq!(EditLog::decode(&bytes).unwrap(), log);
         assert!(EditLog::decode(&bytes[..bytes.len() - 2]).is_err());
         let mut wrong = bytes.clone();
         wrong[0] = b'X';
-        assert_eq!(EditLog::decode(&wrong), Err(DecodeError::Malformed("edits magic")));
+        assert_eq!(
+            EditLog::decode(&wrong),
+            Err(DecodeError::Malformed("edits magic"))
+        );
     }
 
     #[test]
@@ -971,13 +1223,22 @@ mod tests {
         let world = dir.path().join("world");
         assert_eq!(SavedWorld::load(&world).unwrap(), None);
         let mut saved = SavedWorld::new(12345, [98.5, 134.0, -22.5]);
-        saved.edits.push((99, 134, -22), Some("minecraft:oak_planks".into()));
-        saved.edits.push((99, 135, -22), Some("minecraft:stone".into()));
+        saved
+            .edits
+            .push((99, 134, -22), Some("minecraft:oak_planks".into()));
+        saved
+            .edits
+            .push((99, 135, -22), Some("minecraft:stone".into()));
         saved.edits.push((99, 135, -22), None);
         saved.players.insert("host".into(), inventory_state());
         let mut other = InventoryState::default();
         other.slots = vec![None; 43];
-        other.slots[3] = Some(WireStack { id: "minecraft:torch".into(), count: 9, max: 64, components: None });
+        other.slots[3] = Some(WireStack {
+            id: "minecraft:torch".into(),
+            count: 9,
+            max: 64,
+            components: None,
+        });
         saved.players.insert("client".into(), other.clone());
         saved.save(&world).unwrap();
         let loaded = SavedWorld::load(&world).unwrap().unwrap();
@@ -996,7 +1257,11 @@ mod tests {
     #[test]
     fn a_save_from_another_version_is_refused() {
         let dir = crate::test_dir::tempdir().unwrap();
-        std::fs::write(dir.path().join(LEVEL_FILE), r#"{"version":99,"seed":1,"origin":[0.0,0.0,0.0]}"#).unwrap();
+        std::fs::write(
+            dir.path().join(LEVEL_FILE),
+            r#"{"version":99,"seed":1,"origin":[0.0,0.0,0.0]}"#,
+        )
+        .unwrap();
         assert!(SavedWorld::load(dir.path()).is_err());
     }
 

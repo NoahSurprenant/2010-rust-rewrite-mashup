@@ -588,6 +588,7 @@ pub struct ReliableInbound<'w> {
     svc: SvcFrameWriters<'w>,
     scores: ResMut<'w, crate::Scoreboard>,
     signon: ResMut<'w, crate::SignonState>,
+    minecraft: ResMut<'w, crate::MinecraftDownlink>,
     bridge: Option<Res<'w, crate::MasterBridge>>,
 }
 
@@ -679,6 +680,9 @@ impl ReliableInbound<'_> {
                 }
                 crate::ReliableRow::Event(event) => {
                     self.events.write(ReliableControlEvent(*event));
+                }
+                crate::ReliableRow::Minecraft(bytes) => {
+                    self.minecraft.rows.push(bytes.clone());
                 }
             }
             self.ack.0 = *seq;

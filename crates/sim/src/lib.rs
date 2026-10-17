@@ -90,7 +90,8 @@ pub use identities::{
     ProjectileId, RNG_DOMAIN_SCHEME, RngDomain, ScriptModelId, ShotId,
 };
 pub use input::{
-    ActionRequestId, ClassId, ClientAction, MENU_RESPONSE_BYTES, SpawnPick, TickInput,
+    ActionRequestId, ClassId, ClientAction, MENU_RESPONSE_BYTES, MINECRAFT_INTENT_BYTES,
+    MinecraftIntent, SpawnPick, TickInput,
     action_request_id, menu_response_field, menu_response_text,
 };
 pub use mantle_xanim::MantleXAnimBind;

@@ -19,6 +19,7 @@ workspace.
 | --- | --- |
 | `heavy_gameplay_lifecycle` | cold load `mp_overgrown` with 16 players, three input scenes, production disconnect, a watched menu, a second map with three scenes, production quit |
 | `crafting_table` | the Minecraft map at a fixed seed: builds a small arena, opens a crafting table with E, crafts a chest on its 3x3 grid, closes with Escape (the grid empties back, no MW2 menu), opens with E holding a gun, right click with a gun aims, right click with an item opens, crouched right click with a plank places against it and with an empty hand opens it, a key rebound to Use opens it, and the screen closes when the table breaks or the player moves away |
+| `minecraft_multiplayer` | two games on the Minecraft map through an `iw4l-master` the run starts on the loopback (with a certificate minted for the run): the client generates the host's seed, sees a block the host sets and one it clears; the host sees a block the client sets, planks the client places by hand (given by the host on its `mc give`) and breaks by hand; then both start again on the same settings and the host's world comes back (seed, blocks, the host's and the client's inventories, kept by name). It records each game's and the pair's peak memory |
 
 The `master_pin` unit tests (`src/master_pin.rs`, approved 2026-10-17) check the
 master key pin: the right pin is accepted, a wrong one refused, a mistyped one
@@ -50,9 +51,10 @@ make approved ARGS='--seed 1234'               # fixed seed
 make approved ARGS='--replay iw4l-artifacts/approved-tests/<run>/run.json'
 make approved ARGS='--cache shared'            # reuse the repo cache (not cold)
 make approved SCENARIO=crafting_table           # the crafting table scenario
+make approved SCENARIO=minecraft_multiplayer    # a host and a client through a local master
 ```
 
-The runner builds nothing; `make approved` builds `target/play/iw4l` first.
+The runner builds nothing; `make approved` builds `target/play/iw4l` (and `target/play/iw4l-master`, which `minecraft_multiplayer` runs) first.
 Each run owns one directory, `iw4l-artifacts/approved-tests/<run-id>/`. The
 game is started with that directory as its working directory, so everything
 IW4L writes (`iw4l-artifacts/cache`, logs, perf run, dumps, screenshots) lands

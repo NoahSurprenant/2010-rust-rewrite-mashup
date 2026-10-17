@@ -23,6 +23,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p approved_tests
+      # The Minecraft map's multiplayer wire and save formats.
+      - run: cargo test -p minecraft_terrain --lib multiplayer
 
   # The approved crafting_table scenario plays the real game on the
   # Minecraft map, so it needs the owner's MW2 files, which only the
@@ -69,4 +71,48 @@ jobs:
             iw4l-artifacts/approved-tests/*/child_stdout.txt
             iw4l-artifacts/approved-tests/*/child_stderr.txt
             iw4l-artifacts/approved-tests/*/iw4l-artifacts/logs/latest.log
+          if-no-files-found: warn
+
+  # The approved minecraft_multiplayer scenario: a host and a client on the
+  # Minecraft map through an iw4l-master the run starts on the loopback,
+  # then both again on the same settings to see the host's world kept. Two
+  # games at once, so the runner needs room for both (run.json records each
+  # one's and the pair's peak memory).
+  minecraft-multiplayer:
+    name: minecraft_multiplayer (two games through a local master, in-cluster)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: iw4l-k8s
+    timeout-minutes: 90
+    env:
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: play
+      - uses: actions/cache@v4
+        with:
+          path: iw4l-artifacts/minecraft-26.3
+          key: minecraft-26.3
+      - name: Games root
+        run: |
+          mkdir -p "$RUNNER_TEMP/games"
+          ln -sfn /skate-assets/mw2 "$RUNNER_TEMP/games/mw2"
+          echo "IW4L_GAMES=$RUNNER_TEMP/games" >> "$GITHUB_ENV"
+          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/config" >> "$GITHUB_ENV"
+      - run: cargo build --profile play -p launcher --bin iw4l
+      - run: cargo build --profile play -p approved_tests -p iw4l-master
+      - name: minecraft_multiplayer
+        run: scripts/headless-display.sh target/play/approved_tests minecraft_multiplayer
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minecraft_multiplayer
+          path: |
+            iw4l-artifacts/approved-tests/*/run.json
+            iw4l-artifacts/approved-tests/*/*/child_stdout_*.txt
+            iw4l-artifacts/approved-tests/*/*/child_stderr_*.txt
+            iw4l-artifacts/approved-tests/*/*/iw4l-artifacts/logs/*.log
+            iw4l-artifacts/approved-tests/*/master/master_*.txt
           if-no-files-found: warn

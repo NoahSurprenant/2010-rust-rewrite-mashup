@@ -105,57 +105,16 @@ impl InventoryUi {
     ) -> Vec<ItemStack> {
         let mut thrown = Vec::new();
         if std::mem::take(&mut ui.clear_items) {
-            for slot in &mut inventory.slots {
-                if slot.as_ref().is_some_and(|s| weapon_of(s).is_none()) {
-                    *slot = None;
-                }
-            }
+            clear_items(inventory);
         }
         for (id, count) in std::mem::take(&mut ui.give) {
-            let stack = inventory.recipes.stack(&id, count);
-            if let Some(rest) = inventory.add_item(stack, *selected) {
-                thrown.push(rest);
-            }
+            thrown.extend(give(inventory, &id, count, *selected));
         }
         for click in std::mem::take(&mut ui.clicks) {
-            match click {
-                McClick::Slot { slot: McSlot::Inventory(index), right, shift } => {
-                    if let Some(stack) = inventory.click(Some(index), right, shift) {
-                        thrown.push(stack);
-                    }
-                }
-                McClick::Slot { slot: McSlot::Crafting(index), right, shift } => {
-                    if ui.workbench.is_some() {
-                        inventory.click_workbench_slot(index, right, shift);
-                    } else {
-                        inventory.click_crafting_slot(index, right, shift);
-                    }
-                }
-                McClick::Slot { slot: McSlot::Result, shift, .. } => {
-                    if ui.workbench.is_some() {
-                        inventory.take_workbench_output(shift);
-                    } else {
-                        inventory.take_crafting_output(shift);
-                    }
-                }
-                McClick::Outside { right } => {
-                    if let Some(stack) = inventory.click(None, right, false) {
-                        thrown.push(stack);
-                    }
-                }
-                McClick::Gather { right } => inventory.pickup_all(right),
-                McClick::Swap { slot: McSlot::Inventory(index), hotbar } => inventory.number_swap(index, hotbar),
-                McClick::Swap { .. } => {}
-                McClick::Spread { slots, right } => inventory.distribute(&slots, right),
-                McClick::Close => {
-                    ui.workbench = None;
-                    thrown.extend(inventory.settle_crafting());
-                    thrown.extend(inventory.settle_workbench());
-                    if let Some(rest) = inventory.settle_cursor() {
-                        thrown.push(rest);
-                    }
-                }
+            if click == McClick::Close {
+                ui.workbench = None;
             }
+            thrown.extend(apply_click(inventory, click, ui.workbench.is_some()));
         }
         thrown.extend(inventory.take_pending_drops());
         if let Some(slot) = ui.select.take() {
@@ -166,18 +125,7 @@ impl InventoryUi {
         {
             thrown.push(stack);
         }
-        // A gun never leaves the inventory.
-        let mut out = Vec::new();
-        for stack in thrown {
-            if weapon_of(&stack).is_some() {
-                if let Some(back) = inventory.add_item(stack, *selected) {
-                    inventory.cursor = Some(back);
-                }
-            } else {
-                out.push(stack);
-            }
-        }
-        out
+        keep_guns(inventory, thrown, *selected)
     }
 
     /// The gun the hotbar selection asks for, if the player holds another;
@@ -319,4 +267,79 @@ pub(crate) fn throw(items: &mut minecraftoss_player::items::WorldItems, stacks: 
     for stack in stacks {
         items.toss(stack, thrower.eye, thrower.yaw, thrower.pitch);
     }
+}
+
+/// The console's `mc clear`: everything but the guns goes.
+pub(crate) fn clear_items(inventory: &mut Inventory) {
+    for slot in &mut inventory.slots {
+        if slot.as_ref().is_some_and(|s| weapon_of(s).is_none()) {
+            *slot = None;
+        }
+    }
+}
+
+/// The console's `mc give`; what does not fit.
+pub(crate) fn give(inventory: &mut Inventory, id: &str, count: u8, selected: usize) -> Option<ItemStack> {
+    let stack = inventory.recipes.stack(id, count);
+    inventory.add_item(stack, selected)
+}
+
+/// One click on the inventory screen (the 3x3 grid's when a crafting table
+/// is open) with vanilla's rules; the stacks it throws out.
+pub(crate) fn apply_click(inventory: &mut Inventory, click: McClick, workbench: bool) -> Vec<ItemStack> {
+    let mut thrown = Vec::new();
+    match click {
+        McClick::Slot { slot: McSlot::Inventory(index), right, shift } => {
+            if let Some(stack) = inventory.click(Some(index), right, shift) {
+                thrown.push(stack);
+            }
+        }
+        McClick::Slot { slot: McSlot::Crafting(index), right, shift } => {
+            if workbench {
+                inventory.click_workbench_slot(index, right, shift);
+            } else {
+                inventory.click_crafting_slot(index, right, shift);
+            }
+        }
+        McClick::Slot { slot: McSlot::Result, shift, .. } => {
+            if workbench {
+                inventory.take_workbench_output(shift);
+            } else {
+                inventory.take_crafting_output(shift);
+            }
+        }
+        McClick::Outside { right } => {
+            if let Some(stack) = inventory.click(None, right, false) {
+                thrown.push(stack);
+            }
+        }
+        McClick::Gather { right } => inventory.pickup_all(right),
+        McClick::Swap { slot: McSlot::Inventory(index), hotbar } => inventory.number_swap(index, hotbar),
+        McClick::Swap { .. } => {}
+        McClick::Spread { slots, right } => inventory.distribute(&slots, right),
+        McClick::Close => {
+            thrown.extend(inventory.settle_crafting());
+            thrown.extend(inventory.settle_workbench());
+            if let Some(rest) = inventory.settle_cursor() {
+                thrown.push(rest);
+            }
+        }
+    }
+    thrown
+}
+
+/// A gun never leaves the inventory: thrown guns go back in, and the rest
+/// are returned.
+pub(crate) fn keep_guns(inventory: &mut Inventory, thrown: Vec<ItemStack>, selected: usize) -> Vec<ItemStack> {
+    let mut out = Vec::new();
+    for stack in thrown {
+        if weapon_of(&stack).is_some() {
+            if let Some(back) = inventory.add_item(stack, selected) {
+                inventory.cursor = Some(back);
+            }
+        } else {
+            out.push(stack);
+        }
+    }
+    out
 }

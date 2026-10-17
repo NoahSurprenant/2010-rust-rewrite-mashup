@@ -859,6 +859,9 @@ pub struct TickInput {
     /// The player's feet, when it can pick items up, with its inventory and
     /// selected slot (the server offers touching stacks to this copy).
     pub pickup: Option<([f64; 3], Box<minecraftoss_player::inventory::Inventory>, usize)>,
+    /// Other players who pick items up (a multiplayer host's clients): a key
+    /// of the caller's, feet, a copy of the inventory and the selected slot.
+    pub others: Vec<(u64, [f64; 3], Box<minecraftoss_player::inventory::Inventory>, usize)>,
     /// The player as mobs see it (held food, whether it can be targeted).
     pub mob_players: Vec<minecraftoss_entities::tempt::PlayerCandidate>,
     /// Where each of those players looks (endermen read stares from it).
@@ -904,6 +907,8 @@ pub struct Output {
     pub mob_sounds: Vec<minecraftoss_entities::world::MobSound>,
     /// Items the player picked up: (entity ID, position, item, count, components).
     pub picked: Vec<(i32, [f64; 3], String, i32, Option<String>)>,
+    /// What the other players picked up, by their key.
+    pub others_picked: Vec<(u64, (i32, [f64; 3], String, i32, Option<String>))>,
     /// What each `/summon` did: the type it made, or why it failed.
     pub summoned: Vec<Result<String, String>>,
     /// Positions where bone meal was used.
@@ -1173,6 +1178,17 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                             }
                         });
                         out.picked.extend(picked);
+                    }
+                    for (key, feet, mut inventory, selected) in input.others {
+                        let recipes = inventory.recipes.clone();
+                        let picked = sim.pickup(feet, |item, count, components| {
+                            let stack = make_stack(&recipes, item, count, components);
+                            match inventory.add_item(stack, selected) {
+                                None => count,
+                                Some(rest) => count - i32::from(rest.count),
+                            }
+                        });
+                        out.others_picked.extend(picked.into_iter().map(|p| (key, p)));
                     }
                     // After the items, one experience orb.
                     out.orbs_taken.extend(sim.take_experience(pickup_feet));
