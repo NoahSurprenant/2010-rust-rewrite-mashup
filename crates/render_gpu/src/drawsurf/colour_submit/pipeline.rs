@@ -78,6 +78,7 @@ pub(super) fn kick_extracted_colour_pipelines(
     pipeline: Res<ExactColourPipeline>,
     mut kicked: ResMut<ExactPipelineKickCache>,
     mut warmup: ResMut<WorldPipelineWarmup>,
+    adapter: Res<bevy::render::renderer::RenderAdapterInfo>,
 ) {
     registry.poll();
 
@@ -98,6 +99,7 @@ pub(super) fn kick_extracted_colour_pipelines(
         &pipeline,
         &mut kicked,
         &mut warmup,
+        crate::software_rasterizer(&adapter),
     );
     registry.flush(&device);
 }
@@ -110,6 +112,9 @@ pub(super) fn kick_admitted_pipelines(
     pipeline: &ExactColourPipeline,
     kicked: &mut ExactPipelineKickCache,
     warmup: &mut WorldPipelineWarmup,
+    // On a software rasterizer nothing is built ahead: each pipeline is made
+    // when a draw first asks for it, and the spawn waits only for those.
+    lazy: bool,
 ) {
     let Some(extracted) = extracted else {
         return;
@@ -156,6 +161,7 @@ pub(super) fn kick_admitted_pipelines(
             device,
             &mut kicked.scheduled,
             &mut kicked.current,
+            lazy,
         );
         kicked.demand_revision = extracted.frame.pipeline_demand_revision;
         diag::info!(
@@ -176,6 +182,7 @@ pub(super) fn kick_admitted_pipelines(
             device,
             &mut kicked.scheduled,
             &mut kicked.current,
+            lazy,
         );
         kicked.demand_revision = extracted.frame.pipeline_demand_revision;
         diag::info!(
@@ -207,7 +214,11 @@ fn schedule_admitted_pipelines(
     device: &RenderDevice,
     scheduled: &mut HashSet<ExactColourPipelineKey>,
     current: &mut Vec<ExactPipelineSlot>,
+    lazy: bool,
 ) {
+    if lazy {
+        return;
+    }
     for (main_format, samples) in view_sig.iter().copied() {
         let techs = lighting_iw4::LIT_TECH_NO_SHADOW_DIR_SLOTS
             .into_iter()

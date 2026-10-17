@@ -2212,6 +2212,7 @@ dependencies = [
  "master_protocol",
  "net",
  "perf",
+ "playerstate_iw4",
  "render",
  "render_frontend",
  "render_fx",
@@ -5359,6 +5360,7 @@ dependencies = [
  "render_backend",
  "render_frame",
  "render_material",
+ "wgpu-types",
 ]
 
 [[package]]
