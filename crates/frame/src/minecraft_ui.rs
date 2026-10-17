@@ -91,6 +91,20 @@ pub struct MinecraftUi {
     /// Boxes of blocks the console sets, corners relative to the block at
     /// the player's feet; no id is air.
     pub fill: Vec<([i32; 3], [i32; 3], Option<String>)>,
+    /// Boxes of blocks the console sets, corners relative to the world's
+    /// spawn block (`mc set`).
+    pub set: Vec<([i32; 3], [i32; 3], Option<String>)>,
+    /// Blocks the console asks about, relative to the world's spawn block,
+    /// each with its label (`mc block`).
+    pub probes: Vec<(String, [i32; 3])>,
+    /// The block at the player's feet, relative to the world's spawn block.
+    pub feet: Option<[i32; 3]>,
+    /// The world's seed, once it is known.
+    pub seed: Option<i64>,
+    /// `host`, `client`, `solo` (a world of one's own) or `none`.
+    pub net_role: &'static str,
+    /// The world a host keeps, as the console named it (`mc world`).
+    pub world_name: Option<String>,
     /// A hotbar slot the player picked (scroll or number key).
     pub select: Option<usize>,
     /// A drop of the selected stack (`Q`; with the whole stack on control).

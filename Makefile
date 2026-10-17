@@ -293,7 +293,7 @@ FILES ?=
 # The one owner-approved end-to-end scenario (crates/approved_tests/README.md).
 # Cold cache by default; ARGS='--seed N' | '--replay <run.json>' | '--cache shared'.
 approved: require-games
-	cd $(ROOT) && $(CARGO) build --profile play -p launcher
+	cd $(ROOT) && $(CARGO) build --profile play -p launcher -p iw4l-master
 	cd $(ROOT) && $(CARGO) run --quiet -p approved_tests -- $(or $(SCENARIO),heavy_gameplay_lifecycle) $(ARGS)
 
 # What a push would publish: nothing under `context/`, no `.env`, no key, no

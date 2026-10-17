@@ -74,10 +74,16 @@ struct Loaded {
     atlas: Arc<Atlas>,
     registries: Arc<Registries>,
     seed: i64,
+    /// The block at map origin: the stream's player spawn, or the host's.
+    origin: [f64; 3],
     environment: DimensionEnvironment,
     celestial: Arc<image::RgbaImage>,
     cloud_mask: Option<CloudMask>,
     crack_texture: Arc<image::RgbaImage>,
+    /// The mobs and items, and the block sounds: built with the world, off
+    /// the main thread (a client builds them mid-match).
+    entities: Option<crate::minecraft_entities::Entities>,
+    sounds: Option<crate::minecraft_sounds::Sounds>,
 }
 
 /// The hand's swing and the timers of mining and placing by hand.
@@ -128,6 +134,13 @@ struct Runtime {
     was_alive: bool,
     /// Frames in a row the player has stood still on the spawn since the move there.
     settled: u32,
+    /// Host, client, or neither.
+    net: crate::minecraft_mp::NetRole,
+    /// Edits for chunks not generated yet, applied when each arrives.
+    deferred: HashMap<(i32, i32), Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)>>,
+    /// How many streams hold each chunk of the block world (the player's,
+    /// and on a host each client's collision stream).
+    voxel_holders: HashMap<(i32, i32), u32>,
 }
 
 /// Frames standing still on the spawn before the player counts as in the world.
@@ -219,20 +232,30 @@ pub(crate) fn register(app: &mut App) {
         );
 }
 
-fn load(seed: i64) -> Result<Loaded, String> {
+/// The world at `seed`; with `world`, its chunks load from and save to that
+/// directory, and with `origin` that block sits at map origin rather than
+/// the spawn the stream finds.
+fn load(seed: i64, world: Option<std::path::PathBuf>, origin: Option<[f64; 3]>) -> Result<Loaded, String> {
     let root = assets::minecraft_map::root().ok_or_else(assets::minecraft_setup::status)?;
     let paths = DataPaths::under(&root);
     let registries = Arc::new(Registries::load(&paths)?);
     let packs = PackStack::open(vec![root.join("resourcepacks/local/minecraft-26.3")])
         .map_err(|e| e.to_string())?;
+    if let Some(dir) = &world {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
     let stream = TerrainStream::for_dimension(
         registries.clone(),
         seed,
-        VIEW_DISTANCE,
+        view_distance(),
         Dimension::Overworld,
-        None,
+        world.as_deref(),
     )
     .map_err(|e| e.to_string())?;
+    let origin = origin.unwrap_or({
+        let (x, y, z) = stream.player_spawn;
+        [x, y, z]
+    });
     let build = minecraft_terrain::mesh::build(&HandcraftedScene::default(), &packs)
         .map_err(|e| e.to_string())?;
     let scene = HandcraftedScene::streamed(stream.states.clone());
@@ -241,6 +264,8 @@ fn load(seed: i64) -> Result<Loaded, String> {
     let celestial = Arc::new(celestial_image(&packs).map_err(|e| e.to_string())?);
     let cloud_mask = CloudMask::from_pack(&packs).ok();
     let crack_texture = Arc::new(crate::minecraft_mining::crack_strip(&packs).map_err(|e| e.to_string())?);
+    let entities = Some(crate::minecraft_entities::Entities::new(&stream, seed));
+    let sounds = Some(crate::minecraft_sounds::Sounds::load(&packs));
     Ok(Loaded {
         stream,
         scene,
@@ -248,10 +273,13 @@ fn load(seed: i64) -> Result<Loaded, String> {
         atlas: build.atlas,
         registries,
         seed,
+        origin,
         environment,
         celestial,
         cloud_mask,
         crack_texture,
+        entities,
+        sounds,
     })
 }
 
@@ -320,6 +348,247 @@ fn seed() -> i64 {
     (nanos as i64) ^ 0x5DEE_CE66_D1CE_4E5B
 }
 
+/// How far a client may reach to break a block: survival's 4.5 blocks, and
+/// room for the host seeing it a little late.
+const REMOTE_REACH: f64 = 6.5;
+/// The most blocks one console box sets, as the console allows.
+const FILL_MAX: i64 = 4096;
+/// Chunks a host generates around each client for its collision.
+const CLIENT_COLLISION_DISTANCE: i32 = 3;
+
+/// Whether a block at `pos` would stand in the box of a player at `feet`.
+fn inside_player([fx, fy, fz]: [f64; 3], pos: (i32, i32, i32)) -> bool {
+    (fx - 0.3) < f64::from(pos.0 + 1)
+        && (fx + 0.3) > f64::from(pos.0)
+        && fy < f64::from(pos.1 + 1)
+        && (fy + 1.8) > f64::from(pos.1)
+        && (fz - 0.3) < f64::from(pos.2 + 1)
+        && (fz + 0.3) > f64::from(pos.2)
+}
+
+/// Where a host's `nth` client stands on arrival, in map units: three
+/// blocks apart along +Z from the world spawn (so no two players share the
+/// spot), on the ground of that column near the spawn's height.
+fn client_spawn(scene: &HandcraftedScene, origin: [f64; 3], nth: usize) -> [f32; 3] {
+    use minecraft_terrain::scene::Scene;
+    let (x, z) = (origin[0].floor() as i32, origin[2].floor() as i32 + 3 * nth as i32);
+    let base = origin[1].floor() as i32;
+    let ground = (base - 8..=base + 8).rev().find(|&y| {
+        scene.block((x, y - 1, z)).is_some() && scene.block((x, y, z)).is_none() && scene.block((x, y + 1, z)).is_none()
+    });
+    let feet = ground.map_or(origin[1], f64::from);
+    sim::voxel::to_map(origin, [origin[0], feet, origin[2] + 3.0 * nth as f64])
+}
+
+/// The lowest feet height at or above `feet` where a player fits (two
+/// blocks without collision), within sixteen blocks; `feet` itself if it
+/// fits.
+fn clear_feet(world: &Loaded, feet: [f64; 3]) -> Option<f64> {
+    use minecraft_terrain::scene::Scene;
+    let (x, y, z) = (feet[0].floor() as i32, feet[1].floor() as i32, feet[2].floor() as i32);
+    let solid = |y: i32| {
+        world.scene.block((x, y, z)).and_then(|b| world.stream.states.state_of(b)).is_some_and(|state| !world.registries.blocks.collision_boxes(state).is_empty())
+    };
+    let fits = |y: i32| !solid(y) && !solid(y + 1);
+    if fits(y) {
+        return Some(feet[1]);
+    }
+    (y + 1..=y + 16).find(|&y| fits(y)).map(f64::from)
+}
+
+/// Chunks streamed around the player: `IW4L_MINECRAFT_VIEW_DISTANCE` (2 to
+/// 32), else `VIEW_DISTANCE`.
+fn view_distance() -> i32 {
+    std::env::var("IW4L_MINECRAFT_VIEW_DISTANCE")
+        .ok()
+        .and_then(|v| v.trim().parse::<i32>().ok())
+        .map_or(VIEW_DISTANCE, |v| v.clamp(2, 32))
+}
+
+/// The collision shape id of a block state, added to the block world's
+/// table the first time a shape is seen.
+fn shape_of(
+    shapes: &mut HashMap<BlockStateId, u16>,
+    shape_ids: &mut HashMap<Vec<[u32; 6]>, u16>,
+    registries: &Registries,
+    state: BlockStateId,
+) -> u16 {
+    *shapes.entry(state).or_insert_with(|| {
+        let boxes = registries.blocks.collision_boxes(state);
+        if boxes.is_empty() {
+            return 0;
+        }
+        let key: Vec<[u32; 6]> = boxes.iter().map(|b| b.map(|v| (v as f32).to_bits())).collect();
+        if let Some(&id) = shape_ids.get(&key) {
+            return id;
+        }
+        let boxes32 = boxes.iter().map(|b| b.map(|v| v as f32)).collect();
+        let id = sim::voxel::add_shapes(vec![boxes32]).unwrap_or(0);
+        shape_ids.insert(key, id);
+        id
+    })
+}
+
+/// A generated chunk column's collision shape ids, x fastest then z then y.
+fn chunk_shapes(
+    chunk: &minecraftoss_core::Chunk,
+    shapes: &mut HashMap<BlockStateId, u16>,
+    shape_ids: &mut HashMap<Vec<[u32; 6]>, u16>,
+    registries: &Registries,
+) -> Vec<u16> {
+    let (min_y, height) = (chunk.min_y(), chunk.height());
+    let mut ids = vec![0u16; (height * 256) as usize];
+    // Runs of one state (air, stone) skip the map.
+    let mut last = None;
+    for y in 0..height {
+        for z in 0..16usize {
+            for x in 0..16usize {
+                let state = chunk.block(x, min_y + y, z);
+                if let Some((last_state, id)) = last
+                    && last_state == state
+                {
+                    ids[((y as usize * 16) + z) * 16 + x] = id;
+                    continue;
+                }
+                let id = shape_of(shapes, shape_ids, registries, state);
+                last = Some((state, id));
+                ids[((y as usize * 16) + z) * 16 + x] = id;
+            }
+        }
+    }
+    ids
+}
+
+/// A chunk column's collision shapes: its generated blocks, with the
+/// scene's edits over them.
+fn chunk_collision(
+    chunk: &minecraftoss_core::Chunk,
+    world: &Loaded,
+    shapes: &mut HashMap<BlockStateId, u16>,
+    shape_ids: &mut HashMap<Vec<[u32; 6]>, u16>,
+) -> Vec<u16> {
+    let (min_y, height) = (chunk.min_y(), chunk.height());
+    let mut ids = chunk_shapes(chunk, shapes, shape_ids, &world.registries);
+    let (placed, cleared) = world.scene.chunk_edits((chunk.pos.x, chunk.pos.z));
+    let index = |(x, y, z): (i32, i32, i32)| {
+        let ly = y - min_y;
+        (0..height).contains(&ly).then(|| ((ly * 16 + (z & 15)) * 16 + (x & 15)) as usize)
+    };
+    for (pos, block) in placed.iter().flat_map(|placed| placed.iter()) {
+        if let Some(i) = index(*pos) {
+            let state = world.stream.states.state_of(block);
+            ids[i] = state.map_or(0, |state| shape_of(shapes, shape_ids, &world.registries, state));
+        }
+    }
+    for pos in cleared.iter().flat_map(|cleared| cleared.iter()) {
+        if let Some(i) = index(*pos) {
+            ids[i] = 0;
+        }
+    }
+    ids
+}
+
+/// One stream lets a chunk of the block world go; the last one to removes
+/// it, and says so.
+fn release_chunk(holders: &mut HashMap<(i32, i32), u32>, pos: (i32, i32)) -> bool {
+    let Some(count) = holders.get_mut(&pos) else {
+        return false;
+    };
+    *count = count.saturating_sub(1);
+    if *count > 0 {
+        return false;
+    }
+    holders.remove(&pos);
+    sim::voxel::remove_chunk(pos.0, pos.1);
+    true
+}
+
+/// Blocks set from the network or the host's clients: the scene, collision
+/// and the chunk map take each; one in a chunk not generated yet is also
+/// kept to set again when that chunk arrives (an air block only clears
+/// generated terrain). Returns the positions set.
+fn set_blocks(
+    world: &mut Loaded,
+    shapes: &mut HashMap<BlockStateId, u16>,
+    shape_ids: &mut HashMap<Vec<[u32; 6]>, u16>,
+    deferred: &mut HashMap<(i32, i32), Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)>>,
+    changes: Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)>,
+) -> Vec<(i32, i32, i32)> {
+    let mut positions = Vec::with_capacity(changes.len());
+    for (pos, block) in changes {
+        let chunk = (pos.0 >> 4, pos.2 >> 4);
+        if world.scene.generated_chunk(chunk).is_none() {
+            deferred.entry(chunk).or_default().push((pos, block.clone()));
+        }
+        let state = block.as_ref().and_then(|b| world.stream.states.state_of(b));
+        let shape = state.map_or(0, |state| shape_of(shapes, shape_ids, &world.registries, state));
+        sim::voxel::set_block_shape(pos.0, pos.1, pos.2, shape);
+        world.scene.set(pos, block);
+        positions.push(pos);
+    }
+    if !positions.is_empty() {
+        world.stream.record_edits(&world.scene, &positions);
+        world.stream.mark_edited(&world.scene, &positions);
+    }
+    positions
+}
+
+/// The block world's networking pieces.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct MinecraftNet<'w, 's> {
+    exit: MessageReader<'w, 's, bevy::app::AppExit>,
+    role: Res<'w, frame::RuntimeRole>,
+    prediction: Option<Res<'w, net::ClientPredictionState>>,
+    downlink: Option<ResMut<'w, net::MinecraftDownlink>>,
+    reliable: Option<ResMut<'w, net::ReliableEventHub>>,
+    hub: Option<Res<'w, net::UdpAuthorityHub>>,
+    inbox: Option<ResMut<'w, net::ClientActionInbox>>,
+    ids: Option<ResMut<'w, net::ActionRequestIds>>,
+    bridge: Option<Res<'w, net::MasterBridge>>,
+    identity: Option<Res<'w, frame::LaunchIdentity>>,
+}
+
+/// A console block box as world blocks: corners relative to `base`.
+fn fill_box(base: (i32, i32, i32), a: [i32; 3], b: [i32; 3]) -> ((i32, i32, i32), (i32, i32, i32)) {
+    (
+        (base.0 + a[0], base.1 + a[1], base.2 + a[2]),
+        (base.0 + b[0], base.1 + b[1], base.2 + b[2]),
+    )
+}
+
+/// The blocks of a box, each set to `block`.
+fn box_changes(
+    a: (i32, i32, i32),
+    b: (i32, i32, i32),
+    block: Option<&minecraft_terrain::scene::Block>,
+) -> Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)> {
+    let mut out = Vec::new();
+    for x in a.0.min(b.0)..=a.0.max(b.0) {
+        for y in a.1.min(b.1)..=a.1.max(b.1) {
+            for z in a.2.min(b.2)..=a.2.max(b.2) {
+                out.push(((x, y, z), block.cloned()));
+            }
+        }
+    }
+    out
+}
+
+/// A console block id as a block in its default state; none for air.
+fn console_block(id: Option<&str>) -> Result<Option<minecraft_terrain::scene::Block>, String> {
+    match id.map(minecraft_terrain::pack::ResourceId::parse) {
+        None => Ok(None),
+        Some(Ok(id)) => Ok(Some(minecraft_terrain::scene::Block { id, properties: Default::default() })),
+        Some(Err(error)) => Err(error.to_string()),
+    }
+}
+
+/// Minecraft yaw from an MW2 view yaw: 0 facing +Z (map -Y), turning
+/// towards -X.
+fn mc_yaw_of(view_yaw: f32) -> f32 {
+    let yaw_rad = view_yaw.to_radians();
+    (-yaw_rad.cos()).atan2(-yaw_rad.sin()).to_degrees()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn update(
     time: Res<Time>,
@@ -327,7 +596,7 @@ fn update(
     mut torn_down: MessageReader<frame::MatchTornDown>,
     local: Res<net::LocalPresentClient>,
     presented: Res<net::PresentedSnapshot>,
-    authority: Option<ResMut<net::AuthorityWorld>>,
+    mut authority: Option<ResMut<net::AuthorityWorld>>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     (mut ui, mut puppet, mut images, mut sound_queue, buttons): (
         ResMut<frame::MinecraftUi>,
@@ -344,28 +613,96 @@ fn update(
         Query<&bevy::input::gamepad::Gamepad>,
         Option<Res<frame::ActivePad>>,
     ),
+    mut net: MinecraftNet,
 ) {
+    use crate::minecraft_mp::NetRole;
+    use minecraft_terrain::multiplayer::{HostMessage, Intent, block_text, parse_block};
+    let runtime: &mut Runtime = &mut runtime;
     let pad = active_pad.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
     for _ in torn_down.read() {
-        stop(&mut runtime, &mut view);
+        stop(runtime, &mut view);
     }
-    ui.loading_world = runtime.loading.is_some();
+    // The game is closing: a host's kept world is saved first.
+    if net.exit.read().next().is_some() {
+        keep_world(runtime);
+    }
+    let is_client = *net.role == frame::RuntimeRole::Client;
+    let hosting = net.bridge.is_some();
+    // A client's world arrives with the host's seed, mid-match: the loading
+    // screen never waits on it.
+    ui.loading_world = runtime.loading.is_some() && !is_client;
     for match_ in installed.read() {
-        stop(&mut runtime, &mut view);
-        if assets::minecraft_map::is_minecraft(&match_.zone) {
-            let seed = seed();
-            diag::info!(World, "Minecraft world: seed {seed}");
-            let (send, receive) = mpsc::channel();
-            let _ = std::thread::Builder::new()
-                .name("minecraft-world-load".into())
-                .spawn(move || {
-                    let _ = send.send(load(seed));
-                });
-            runtime.loading = Some(receive);
-            view.active = true;
+        stop(runtime, &mut view);
+        if let Some(downlink) = net.downlink.as_mut() {
+            downlink.rows.clear();
+        }
+        ui.seed = None;
+        if !assets::minecraft_map::is_minecraft(&match_.zone) {
+            continue;
+        }
+        view.active = true;
+        if is_client {
+            diag::info!(World, "Minecraft world: waiting for the host's seed");
+            runtime.net = NetRole::Client(Box::default());
+            continue;
+        }
+        let artifacts = net.identity.as_ref().map(|identity| identity.artifacts.clone());
+        let kept = crate::minecraft_mp::kept_world(hosting, ui.world_name.as_deref(), artifacts.as_deref());
+        let saved = kept.as_ref().and_then(|(_, dir)| match minecraft_terrain::multiplayer::SavedWorld::load(dir) {
+            Ok(saved) => saved,
+            Err(error) => {
+                diag::warn!(World, "Minecraft world {} unreadable, not loaded: {error}", dir.display());
+                None
+            }
+        });
+        let seed = saved.as_ref().map_or_else(seed, |saved| saved.level.seed);
+        let origin = saved.as_ref().map(|saved| saved.level.origin);
+        match &kept {
+            Some((name, dir)) if saved.is_some() => {
+                diag::info!(World, "Minecraft world: continuing `{name}` in {} (seed {seed})", dir.display())
+            }
+            Some((name, dir)) => diag::info!(World, "Minecraft world: new `{name}` in {} (seed {seed})", dir.display()),
+            None => diag::info!(World, "Minecraft world: seed {seed}"),
+        }
+        let dir = kept.map(|(_, dir)| dir);
+        runtime.net = NetRole::Host(Box::new(crate::minecraft_mp::Host::new(seed, origin.unwrap_or_default(), dir.clone(), saved)));
+        let (send, receive) = mpsc::channel();
+        let _ = std::thread::Builder::new()
+            .name("minecraft-world-load".into())
+            .spawn(move || {
+                let _ = send.send(load(seed, dir, origin));
+            });
+        runtime.loading = Some(receive);
+    }
+    ui.net_role = runtime.net.label(hosting);
+
+    // A client takes the host's messages; the first is the world to make.
+    if let NetRole::Client(client) = &mut runtime.net {
+        for bytes in net.downlink.as_mut().map(|d| std::mem::take(&mut d.rows)).unwrap_or_default() {
+            match HostMessage::decode(&bytes) {
+                Ok(HostMessage::World { seed, origin }) => {
+                    if client.seed.is_none() && runtime.loading.is_none() && runtime.world.is_none() {
+                        client.seed = Some(seed);
+                        diag::info!(World, "Minecraft world: the host's seed {seed}, origin {origin:?}");
+                        let (send, receive) = mpsc::channel();
+                        let _ = std::thread::Builder::new()
+                            .name("minecraft-world-load".into())
+                            .spawn(move || {
+                                let _ = send.send(load(seed, None, Some(origin)));
+                            });
+                        runtime.loading = Some(receive);
+                    }
+                }
+                Ok(message) => client.inbox.push(message),
+                Err(error) => diag::warn!(World, "Minecraft host message dropped: {error}"),
+            }
         }
     }
-    let Some(mut authority) = authority else {
+    let content = authority
+        .as_ref()
+        .map(|authority| authority.0.content())
+        .or_else(|| net.prediction.as_ref().map(|prediction| prediction.0.world().content()));
+    let Some(content) = content else {
         return;
     };
 
@@ -374,15 +711,17 @@ fn update(
     {
         runtime.loading = None;
         match result {
-            Ok(world) => {
-                let (x, y, z) = world.stream.player_spawn;
-                view.origin = [x, y, z];
+            Ok(mut world) => {
+                view.origin = world.origin;
                 view.atlas = Some(world.atlas.clone());
                 view.celestial = Some(world.celestial.clone());
                 view.crack_texture = Some(world.crack_texture.clone());
                 runtime.mining = Default::default();
-                runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
-                runtime.entities = Some(crate::minecraft_entities::Entities::new(&world.stream, world.seed));
+                runtime.sounds = world.sounds.take();
+                runtime.entities = world.entities.take();
+                if let Some(entities) = runtime.entities.as_mut() {
+                    entities.remote = is_client;
+                }
                 runtime.day = DayCycle::default();
                 // Game ticks since sunrise to start at: 6000 noon, 13000
                 // dusk, 18000 midnight.
@@ -399,19 +738,37 @@ fn update(
                 runtime.cloud_center = None;
                 view.generation += 1;
                 sim::voxel::activate(
-                    authority.0.content().clip_brushes(),
+                    content.clip_brushes(),
                     view.origin,
                     vec![Vec::new()],
                 );
                 diag::info!(
                     World,
-                    "Minecraft world ready: seed {} spawn {:?}",
+                    "Minecraft world ready: seed {} spawn {:?} origin {:?}",
                     world.seed,
-                    world.stream.player_spawn
+                    world.stream.player_spawn,
+                    world.origin
                 );
-                runtime.world = Some(world);
                 runtime.shapes.clear();
                 runtime.shape_ids.clear();
+                runtime.deferred.clear();
+                // A kept world's edits go back over its terrain.
+                if let NetRole::Host(host) = &mut runtime.net {
+                    host.origin = world.origin;
+                    let changes: Vec<_> = host
+                        .log
+                        .compacted()
+                        .entries()
+                        .iter()
+                        .map(|(pos, block)| (*pos, block.as_deref().and_then(parse_block)))
+                        .collect();
+                    if !changes.is_empty() {
+                        diag::info!(World, "Minecraft world: {} saved block changes restored", changes.len());
+                    }
+                    set_blocks(&mut world, &mut runtime.shapes, &mut runtime.shape_ids, &mut runtime.deferred, changes);
+                }
+                ui.seed = Some(world.seed);
+                runtime.world = Some(world);
                 runtime.was_alive = false;
                 runtime.settled = 0;
             }
@@ -443,7 +800,10 @@ fn update(
         hand,
         minimap,
         steps,
-        ..
+        net: net_role,
+        deferred,
+        voxel_holders,
+        loading: _,
     } = &mut *runtime;
     let Some(world) = world.as_mut() else {
         ui.active = false;
@@ -465,8 +825,9 @@ fn update(
     let alive = ps.pm_type == 0;
     let spawn_chunk = ((origin[0].floor() as i32) >> 4, (origin[2].floor() as i32) >> 4);
     if alive && !*was_alive && world.scene.generated_chunk(spawn_chunk).is_some() {
-        // Retried each frame until the authority has the player to move.
-        if authority.0.teleport(local.0, [0.0, 0.0, 0.0]) {
+        // Retried each frame until the authority has the player to move; a
+        // client's host moves it.
+        if authority.as_mut().is_none_or(|authority| authority.0.teleport(local.0, [0.0, 0.0, 0.0])) {
             diag::info!(World, "Minecraft spawn: moved to the world spawn");
             *was_alive = true;
             *settled = 0;
@@ -490,7 +851,12 @@ fn update(
     // The presented pose lags the move, and MW2's own spawn can land anywhere (under the map
     // when its ground trace finds no terrain yet): the player is in the world once a pose over
     // the spawn has stood still for a few frames, and stays so until it dies.
-    let over_spawn = ps.origin[0].hypot(ps.origin[1]) < sim::voxel::BLOCK * 0.5;
+    // A client stands where its host moved it, beside the spawn.
+    let spot = match &*net_role {
+        NetRole::Client(client) => client.spawn_at,
+        _ => Some([0.0; 3]),
+    };
+    let over_spawn = spot.is_some_and(|at| (ps.origin[0] - at[0]).hypot(ps.origin[1] - at[1]) < sim::voxel::BLOCK * 0.5);
     if !(alive && *was_alive) {
         *settled = 0;
     } else if *settled < SETTLE_FRAMES {
@@ -498,46 +864,29 @@ fn update(
         *settled = if over_spawn && still { *settled + 1 } else { 0 };
     }
     ui.in_world = *settled >= SETTLE_FRAMES;
+    ui.feet = Some([
+        block.0 - origin[0].floor() as i32,
+        block.1 - origin[1].floor() as i32,
+        block.2 - origin[2].floor() as i32,
+    ]);
     let (loaded, forgotten) = world.stream.server_tick(block, &mut world.scene);
     for chunk in loaded {
-        let blocks = &world.registries.blocks;
-        let (min_y, height) = (chunk.min_y(), chunk.height());
-        let mut ids = vec![0u16; (height * 256) as usize];
-        // Runs of one state (air, stone) skip the map.
-        let mut last = None;
-        for y in 0..height {
-            for z in 0..16usize {
-                for x in 0..16usize {
-                    let state = chunk.block(x, min_y + y, z);
-                    if let Some((last_state, id)) = last
-                        && last_state == state
-                    {
-                        ids[((y as usize * 16) + z) * 16 + x] = id;
-                        continue;
-                    }
-                    let id = *shapes.entry(state).or_insert_with(|| {
-                        let boxes = blocks.collision_boxes(state);
-                        if boxes.is_empty() {
-                            return 0;
-                        }
-                        let key: Vec<[u32; 6]> =
-                            boxes.iter().map(|b| b.map(|v| (v as f32).to_bits())).collect();
-                        if let Some(&id) = shape_ids.get(&key) {
-                            return id;
-                        }
-                        let boxes32 = boxes.iter().map(|b| b.map(|v| v as f32)).collect();
-                        let id = sim::voxel::add_shapes(vec![boxes32]).unwrap_or(0);
-                        shape_ids.insert(key, id);
-                        id
-                    });
-                    last = Some((state, id));
-                    ids[((y as usize * 16) + z) * 16 + x] = id;
-                }
+        // Edits that came before their chunk: an air block clears terrain only
+        // once there is terrain to clear.
+        if let Some(edits) = deferred.remove(&(chunk.pos.x, chunk.pos.z)) {
+            let positions: Vec<_> = edits.iter().map(|(pos, _)| *pos).collect();
+            for (pos, block) in edits {
+                world.scene.set(pos, block);
             }
+            world.stream.record_edits(&world.scene, &positions);
+            world.stream.mark_edited(&world.scene, &positions);
         }
+        let (min_y, height) = (chunk.min_y(), chunk.height());
+        let ids = chunk_collision(&chunk, world, shapes, shape_ids);
         if let Some(entities) = entities.as_mut() {
             entities.load_chunk(&chunk);
         }
+        *voxel_holders.entry((chunk.pos.x, chunk.pos.z)).or_default() += 1;
         sim::voxel::set_chunk(
             chunk.pos.x,
             chunk.pos.z,
@@ -549,9 +898,368 @@ fn update(
         );
     }
     for pos in forgotten {
-        sim::voxel::remove_chunk(pos.x, pos.z);
+        // The stream dropped it from the scene; a client still standing there
+        // keeps it.
+        if !release_chunk(voxel_holders, (pos.x, pos.z))
+            && let NetRole::Host(host) = &*net_role
+            && let Some(chunk) = host.remotes.values().find_map(|remote| remote.held.get(&(pos.x, pos.z)))
+        {
+            world.scene.insert_chunk(chunk.clone());
+        }
         if let Some(entities) = entities.as_mut() {
             entities.unload_chunk(pos);
+        }
+    }
+
+    // Blocks this frame changed, for the host's log.
+    let mut changed: Vec<(i32, i32, i32)> = Vec::new();
+    let centre_of = |pos: (i32, i32, i32)| {
+        Vec3::from_array(sim::voxel::to_map(origin, [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5]))
+    };
+    // A client takes the host's blocks, its own inventory once the host has
+    // applied all it asked, and the items on the ground.
+    if let NetRole::Client(client) = net_role {
+        for message in std::mem::take(&mut client.inbox) {
+            match message {
+                HostMessage::World { .. } => {}
+                HostMessage::Placed { at } => client.spawn_at = Some(at),
+                HostMessage::Edits(edits) => {
+                    let mut changes = Vec::with_capacity(edits.len());
+                    for (pos, text) in edits {
+                        let block = text.as_deref().and_then(parse_block);
+                        let before = minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned();
+                        if before == block {
+                            continue;
+                        }
+                        // Another player's edit sounds as the host's own do.
+                        let kind = match (&before, &block) {
+                            (Some(old), None) => world.scene.sound_type(old).map(|k| (k.break_sound.clone(), k.volume, k.pitch)),
+                            (_, Some(new)) => world.scene.sound_type(new).map(|k| (k.place.clone(), k.volume, k.pitch)),
+                            (None, None) => None,
+                        };
+                        if let (Some(sounds), Some((event, volume, pitch))) = (sounds.as_mut(), kind) {
+                            sounds.play(&world.packs, &event, Some(centre_of(pos)), (volume + 1.0) / 2.0, pitch * 0.8);
+                        }
+                        changes.push((pos, block));
+                    }
+                    set_blocks(world, shapes, shape_ids, deferred, changes);
+                }
+                HostMessage::Inventory { applied, state, .. } => {
+                    if applied == client.last_sent
+                        && let Some(entities) = entities.as_mut()
+                    {
+                        let selected = state.restore(&mut entities.inventory);
+                        entities.selected = selected.min(frame::minecraft_ui::MC_HOTBAR - 1);
+                    }
+                }
+                HostMessage::Items(items) => {
+                    if let Some(entities) = entities.as_mut() {
+                        entities.world_items.entities = crate::minecraft_mp::client_items(&items);
+                    }
+                }
+            }
+        }
+    }
+    // The host takes its clients in and out, onto the spawn, and applies
+    // what they ask.
+    if let (NetRole::Host(host), Some(authority)) = (&mut *net_role, authority.as_mut()) {
+        let authority = &mut authority.0;
+        if host.local_name.is_none() {
+            let name = net::client_name_string(authority, local.0);
+            if !name.is_empty() {
+                if let (Some(state), Some(entities)) = (host.inventory_of(&name), entities.as_mut()) {
+                    let selected = state.restore(&mut entities.inventory);
+                    entities.selected = selected.min(frame::minecraft_ui::MC_HOTBAR - 1);
+                    diag::info!(World, "Minecraft: the inventory of `{name}` restored");
+                }
+                host.local_name = Some(name);
+            }
+        }
+        let clients: Vec<u32> = net
+            .hub
+            .as_ref()
+            .map(|hub| hub.admitted_clients())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|client| client.0)
+            .filter(|&client| client != local.0.0)
+            .collect();
+        let gone: Vec<u32> = host.remotes.keys().copied().filter(|id| !clients.contains(id)).collect();
+        for id in gone {
+            if let Some(remote) = host.remotes.remove(&id) {
+                for pos in remote.held.keys() {
+                    if release_chunk(voxel_holders, *pos) {
+                        world.scene.remove_chunk(*pos);
+                    }
+                }
+                host.keep_inventory(&remote.name, &remote.inventory, remote.selected);
+                diag::info!(World, "Minecraft: `{}` left; inventory kept", remote.name);
+                host.save_now();
+            }
+        }
+        if let Some(entities) = entities.as_ref() {
+            for &id in &clients {
+                if host.remotes.contains_key(&id) {
+                    continue;
+                }
+                let name = net::client_name_string(authority, sim::ClientId(id));
+                if name.is_empty() {
+                    continue;
+                }
+                let mut inventory = minecraftoss_player::inventory::Inventory::default();
+                inventory.recipes = entities.inventory.recipes.clone();
+                let remote = crate::minecraft_mp::Remote::new(name.clone(), inventory, host.inventory_of(&name));
+                diag::info!(
+                    World,
+                    "Minecraft: `{name}` joined as client {id}; {} block changes to send",
+                    host.log.len()
+                );
+                host.remotes.insert(id, remote);
+            }
+        }
+        let spawn_ready = world.scene.generated_chunk(spawn_chunk).is_some();
+        for (index, (&id, remote)) in host.remotes.iter_mut().enumerate() {
+            let Some(weapons) = authority.player(sim::ClientId(id)).map(|ps| ps.weapons) else {
+                remote.placed = false;
+                continue;
+            };
+            // Each life is placed once: MW2's own spawn puts every player on
+            // the world spawn, whatever came before.
+            let meta = authority.client_meta(sim::ClientId(id));
+            let alive = meta.is_some_and(|meta| meta.lifecycle == sim::ClientLifecycle::Alive);
+            let life = meta.map(|meta| meta.life_sequence);
+            if remote.life != life {
+                remote.life = life;
+                remote.placed = false;
+            }
+            if !alive {
+                remote.placed = false;
+            } else if !remote.placed
+                && spawn_ready
+                && let spot = client_spawn(&world.scene, origin, index + 1)
+                && authority.teleport(sim::ClientId(id), spot)
+            {
+                diag::info!(World, "Minecraft spawn: moved client {id} beside the world spawn, {spot:?}");
+                remote.placed = true;
+                remote.placed_at = Some(spot);
+            }
+            let owned: Vec<u32> = weapons
+                .iter()
+                .filter(|&&w| w > 0)
+                .map(|&w| w as u32)
+                .filter(|&w| authority.weapon_combat_row(w).is_some_and(|facts| facts.inventory_type == 0))
+                .collect();
+            inventory_ui.sync_weapons(&mut remote.inventory, &owned);
+        }
+        // The ground under each client, wherever it goes: chunks generated
+        // around it, the log's changes laid over them.
+        for (&id, remote) in host.remotes.iter_mut() {
+            let Some(feet) = authority
+                .player(sim::ClientId(id))
+                .filter(|ps| ps.pm_type == 0)
+                .map(|ps| sim::voxel::to_block(origin, ps.origin))
+            else {
+                continue;
+            };
+            let collision = remote.collision.get_or_insert_with(|| {
+                minecraft_terrain::terrain::CollisionStream::new(world.stream.world_gen(), CLIENT_COLLISION_DISTANCE)
+            });
+            let (loaded, forgotten) = collision.tick((feet[0].floor() as i32, feet[1].floor() as i32, feet[2].floor() as i32));
+            for chunk in loaded {
+                let pos = (chunk.pos.x, chunk.pos.z);
+                if remote.held.insert(pos, chunk.clone()).is_some() {
+                    continue;
+                }
+                let count = voxel_holders.entry(pos).or_default();
+                *count += 1;
+                if *count > 1 {
+                    continue;
+                }
+                // The host's scene takes it too, so its edits, mining and placing
+                // work there; nothing draws it.
+                if world.scene.generated_chunk(pos).is_none() {
+                    world.scene.insert_chunk(chunk.clone());
+                    for (at, block) in deferred.remove(&pos).unwrap_or_default() {
+                        world.scene.set(at, block);
+                    }
+                }
+                let (min_y, height) = (chunk.min_y(), chunk.height());
+                let ids = chunk_collision(&chunk, world, shapes, shape_ids);
+                sim::voxel::set_chunk(pos.0, pos.1, sim::voxel::VoxelChunk { min_y, height, shapes: ids });
+            }
+            for pos in forgotten {
+                if remote.held.remove(&pos).is_some() && release_chunk(voxel_holders, pos) {
+                    world.scene.remove_chunk(pos);
+                }
+            }
+            // Until there is ground where it stands, the host holds it still
+            // rather than let it fall through.
+            let column = ((feet[0].floor() as i32) >> 4, (feet[2].floor() as i32) >> 4);
+            let waiting = !voxel_holders.contains_key(&column);
+            if waiting != remote.held_still {
+                remote.held_still = waiting;
+                authority.set_external_motion(sim::ClientId(id), waiting);
+                // It may have sunk a little before the hold began: once there is
+                // ground, out of any block it stands in.
+                if !waiting
+                    && let Some(clear) = clear_feet(world, feet)
+                    && clear > feet[1]
+                {
+                    let mut at = sim::voxel::to_map(origin, [feet[0], clear, feet[2]]);
+                    at[2] += 1.0;
+                    authority.teleport(sim::ClientId(id), at);
+                }
+            }
+        }
+        let cheats = authority.cheats_enabled();
+        for (client, request_id, bytes) in sim::voxel::take_intents() {
+            let Some(remote) = host.remotes.get_mut(&client) else {
+                continue;
+            };
+            remote.applied = request_id;
+            let intent = match Intent::decode(&bytes) {
+                Ok(intent) => intent,
+                Err(error) => {
+                    diag::warn!(World, "Minecraft intent from client {client} dropped: {error}");
+                    continue;
+                }
+            };
+            let Some(their) = authority.player(sim::ClientId(client)).copied() else {
+                continue;
+            };
+            let alive = their.pm_type == 0;
+            let their_feet = sim::voxel::to_block(origin, their.origin);
+            let their_eye = sim::voxel::to_block(
+                origin,
+                [their.origin[0], their.origin[1], their.origin[2] + their.view_height_current],
+            );
+            let near = |pos: (i32, i32, i32), reach: f64| {
+                let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
+                (0..3).map(|i| (their_eye[i] - centre[i]).powi(2)).sum::<f64>() <= reach * reach
+            };
+            let thrower = crate::minecraft_inventory::Thrower {
+                eye: glam::DVec3::from_array(their_eye),
+                yaw: mc_yaw_of(their.viewangles[1]),
+                pitch: their.viewangles[0],
+            };
+            let mut thrown = Vec::new();
+            match intent {
+                Intent::Break { pos } => {
+                    let block = minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned();
+                    match block {
+                        Some(block) if alive && near(pos, REMOTE_REACH) => {
+                            set_blocks(world, shapes, shape_ids, deferred, vec![(pos, None)]);
+                            changed.push(pos);
+                            if let Some(entities) = entities.as_mut() {
+                                entities.broke(&world.scene, &[pos]);
+                                entities.drop_blocks(&[(pos, block.clone(), false)]);
+                            }
+                            if let (Some(sounds), Some(kind)) = (sounds.as_mut(), world.scene.sound_type(&block)) {
+                                sounds.play(&world.packs, &kind.break_sound, Some(centre_of(pos)), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
+                            }
+                        }
+                        block => remote.corrections.push((pos, block.as_ref().map(block_text))),
+                    }
+                }
+                Intent::Place { feet: at, yaw, pitch, selected } => {
+                    remote.selected = usize::from(selected).min(frame::minecraft_ui::MC_HOTBAR - 1);
+                    let close = (0..3).all(|i| (at[i] - their_feet[i]).abs() <= 3.0);
+                    if !(alive && close) {
+                        continue;
+                    }
+                    let mut player = minecraftoss_player::Player::new(glam::DVec3::from_array(at));
+                    player.yaw = f64::from(yaw);
+                    player.pitch = f64::from(pitch);
+                    player.selected = remote.selected;
+                    let Some(pos) = player.place_selected(
+                        &mut world.scene,
+                        &mut remote.inventory,
+                        minecraftoss_player::GameMode::Survival,
+                    ) else {
+                        continue;
+                    };
+                    let block = minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned();
+                    if inside_player(at, pos) {
+                        // As the client did: not into the player's own box.
+                        world.scene.set(pos, None);
+                        if let Some(block) = block {
+                            let stack = minecraftoss_player::inventory::ItemStack::new(block.id.key(), 1);
+                            let _ = remote.inventory.add_item(stack, remote.selected);
+                        }
+                        continue;
+                    }
+                    set_blocks(world, shapes, shape_ids, deferred, vec![(pos, block.clone())]);
+                    changed.push(pos);
+                    if let Some(entities) = entities.as_mut() {
+                        entities.placed(&world.scene, pos);
+                    }
+                    if let (Some(sounds), Some(kind)) = (sounds.as_mut(), block.as_ref().and_then(|b| world.scene.sound_type(b))) {
+                        sounds.play(&world.packs, &kind.place, Some(centre_of(pos)), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
+                    }
+                }
+                Intent::Click(click) => {
+                    let click = crate::minecraft_mp::ui_click(click);
+                    if click == frame::McClick::Close {
+                        remote.table = None;
+                    }
+                    let workbench = remote.table.is_some();
+                    thrown.extend(crate::minecraft_inventory::apply_click(&mut remote.inventory, click, workbench));
+                }
+                Intent::Select { slot } => {
+                    remote.selected = usize::from(slot).min(frame::minecraft_ui::MC_HOTBAR - 1);
+                }
+                Intent::Drop { whole } => thrown.extend(remote.inventory.drop_selected(remote.selected, whole)),
+                Intent::OpenTable { pos } => {
+                    if is_crafting_table(&world.scene, pos) && near(pos, 8.0) {
+                        remote.table = Some(pos);
+                    }
+                }
+                Intent::Give { id, count } if cheats => {
+                    thrown.extend(crate::minecraft_inventory::give(&mut remote.inventory, &id, count, remote.selected));
+                }
+                Intent::Clear if cheats => crate::minecraft_inventory::clear_items(&mut remote.inventory),
+                Intent::Fill { a, b, block } if cheats => {
+                    let volume = (0..3)
+                        .map(|i| {
+                            let (a, b) = ([a.0, a.1, a.2][i], [b.0, b.1, b.2][i]);
+                            i64::from((a - b).abs()) + 1
+                        })
+                        .product::<i64>();
+                    if volume > FILL_MAX {
+                        continue;
+                    }
+                    match console_block(block.as_deref()) {
+                        Ok(block) => {
+                            let positions = set_blocks(world, shapes, shape_ids, deferred, box_changes(a, b, block.as_ref()));
+                            if let Some(entities) = entities.as_mut() {
+                                for &pos in &positions {
+                                    entities.placed(&world.scene, pos);
+                                }
+                            }
+                            changed.extend(positions);
+                        }
+                        Err(error) => diag::warn!(World, "Minecraft fill from client {client}: {error}"),
+                    }
+                }
+                Intent::Give { .. } | Intent::Clear | Intent::Fill { .. } => {}
+            }
+            thrown.extend(remote.inventory.take_pending_drops());
+            let thrown = crate::minecraft_inventory::keep_guns(&mut remote.inventory, thrown, remote.selected);
+            if let Some(entities) = entities.as_mut() {
+                crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
+            }
+        }
+        // Who picks items up this tick besides the host's own player.
+        if let Some(entities) = entities.as_mut() {
+            entities.others = host
+                .remotes
+                .iter()
+                .filter_map(|(&id, remote)| {
+                    let ps = authority.player(sim::ClientId(id)).filter(|ps| ps.pm_type == 0)?;
+                    let feet = sim::voxel::to_block(origin, ps.origin);
+                    Some((u64::from(id), feet, remote.inventory.clone(), remote.selected))
+                })
+                .collect();
         }
     }
 
@@ -696,13 +1404,7 @@ fn update(
                 minecraftoss_player::GameMode::Survival,
             ) {
                 // Not into the player's own box.
-                let [fx, fy, fz] = feet;
-                let inside = (fx - 0.3) < f64::from(pos.0 + 1)
-                    && (fx + 0.3) > f64::from(pos.0)
-                    && fy < f64::from(pos.1 + 1)
-                    && (fy + 1.8) > f64::from(pos.1)
-                    && (fz - 0.3) < f64::from(pos.2 + 1)
-                    && (fz + 0.3) > f64::from(pos.2);
+                let inside = inside_player(feet, pos);
                 let block = minecraft_terrain::scene::Scene::block(&world.scene, pos).cloned();
                 if inside {
                     world.scene.set(pos, None);
@@ -736,6 +1438,12 @@ fn update(
                     world.stream.mark_edited(&world.scene, &[pos]);
                     entities.placed(&world.scene, pos);
                     hand.swing = Some(0.0);
+                    changed.push(pos);
+                    // A client placed it ahead of its host, which places it the same way.
+                    if let NetRole::Client(client) = net_role {
+                        let intent = Intent::Place { feet, yaw: mc_yaw, pitch: ps.viewangles[0], selected: entities.selected as u8 };
+                        client.send(net.inbox.as_deref_mut(), net.ids.as_deref_mut(), local.0, &intent);
+                    }
                     if let (Some(sounds), Some(kind)) = (sounds.as_mut(), world.scene.sound_type(&block)) {
                         let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
                         let at = Vec3::from_array(sim::voxel::to_map(origin, centre));
@@ -808,6 +1516,14 @@ fn update(
         let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
         entities.broke(&world.scene, &positions);
         entities.drop_blocks(&broken);
+    }
+    changed.extend(broken.iter().map(|(pos, ..)| *pos));
+    // A client mines only by hand (its host's game fires the guns): what it
+    // broke, the host breaks.
+    if let NetRole::Client(client) = net_role {
+        for (pos, _, _) in &broken {
+            client.send(net.inbox.as_deref_mut(), net.ids.as_deref_mut(), local.0, &Intent::Break { pos: *pos });
+        }
     }
 
     let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
@@ -882,8 +1598,27 @@ fn update(
         let ticks_before = entities.client_ticks();
         let (mut changes, hits) = entities.tick(dt, day.ticks as i64, bright_outside, &player);
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
+        // What the host's other players picked up goes into their inventories.
+        if let NetRole::Host(host) = &mut *net_role {
+            for (key, stack) in std::mem::take(&mut entities.others_picked) {
+                if let Some(remote) = host.remotes.get_mut(&(key as u32)) {
+                    let _ = remote.inventory.add_item(stack, remote.selected);
+                }
+            }
+        }
+        // The console's boxes: `mc fill` from the feet, `mc set` from the
+        // world's spawn block. A client asks its host for them.
+        let spawn_block = (origin[0].floor() as i32, origin[1].floor() as i32, origin[2].floor() as i32);
+        let mut boxes: Vec<_> = std::mem::take(&mut ui.fill).into_iter().map(|(a, b, id)| (block, a, b, id)).collect();
+        boxes.extend(std::mem::take(&mut ui.set).into_iter().map(|(a, b, id)| (spawn_block, a, b, id)));
+        if let NetRole::Client(client) = net_role {
+            for (base, a, b, id) in std::mem::take(&mut boxes) {
+                let (a, b) = fill_box(base, a, b);
+                client.send(net.inbox.as_deref_mut(), net.ids.as_deref_mut(), local.0, &Intent::Fill { a, b, block: id });
+            }
+        }
         let mut filled = Vec::new();
-        for (a, b, id) in std::mem::take(&mut ui.fill) {
+        for (base, a, b, id) in boxes {
             let block_of = match id
                 .as_deref()
                 .map(minecraft_terrain::pack::ResourceId::parse)
@@ -902,7 +1637,7 @@ fn update(
             for x in span(0) {
                 for y in span(1) {
                     for z in span(2) {
-                        let pos = (block.0 + x, block.1 + y, block.2 + z);
+                        let pos = (base.0 + x, base.1 + y, base.2 + z);
                         changes.push((pos, block_of.clone()));
                         filled.push(pos);
                     }
@@ -934,6 +1669,7 @@ fn update(
                 world.scene.set(pos, block);
                 positions.push(pos);
             }
+            changed.extend(positions.iter().copied());
             world.stream.mark_edited(&world.scene, &positions);
         }
         world.stream.record_edits(&world.scene, &filled);
@@ -950,7 +1686,10 @@ fn update(
             .iter()
             .filter(|&&w| w > 0)
             .map(|&w| w as u32)
-            .filter(|&w| authority.0.weapon_combat_row(w).is_some_and(|facts| facts.inventory_type == 0))
+            .filter(|&w| {
+                let sim_world = authority.as_ref().map(|authority| &authority.0).or(net.prediction.as_ref().map(|prediction| prediction.0.world()));
+                sim_world.is_some_and(|sim_world| sim_world.weapon_combat_row(w).is_some_and(|facts| facts.inventory_type == 0))
+            })
             .collect();
         ui.active = alive;
         // A crafting table's screen holds while its table stands within
@@ -966,14 +1705,56 @@ fn update(
         }
         inventory_ui.sync_weapons(&mut entities.inventory, &owned);
         let mut selected = entities.selected;
+        // A client applies its clicks itself and asks its host to apply them
+        // too, in the order it made them.
+        if let NetRole::Client(client) = net_role {
+            let mut intents = Vec::new();
+            if ui.workbench != client.table {
+                client.table = ui.workbench;
+                if let Some(pos) = ui.workbench {
+                    intents.push(Intent::OpenTable { pos });
+                }
+            }
+            if ui.clear_items {
+                intents.push(Intent::Clear);
+            }
+            for (id, count) in &ui.give {
+                intents.push(Intent::Give { id: id.clone(), count: *count });
+            }
+            for click in &ui.clicks {
+                if let Some(click) = crate::minecraft_mp::wire_click(click) {
+                    intents.push(Intent::Click(click));
+                }
+            }
+            let next = ui.select.map_or(selected, |slot| slot.min(frame::minecraft_ui::MC_HOTBAR - 1));
+            if next != client.selected {
+                client.selected = next;
+                intents.push(Intent::Select { slot: next as u8 });
+            }
+            if let Some(whole) = ui.drop_selected {
+                intents.push(Intent::Drop { whole });
+            }
+            for intent in intents {
+                client.send(net.inbox.as_deref_mut(), net.ids.as_deref_mut(), local.0, &intent);
+            }
+        }
         let thrown = inventory_ui.apply_input(&mut ui, &mut entities.inventory, &mut selected);
         let thrower = crate::minecraft_inventory::Thrower {
             eye: glam::DVec3::from_array(eye),
             yaw: mc_yaw,
             pitch: ps.viewangles[0],
         };
-        crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
+        // A client's thrown stacks land where its host throws them.
+        if !is_client {
+            crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
+        }
         ui.weapon_request = inventory_ui.weapon_request(&entities.inventory, &mut selected, ps.weapon as u32);
+        if let NetRole::Client(client) = net_role
+            && selected != client.selected
+        {
+            client.selected = selected;
+            client.send(net.inbox.as_deref_mut(), net.ids.as_deref_mut(), local.0, &Intent::Select { slot: selected as u8 });
+        }
         entities.selected = selected;
         inventory_ui.publish(&mut ui, &entities.inventory, selected, &world.packs, &mut images);
 
@@ -1041,6 +1822,51 @@ fn update(
         bytes.extend_from_slice(bytemuck::cast_slice(&vertices));
         indices.extend(mesh.indices.iter().map(|i| i + base));
     }
+    // The host logs what changed and sends each client what it lacks; the
+    // world it keeps is saved now and then.
+    if let NetRole::Host(host) = &mut *net_role {
+        changed.sort_unstable();
+        changed.dedup();
+        for pos in changed {
+            let block = minecraft_terrain::scene::Scene::block(&world.scene, pos).map(block_text);
+            host.record(pos, block);
+        }
+        if let (Some(entities), Some(name)) = (entities.as_ref(), host.local_name.clone()) {
+            host.keep_inventory(&name, &entities.inventory, entities.selected);
+        }
+        let remotes: Vec<(String, minecraftoss_player::inventory::Inventory, usize)> = host
+            .remotes
+            .values()
+            .map(|remote| (remote.name.clone(), remote.inventory.clone(), remote.selected))
+            .collect();
+        for (name, inventory, selected) in remotes {
+            host.keep_inventory(&name, &inventory, selected);
+        }
+        if let Some(reliable) = net.reliable.as_mut() {
+            let items = entities
+                .as_ref()
+                .map(|entities| crate::minecraft_mp::wire_items(&entities.world_items))
+                .unwrap_or_default();
+            let mut remotes = std::mem::take(&mut host.remotes);
+            for (&id, remote) in remotes.iter_mut() {
+                let feet = authority
+                    .as_ref()
+                    .and_then(|authority| authority.0.player(sim::ClientId(id)))
+                    .map(|ps| sim::voxel::to_block(origin, ps.origin));
+                crate::minecraft_mp::send_to(reliable, sim::ClientId(id), host, remote, &items, feet, dt);
+            }
+            host.remotes = remotes;
+        }
+        host.autosave(dt);
+    }
+    // The console's block probes, from the world's spawn block.
+    for (label, at) in std::mem::take(&mut ui.probes) {
+        let pos = (origin[0].floor() as i32 + at[0], origin[1].floor() as i32 + at[1], origin[2].floor() as i32 + at[2]);
+        let block = minecraft_terrain::scene::Scene::block(&world.scene, pos).map_or_else(|| "air".to_owned(), block_text);
+        let line = format!("minecraft-block: label={label} at={},{},{} block={block}", at[0], at[1], at[2]);
+        diag::info!(Console, "{line}");
+        println!("{line}");
+    }
     view.cracks = mining.crack_mesh();
     day.advance(dt);
     let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
@@ -1070,11 +1896,11 @@ fn update(
         partial_tick,
         forward,
         camera_y: eye[1] as f32,
-        render_distance: VIEW_DISTANCE as u32,
+        render_distance: world.stream.view_distance() as u32,
         rain_level: 0.0,
         thunder_level: 0.0,
     });
-    let render_distance = VIEW_DISTANCE as f32 * 16.0;
+    let render_distance = world.stream.view_distance() as f32 * 16.0;
     let right = forward.cross(glam::Vec3::Y).normalize_or(glam::Vec3::X);
     let up = right.cross(forward).normalize_or(glam::Vec3::Y);
     let put = |v: glam::Vec3| [v.x, v.y, v.z, 0.0];
@@ -1190,7 +2016,30 @@ fn update(
     }
 }
 
+/// A host keeps every player's inventory under its name and saves the world
+/// it keeps, once the world is in.
+fn keep_world(runtime: &mut Runtime) {
+    let crate::minecraft_mp::NetRole::Host(host) = &mut runtime.net else {
+        return;
+    };
+    if runtime.world.is_none() {
+        return;
+    }
+    if let (Some(entities), Some(name)) = (runtime.entities.as_ref(), host.local_name.clone()) {
+        host.keep_inventory(&name, &entities.inventory, entities.selected);
+    }
+    let remotes: Vec<_> = host.remotes.values().map(|r| (r.name.clone(), r.inventory.clone(), r.selected)).collect();
+    for (name, inventory, selected) in remotes {
+        host.keep_inventory(&name, &inventory, selected);
+    }
+    host.save_now();
+}
+
 fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
+    keep_world(runtime);
+    runtime.net = crate::minecraft_mp::NetRole::None;
+    runtime.deferred.clear();
+    runtime.voxel_holders.clear();
     if runtime.world.take().is_some() || runtime.loading.take().is_some() || view.active {
         sim::voxel::deactivate();
         view.active = false;

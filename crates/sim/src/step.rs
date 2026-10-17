@@ -777,6 +777,7 @@ fn action_needs_player_row(action: &ClientAction) -> bool {
             | ClientAction::ActionSlot { .. }
             | ClientAction::ChooseDefaultClass { .. }
             | ClientAction::MenuResponse { .. }
+            | ClientAction::Minecraft { .. }
     )
 }
 
@@ -853,6 +854,13 @@ fn apply_actions(world: &mut FrameWorld, tick: Tick, actions: &[(ClientId, Clien
             }
             ClientAction::SpawnIntermission { request_id: _ } => {
                 apply_spawn_intermission(world, *id);
+            }
+            ClientAction::Minecraft { request_id, intent } => {
+                // The authority's Minecraft world applies it, outside the
+                // simulation; a predicting world leaves it alone.
+                if world.publishes_snapshot() && crate::voxel::active() {
+                    crate::voxel::push_intent(id.0, request_id, intent.as_bytes().to_vec());
+                }
             }
             ClientAction::ResupplyAmmo { .. } => {
                 if !world.bootstrap_ref().allow_debug_actions

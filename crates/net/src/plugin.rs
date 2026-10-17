@@ -56,6 +56,7 @@ impl Plugin for NetPlugin {
                 .init_resource::<crate::ClientActionLedger>()
                 .init_resource::<crate::ActionRequestIds>()
                 .init_resource::<crate::ReliableEventHub>()
+                .init_resource::<crate::MinecraftDownlink>()
                 .insert_resource(Time::<Fixed>::from_hz(
                     crate::authority::inbox::AUTHORITY_HZ,
                 ));

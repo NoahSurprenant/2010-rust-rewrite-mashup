@@ -335,6 +335,19 @@ impl UdpAuthorityHub {
         std::mem::take(&mut self.committed_admissions)
     }
 
+    /// The clients of the peers whose admission is committed: the remote
+    /// players in the match.
+    pub fn admitted_clients(&self) -> Vec<ClientId> {
+        let mut clients: Vec<ClientId> = self
+            .replication
+            .iter()
+            .filter(|(_, peer)| peer.admits_gameplay(true))
+            .filter_map(|(conn, _)| self.connections.client_of(*conn).map(ClientId))
+            .collect();
+        clients.sort_by_key(|c| c.0);
+        clients
+    }
+
     pub fn client_of_member(&self, member_id: master_protocol::MemberId) -> Option<ClientId> {
         let conn = self
             .member_by_conn

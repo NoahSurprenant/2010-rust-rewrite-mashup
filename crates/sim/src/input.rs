@@ -107,6 +107,41 @@ pub enum ClientAction {
         request_id: ActionRequestId,
         name: [u8; MENU_RESPONSE_BYTES],
     },
+
+    /// An intent on the Minecraft map (a block edit or an inventory click),
+    /// which the host's Minecraft world applies; its bytes are that world's
+    /// to read.
+    Minecraft {
+        request_id: ActionRequestId,
+        intent: MinecraftIntent,
+    },
+}
+
+pub const MINECRAFT_INTENT_BYTES: usize = 96;
+
+/// An encoded Minecraft intent, at most `MINECRAFT_INTENT_BYTES` long.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MinecraftIntent {
+    pub len: u8,
+    pub bytes: [u8; MINECRAFT_INTENT_BYTES],
+}
+
+impl MinecraftIntent {
+    pub fn new(encoded: &[u8]) -> Option<Self> {
+        if encoded.len() > MINECRAFT_INTENT_BYTES {
+            return None;
+        }
+        let mut bytes = [0u8; MINECRAFT_INTENT_BYTES];
+        bytes[..encoded.len()].copy_from_slice(encoded);
+        Some(Self {
+            len: encoded.len() as u8,
+            bytes,
+        })
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len).min(MINECRAFT_INTENT_BYTES)]
+    }
 }
 
 pub const MENU_RESPONSE_BYTES: usize = 48;
@@ -175,6 +210,7 @@ pub fn action_request_id(action: &ClientAction) -> ActionRequestId {
         | ClientAction::ChooseDefaultClass { request_id, .. }
         | ClientAction::MenuResponse { request_id, .. }
         | ClientAction::GiveKillstreak { request_id, .. }
+        | ClientAction::Minecraft { request_id, .. }
         | ClientAction::ResupplyAmmo { request_id } => request_id,
     }
 }

@@ -1,5 +1,6 @@
 //! The owner-approved end-to-end scenarios; see README.md.
 
+mod duo;
 #[cfg(test)]
 mod master_pin;
 mod report;
@@ -8,6 +9,7 @@ mod scenario;
 mod scenarios {
     pub mod crafting_table;
     pub mod heavy_gameplay_lifecycle;
+    pub mod minecraft_multiplayer;
 }
 
 use std::path::{Path, PathBuf};
@@ -18,6 +20,7 @@ use serde_json::{Value, json};
 use scenario::{MapB, Place, ResolvedPlace, ResolvedScene};
 use scenarios::crafting_table;
 use scenarios::heavy_gameplay_lifecycle::{self as hgl, SCENARIO};
+use scenarios::minecraft_multiplayer;
 
 #[derive(Clone, Copy, PartialEq)]
 enum CacheMode {
@@ -41,7 +44,7 @@ fn main() {
             eprintln!("{message}");
             eprintln!(
                 "usage: approved_tests heavy_gameplay_lifecycle [--seed N | --replay run.json] \
-                 [--cache cold|shared] [--bin path]\n       approved_tests crafting_table [--cache cold|shared] [--bin path]"
+                 [--cache cold|shared] [--bin path]\n       approved_tests crafting_table [--cache cold|shared] [--bin path]\n       approved_tests minecraft_multiplayer [--cache cold|shared] [--bin path]"
             );
             std::process::exit(2);
         }
@@ -50,11 +53,14 @@ fn main() {
         run
     } else if args.scenario == crafting_table::NAME {
         run_crafting_table
+    } else if args.scenario == minecraft_multiplayer::NAME {
+        run_minecraft_multiplayer
     } else {
         eprintln!(
-            "approved scenarios: {}, {} (asked for {:?})",
+            "approved scenarios: {}, {}, {} (asked for {:?})",
             SCENARIO.name,
             crafting_table::NAME,
+            minecraft_multiplayer::NAME,
             args.scenario
         );
         std::process::exit(2);
@@ -444,6 +450,232 @@ fn run_crafting_table(root: &Path, args: &Args) -> Result<bool, String> {
     manifest["result"] = if passed { "passed" } else { "failed" }.into();
     if let Some(exit) = exit {
         manifest["failure"] = exit.into();
+    } else if !failed.is_empty() {
+        manifest["failure"] = format!("checkpoints failed: {}", failed.join(", ")).into();
+    }
+    report::write(&run_dir, &manifest)?;
+    println!(
+        "{}: {}",
+        manifest["result"].as_str().unwrap_or("?"),
+        run_dir.join("run.json").display()
+    );
+    Ok(passed)
+}
+
+/// A lobby on the master, the client in it, and the match started.
+fn open_duo(
+    bin: &Path,
+    master: &duo::Master,
+    dirs: &[PathBuf; 2],
+    session: u32,
+) -> Result<duo::Pair, String> {
+    use duo::field;
+    let env = [
+        ("IW4L_MASTER_ADDR", master.addr.clone()),
+        ("IW4L_MASTER_SERVER_NAME", duo::SERVER_NAME.to_owned()),
+        ("IW4L_MASTER_CA_CERT", master.ca.display().to_string()),
+    ];
+    let setup = format!(
+        "set ui_mapname {}; set ui_gametype dm",
+        minecraft_multiplayer::MAP
+    );
+    let host = duo::Player::launch(bin, &dirs[0], "host", session, &env)?;
+    let mut pair = duo::Pair {
+        host,
+        client: None,
+        peak_combined_kib: 0,
+        peak_client_kib: 0,
+    };
+    pair.host
+        .send(&format!("{setup}; ui_create_lobby; ui_lobby_privacy"))?;
+    let lobby = Duration::from_secs(minecraft_multiplayer::LOAD_SECS);
+    pair.until("the host's lobby", lobby, |pair| {
+        field(&pair.host.status(), "state") == Some("hosting")
+    })?;
+    let status = pair.host.status();
+    let room = field(&status, "room")
+        .ok_or("no room in the host's status")?
+        .to_owned();
+    let client = duo::Player::launch(bin, &dirs[1], "client", session, &env)?;
+    pair.client = Some(client);
+    pair.client
+        .as_mut()
+        .expect("launched")
+        .send(&format!("{setup}; ui_join_lobby_id {room}"))?;
+    pair.until("the client in the lobby", lobby, |pair| {
+        pair.client
+            .as_ref()
+            .is_some_and(|c| field(&c.status(), "state") == Some("joined"))
+            && field(&pair.host.status(), "members")
+                .and_then(|n| n.parse::<usize>().ok())
+                .is_some_and(|n| n >= 2)
+    })?;
+    pair.host.send("ui_start_match")?;
+    Ok(pair)
+}
+
+/// Both games end through the normal exit: the client first, so the host
+/// keeps its inventory, then the host, which saves its world.
+fn close_duo(pair: &mut duo::Pair) -> Result<(), String> {
+    let quit = Duration::from_secs(120);
+    if let Some(client) = pair.client.as_mut() {
+        client.send("finish_run")?;
+    }
+    pair.until("the client to exit", quit, |pair| {
+        pair.client.as_mut().is_none_or(|c| c.exited().is_some())
+    })
+    .or_else(|e| {
+        if e.starts_with("client exited") {
+            Ok(())
+        } else {
+            Err(e)
+        }
+    })?;
+    pair.client = None;
+    pair.host.send("wait 3s; finish_run")?;
+    let start = std::time::Instant::now();
+    while pair.host.exited().is_none() {
+        pair.sample();
+        if start.elapsed() > quit {
+            return Err("the host did not exit".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    pair.host.pump();
+    Ok(())
+}
+
+fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
+    asset_transport::load_dotenv();
+    if args.seed.is_some() || args.replay.is_some() {
+        return Err(
+            "minecraft_multiplayer takes no --seed or --replay: the host picks the seed".into(),
+        );
+    }
+    let master_bin = args
+        .bin
+        .with_file_name(format!("iw4l-master{}", std::env::consts::EXE_SUFFIX));
+    for bin in [&args.bin, &master_bin] {
+        if !bin.is_file() {
+            return Err(format!(
+                "{} is not built (cargo build --profile play -p launcher --bin iw4l -p iw4l-master)",
+                bin.display()
+            ));
+        }
+    }
+    let games = asset_transport::games_root_from_env()?;
+    let mw2_installed = asset_transport::list_mp_maps(&games)
+        .iter()
+        .any(|m| m.starts_with("iw4:"));
+    let run_id = format!("{}-{}", utc_stamp(), minecraft_multiplayer::NAME);
+    let run_dir = root.join("iw4l-artifacts/approved-tests").join(&run_id);
+    std::fs::create_dir_all(run_dir.parent().expect("has parent"))
+        .map_err(|e| format!("create run root: {e}"))?;
+    std::fs::create_dir(&run_dir).map_err(|e| format!("create {}: {e}", run_dir.display()))?;
+    let mut manifest = json!({
+        "scenario": minecraft_multiplayer::NAME,
+        "run_id": run_id,
+        "result": "running",
+        "build": report::build_facts(root, &args.bin),
+        "platform": report::platform_facts(),
+        "content": { "games_root": games.0.display().to_string(), "mw2_installed": mw2_installed },
+        "map": minecraft_multiplayer::MAP,
+        "view_distance": std::env::var("IW4L_MINECRAFT_VIEW_DISTANCE").ok(),
+    });
+    if !mw2_installed {
+        manifest["result"] = "blocked".into();
+        manifest["failure"] = "no MW2 multiplayer zone under the games root".into();
+        report::write(&run_dir, &manifest)?;
+        return Ok(false);
+    }
+    let dirs = [run_dir.join("host"), run_dir.join("client")];
+    let mut caches = Vec::new();
+    for (dir, name) in dirs.iter().zip(["host", "client"]) {
+        let profile = dir.join("iw4l-artifacts/profile");
+        std::fs::create_dir_all(&profile)
+            .map_err(|e| format!("create {}: {e}", profile.display()))?;
+        std::fs::write(profile.join("classes.txt"), minecraft_multiplayer::CLASSES)
+            .map_err(|e| format!("write the class file: {e}"))?;
+        std::fs::write(
+            dir.join("settings.cfg"),
+            format!("resolution=960x540\nfullscreen=false\nvsync=true\nplayer_name={name}\n"),
+        )
+        .map_err(|e| format!("write the settings: {e}"))?;
+        caches.push(prepare_cache(root, dir, args.cache)?);
+        share_minecraft_files(root, dir)?;
+    }
+    manifest["cache"] = caches.into();
+    let bin = stage_binary(&args.bin, &run_dir)?;
+    report::write(&run_dir, &manifest)?;
+    println!("run: {}", run_dir.display());
+
+    let master = duo::Master::start(&master_bin, &run_dir.join("master"))?;
+    let mut facts = minecraft_multiplayer::Facts::default();
+    let mut peaks = Vec::new();
+    let mut failure = None;
+    for session in [1, 2] {
+        let mut pair = match open_duo(&bin, &master, &dirs, session) {
+            Ok(pair) => pair,
+            Err(e) => {
+                failure = Some(format!("session {session}: {e}"));
+                break;
+            }
+        };
+        let played = if session == 1 {
+            minecraft_multiplayer::first_session(&mut pair, &mut facts)
+        } else {
+            minecraft_multiplayer::second_session(&mut pair, &mut facts)
+        };
+        let closed = close_duo(&mut pair);
+        peaks.push(json!({
+            "session": session,
+            "host_peak_rss_mib": pair.host.peak_rss_kib / 1024,
+            "client_peak_rss_mib": pair.peak_client_kib / 1024,
+            "combined_peak_rss_mib": pair.peak_combined_kib / 1024,
+        }));
+        if let Err(e) = played.and(closed) {
+            failure = Some(format!("session {session}: {e}"));
+            break;
+        }
+        if session == 1 {
+            let level = dirs[0].join("minecraft-worlds/world/level.json");
+            manifest["saved_world"] =
+                json!({ "level": level.display().to_string(), "exists": level.is_file() });
+        }
+    }
+    drop(master);
+    for dir in &dirs {
+        keep_minecraft_files(root, dir);
+    }
+    manifest["memory"] = peaks.into();
+    let checks = minecraft_multiplayer::judge(&facts);
+    for check in &checks {
+        match check.failures.as_slice() {
+            [] => println!("  pass  {}", check.label),
+            failures => println!("  FAIL  {}: {}", check.label, failures.join("; ")),
+        }
+    }
+    let failed: Vec<&str> = checks
+        .iter()
+        .filter(|c| !c.failures.is_empty())
+        .map(|c| c.label)
+        .collect();
+    let passed = failure.is_none() && failed.is_empty();
+    manifest["checks"] = checks
+        .iter()
+        .map(|c| json!({ "label": c.label, "failures": c.failures }))
+        .collect::<Vec<_>>()
+        .into();
+    manifest["lines"] = facts
+        .lines
+        .iter()
+        .map(|(label, event)| (label.clone(), json!(event.fields)))
+        .collect::<serde_json::Map<_, _>>()
+        .into();
+    manifest["answers"] = json!(facts.notes);
+    manifest["result"] = if passed { "passed" } else { "failed" }.into();
+    if let Some(failure) = failure {
+        manifest["failure"] = failure.into();
     } else if !failed.is_empty() {
         manifest["failure"] = format!("checkpoints failed: {}", failed.join(", ")).into();
     }

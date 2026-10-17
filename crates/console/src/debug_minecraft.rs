@@ -8,7 +8,7 @@ use frame::{McClick, McSlot, McStack, MinecraftUi};
 use crate::binds::{BindButton, parse_key_name};
 use crate::{ConsoleCommand, ConsoleRegistry, ConsoleSettings, ConsoleState};
 
-const MC_USAGE: &str = "mc give <item> [count] | mc clear | mc click <inv N|grid N|result> [right] [shift] | mc fill <x1 y1 z1 x2 y2 z2> <block|air> (from the feet) | mc state <label> — the Minecraft map";
+const MC_USAGE: &str = "mc give <item> [count] | mc clear | mc click <inv N|grid N|result> [right] [shift] | mc fill <x1 y1 z1 x2 y2 z2> <block|air> (from the feet) | mc set <x1 y1 z1 x2 y2 z2> <block|air> (from the world's spawn block) | mc block <label> <x y z> (from the spawn block) | mc state <label> | mc world [name] (the world a host keeps) — the Minecraft map";
 const FILL_MAX: i32 = 4096;
 const KEY_USAGE: &str =
     "key <key|mouse1|mouse2> [seconds] — press a key or mouse button as the device does";
@@ -108,6 +108,28 @@ pub(crate) fn route_debug_minecraft_commands(
                     _ => console.echo(format!("usage: {KEY_USAGE}"), capacity),
                 }
             }
+            "mc" if cmd.args.first().is_some_and(|verb| verb == "world") => {
+                // The world a host keeps, for the next Minecraft match it hosts.
+                let Some(ui) = ui.as_mut() else {
+                    continue;
+                };
+                match cmd.args.get(1..).unwrap_or_default() {
+                    [] => {}
+                    [name] => ui.world_name = Some(name.clone()),
+                    _ => {
+                        console.echo(format!("usage: {MC_USAGE}"), capacity);
+                        continue;
+                    }
+                }
+                let name = ui
+                    .world_name
+                    .clone()
+                    .or_else(|| std::env::var("IW4L_MINECRAFT_WORLD").ok());
+                console.echo(
+                    format!("mc: kept world `{}`", name.as_deref().unwrap_or("world")),
+                    capacity,
+                );
+            }
             "mc" => {
                 let Some(ui) = ui.as_mut().filter(|ui| ui.active) else {
                     console.echo("mc: no Minecraft world in play", capacity);
@@ -133,7 +155,7 @@ pub(crate) fn route_debug_minecraft_commands(
                         }
                     }
                     ["clear"] => ui.clear_items = true,
-                    ["fill", x1, y1, z1, x2, y2, z2, block] => {
+                    [verb @ ("fill" | "set"), x1, y1, z1, x2, y2, z2, block] => {
                         let corners: Option<Vec<i32>> = [x1, y1, z1, x2, y2, z2]
                             .iter()
                             .map(|v| v.parse().ok())
@@ -150,7 +172,12 @@ pub(crate) fn route_debug_minecraft_commands(
                                     id if id.contains(':') => Some(id.to_owned()),
                                     id => Some(format!("minecraft:{id}")),
                                 };
-                                ui.fill.push(([c[0], c[1], c[2]], [c[3], c[4], c[5]], id));
+                                let corners = ([c[0], c[1], c[2]], [c[3], c[4], c[5]], id);
+                                if *verb == "set" {
+                                    ui.set.push(corners);
+                                } else {
+                                    ui.fill.push(corners);
+                                }
                             }
                             _ => console.echo(
                                 format!("usage: {MC_USAGE} (at most {FILL_MAX} blocks)"),
@@ -158,6 +185,10 @@ pub(crate) fn route_debug_minecraft_commands(
                             ),
                         }
                     }
+                    ["block", label, x, y, z] => match (x.parse(), y.parse(), z.parse()) {
+                        (Ok(x), Ok(y), Ok(z)) => ui.probes.push(((*label).to_owned(), [x, y, z])),
+                        _ => console.echo(format!("usage: {MC_USAGE}"), capacity),
+                    },
                     ["click", rest @ ..] => match parse_click(rest) {
                         Some(click) => ui.clicks.push(click),
                         None => console.echo(format!("usage: {MC_USAGE}"), capacity),
@@ -225,7 +256,7 @@ fn state_line(label: &str, ui: &MinecraftUi, pm_flags: u32, menu: bool, origin: 
     let list =
         |stacks: &[Option<McStack>]| stacks.iter().map(stack_text).collect::<Vec<_>>().join(",");
     format!(
-        "minecraft-state: label={label} stance={stance} menu={menu} origin={:.0},{:.0},{:.0} view={:.0},{:.0} table_in_view={in_view} screen={screen} grid={} result={} cursor={} slots={}",
+        "minecraft-state: label={label} stance={stance} menu={menu} origin={:.0},{:.0},{:.0} view={:.0},{:.0} table_in_view={in_view} screen={screen} grid={} result={} cursor={} slots={} seed={} role={} feet={}",
         origin[0],
         origin[1],
         origin[2],
@@ -235,5 +266,10 @@ fn state_line(label: &str, ui: &MinecraftUi, pm_flags: u32, menu: bool, origin: 
         stack_text(&ui.result),
         stack_text(&ui.cursor),
         list(&ui.slots),
+        ui.seed
+            .map_or_else(|| "-".to_owned(), |seed| seed.to_string()),
+        ui.net_role,
+        ui.feet
+            .map_or_else(|| "-".to_owned(), |[x, y, z]| format!("{x},{y},{z}")),
     )
 }

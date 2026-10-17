@@ -50,6 +50,9 @@ pub enum ReliableRow {
 
     Event(SimEvent),
 
+    /// A Minecraft host message (`minecraft_terrain::multiplayer::HostMessage`).
+    Minecraft(Vec<u8>),
+
     ActionOutcome {
         request_id: ActionRequestId,
         verdict: ActionVerdict,
@@ -200,6 +203,11 @@ pub fn encode_reliable_payload(
                 out.put_u8(7);
                 crate::svc_scores::encode_svc_scores(out, Some(value));
             }
+            ReliableRow::Minecraft(bytes) => {
+                out.put_u8(10);
+                out.put_u32(bytes.len() as u32);
+                out.put_bytes(bytes);
+            }
             ReliableRow::Event(event) => {
                 out.put_u8(ROW_TAG_EVENT);
                 encode_event(out, event);
@@ -269,6 +277,15 @@ pub fn decode_reliable_payload(input: &mut WireReader<'_>) -> Result<ReliablePay
                     return Err(WireError::Malformed("control row count"));
                 }
                 ReliableRow::Notify(values.remove(0))
+            }
+            10 => {
+                let len = input.get_u32()? as usize;
+                if len > crate::transport::protocol::MAX_PACKET_BYTES as usize {
+                    return Err(WireError::Malformed("Minecraft row too long"));
+                }
+                let mut bytes = vec![0u8; len];
+                input.get_bytes(&mut bytes)?;
+                ReliableRow::Minecraft(bytes)
             }
             8 => ReliableRow::Failure(
                 crate::svc_scores::decode_svc_scores(input)?
@@ -374,4 +391,11 @@ impl ReliableEventHub {
     pub fn is_empty(&self) -> bool {
         self.queues.is_empty()
     }
+}
+
+/// Minecraft host messages a client took off its reliable stream, in order,
+/// for its Minecraft world to apply.
+#[derive(bevy::prelude::Resource, Debug, Default)]
+pub struct MinecraftDownlink {
+    pub rows: Vec<Vec<u8>>,
 }

@@ -1664,6 +1664,35 @@ pub struct LoadMetrics {
     pub compile_micros: u64,
 }
 
+/// Chunks generated around one more player than the stream follows (a
+/// multiplayer host's client), for collision only: no storage, light or
+/// meshes. Its chunks are the world's terrain as generated; edits over them
+/// are the caller's to lay on.
+pub struct CollisionStream {
+    server: ChunkMap,
+}
+
+impl CollisionStream {
+    pub fn new(world_gen: Arc<WorldGen>, view_distance: i32) -> Self {
+        Self { server: ChunkMap::with_storage(world_gen, view_distance, 1, None) }
+    }
+
+    /// One tick for the player at `player`: the chunks it now has, and the
+    /// positions it let go.
+    pub fn tick(&mut self, player: BlockPos) -> (Vec<Arc<Chunk>>, Vec<ChunkPos>) {
+        let center = minecraftoss_core::ChunkPos::new(player.0 >> 4, player.2 >> 4);
+        let (mut loaded, mut forgotten) = (Vec::new(), Vec::new());
+        for event in self.server.tick(center) {
+            match event {
+                ChunkEvent::Center(_) => {}
+                ChunkEvent::Load(chunk) => loaded.push(chunk),
+                ChunkEvent::Forget(pos) => forgotten.push((pos.x, pos.z)),
+            }
+        }
+        (loaded, forgotten)
+    }
+}
+
 /// A temporary world directory for a session without one.
 struct SessionDir(std::path::PathBuf);
 
