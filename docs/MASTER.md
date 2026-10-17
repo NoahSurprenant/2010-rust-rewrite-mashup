@@ -26,6 +26,20 @@ the host; with `IW4L_MASTER_CA_CERT` set it loads only that PEM into an empty
 verifier. `install` signs `San::Labels` alone: the certificate is minted **once
 per user, not per server**, and a new IP or VPS keeps it.
 
+**Or no CA file at all: pin the key.** `IW4L_MASTER_KEY_SHA256` holds the SHA-256
+of the master certificate's public key, which `serve` prints at startup
+(`iw4l-master key-sha256=...`) and openssl computes from the certificate:
+
+```bash
+openssl x509 -in server-cert.pem -pubkey -noout | openssl pkey -pubin -outform der | sha256sum
+```
+
+With a pin the client trusts exactly that key (`crates/master_pin`) and nothing
+else: no CA, no platform verifier, and neither the name nor the dates matter, so a
+self-signed certificate reached by bare IP is enough. Reissuing the certificate
+with the same key keeps the pin; a new key needs a new pin for every player.
+`status` and `list` take the same pin as `--key-sha256`.
+
 ## What it records — nothing on disk
 
 Rooms, the advertised match name, peers and room membership live in `ServiceState`
@@ -55,6 +69,7 @@ port `4434` and server name `iw4l-dev` instead.
 | `IW4L_MASTER_ADDR` | The master to contact: a hostname or IP **with a port**, such as `1.2.3.4:4433` or `[::1]:4433`. The game has no built-in address; if unset, master networking is disabled. Set it on hosts and joining players. |
 | `IW4L_MASTER_SERVER_NAME` | The name to check in the server certificate, independently of its IP. Required whenever the address is set; there is no built-in name. Use `iw4l-prod` for the default installation, not the VPS hostname. |
 | `IW4L_MASTER_CA_CERT` | Path to the PEM CA file that lets the client trust your master. Set it for the private CA created by `install`. If unset, the client uses the platform certificate verifier; if set, only certificates from this file are trusted. Relative paths use the process working directory, which on Windows is the folder containing `iw4l.exe`. |
+| `IW4L_MASTER_KEY_SHA256` | The SHA-256 of the master's public key, instead of a CA file: the client then trusts only that key. Hex as `sha256sum` prints it; colons and either case are accepted. Cannot be combined with `IW4L_MASTER_CA_CERT`. |
 | `IW4L_MASTER_HOST_NAME` | The room name other players see. To host via `map`, set a name that is not empty or only whitespace, and leave `IW4L_MASTER_JOIN` unset. Names can occupy at most 48 UTF-8 bytes. Hosting through the menu uses `iw4l host` if the name is unset. Joining through the menu needs no host name. |
 | `IW4L_MASTER_MAX_PLAYERS` | The room capacity, **including the host**. Optional; defaults to `18`. Set an integer from `2` through `18` to limit the room size. It is read only when creating a room, via `map` or the menu; invalid values prevent room creation rather than being clamped. |
 | `IW4L_MASTER_PASSWORD` | The room password for command-line hosting and joining. Lobby settings can set, change or remove it; joining a protected room through the menu prompts for it. |

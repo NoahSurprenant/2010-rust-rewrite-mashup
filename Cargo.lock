@@ -202,6 +202,8 @@ name = "approved_tests"
 version = "0.1.0"
 dependencies = [
  "asset_transport",
+ "master_pin",
+ "rustls",
  "serde_json",
 ]
 
@@ -3544,6 +3546,7 @@ name = "iw4l-master"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
+ "master_pin",
  "master_protocol",
  "quinn",
  "ring",
@@ -3844,6 +3847,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "master_pin"
+version = "0.1.0"
+dependencies = [
+ "ring",
+ "rustls",
+ "rustls-webpki",
+]
+
+[[package]]
 name = "master_protocol"
 version = "0.1.0"
 
@@ -4113,6 +4125,7 @@ dependencies = [
  "hud_iw4",
  "input_iw4",
  "killcam_iw4",
+ "master_pin",
  "master_protocol",
  "math_iw4",
  "movement_iw4",

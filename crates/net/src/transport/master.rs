@@ -270,6 +270,8 @@ struct MasterTarget {
     address: String,
     server_name: String,
     ca_cert: Option<PathBuf>,
+    /// `IW4L_MASTER_KEY_SHA256`: trust the master by its key instead of a CA.
+    key_pin: Option<master_pin::KeyPin>,
 }
 
 #[derive(Clone, Debug)]
@@ -309,6 +311,18 @@ enum MasterLaunchMode {
     Join(JoinConfig),
 }
 
+/// `IW4L_MASTER_KEY_SHA256`, which replaces `IW4L_MASTER_CA_CERT` rather than
+/// adding to it.
+fn key_pin_from_env() -> Result<Option<master_pin::KeyPin>> {
+    let Ok(text) = std::env::var("IW4L_MASTER_KEY_SHA256") else {
+        return Ok(None);
+    };
+    if std::env::var_os("IW4L_MASTER_CA_CERT").is_some() {
+        return Err("set IW4L_MASTER_KEY_SHA256 or IW4L_MASTER_CA_CERT, not both".into());
+    }
+    Ok(Some(master_pin::KeyPin::parse(&text)?))
+}
+
 #[derive(Resource, Clone, Debug)]
 pub struct MasterLaunchIntent(MasterLaunchMode);
 
@@ -324,6 +338,7 @@ impl MasterLaunchIntent {
                 address,
                 server_name,
                 ca_cert: std::env::var_os("IW4L_MASTER_CA_CERT").map(PathBuf::from),
+                key_pin: key_pin_from_env()?,
             },
             have,
         })))
@@ -339,6 +354,7 @@ impl MasterLaunchIntent {
             address,
             server_name,
             ca_cert: std::env::var_os("IW4L_MASTER_CA_CERT").map(PathBuf::from),
+            key_pin: key_pin_from_env()?,
         };
         let host = std::env::var("IW4L_MASTER_HOST_NAME").ok();
         let join = std::env::var("IW4L_MASTER_JOIN").ok();
@@ -3148,7 +3164,9 @@ async fn connect(
         .to_socket_addrs()?
         .next()
         .ok_or_else(|| format!("{} resolved no addresses", target.address))?;
-    let mut crypto = if let Some(path) = target.ca_cert.as_deref() {
+    let mut crypto = if let Some(pin) = target.key_pin {
+        master_pin::client_config(pin)
+    } else if let Some(path) = target.ca_cert.as_deref() {
         let mut roots = rustls::RootCertStore::empty();
         for cert in load_certificates(path)? {
             roots.add(cert)?;
@@ -3177,7 +3195,9 @@ async fn connect(
     let mut endpoint = quinn::Endpoint::client(bind.parse()?)?;
     endpoint.set_default_client_config(client_config);
     let local = endpoint.local_addr()?;
-    let trust = if target.ca_cert.is_some() {
+    let trust = if target.key_pin.is_some() {
+        "key-pin"
+    } else if target.ca_cert.is_some() {
         "custom-ca"
     } else {
         "platform"

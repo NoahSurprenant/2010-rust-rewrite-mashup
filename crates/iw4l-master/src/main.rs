@@ -108,6 +108,7 @@ struct ClientTarget {
     connect: SocketAddr,
     server_name: String,
     ca_cert: Option<PathBuf>,
+    key_pin: Option<master_pin::KeyPin>,
 }
 
 struct Peer {
@@ -408,6 +409,7 @@ fn parse_args() -> Result<Command> {
     let mut connect = None;
     let mut server_name = None;
     let mut ca_cert = None;
+    let mut key_pin = None;
     let mut channel = None;
     let mut exec = None;
     let mut user = None;
@@ -423,6 +425,7 @@ fn parse_args() -> Result<Command> {
             "--connect" => connect = Some(value.parse()?),
             "--server-name" => server_name = Some(value),
             "--ca-cert" => ca_cert = Some(PathBuf::from(value)),
+            "--key-sha256" => key_pin = Some(master_pin::KeyPin::parse(&value)?),
             "--channel" => channel = Some(value.parse()?),
             "--exec" => exec = Some(PathBuf::from(value)),
             "--user" => user = Some(value),
@@ -437,10 +440,14 @@ fn parse_args() -> Result<Command> {
             key: key.ok_or("serve requires --key PATH")?,
         }),
         "status" | "list" => {
+            if ca_cert.is_some() && key_pin.is_some() {
+                return Err("pass --ca-cert or --key-sha256, not both".into());
+            }
             let target = ClientTarget {
                 connect: connect.ok_or("command requires --connect HOST:PORT")?,
                 server_name: server_name.ok_or("command requires --server-name NAME")?,
                 ca_cert,
+                key_pin,
             };
             if command == "status" {
                 Ok(Command::Status(target))
@@ -507,6 +514,8 @@ WantedBy=multi-user.target
 async fn serve(bind: SocketAddr, cert_path: &Path, key_path: &Path) -> Result<()> {
     let certs = load_certificates(cert_path)?;
     let key = load_private_key(key_path)?;
+    let key_pin =
+        master_pin::KeyPin::of_certificate(certs.first().ok_or("--cert holds no certificate")?)?;
     let mut crypto = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)?;
@@ -540,6 +549,8 @@ async fn serve(bind: SocketAddr, cert_path: &Path, key_path: &Path) -> Result<()
         master_protocol::PROTOCOL_VERSION,
         ALPN
     )?;
+    // What players set as IW4L_MASTER_KEY_SHA256 to trust this master without a CA file.
+    writeln!(std::io::stderr(), "iw4l-master key-sha256={key_pin}")?;
     let connection_slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let address_counts = Arc::new(std::sync::Mutex::new(HashMap::new()));
     while let Some(incoming) = endpoint.accept().await {
@@ -1407,7 +1418,9 @@ async fn list(target: &ClientTarget) -> Result<()> {
 }
 
 async fn connect_client(target: &ClientTarget) -> Result<(quinn::Endpoint, quinn::Connection)> {
-    let mut crypto = if let Some(path) = target.ca_cert.as_deref() {
+    let mut crypto = if let Some(pin) = target.key_pin {
+        master_pin::client_config(pin)
+    } else if let Some(path) = target.ca_cert.as_deref() {
         let mut roots = rustls::RootCertStore::empty();
         for cert in load_certificates(path)? {
             roots.add(cert)?;
