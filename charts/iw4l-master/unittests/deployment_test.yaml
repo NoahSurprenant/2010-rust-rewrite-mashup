@@ -1,0 +1,116 @@
+suite: deployment
+templates:
+  - templates/deployment.yaml
+release:
+  name: iw4l-master
+tests:
+  - it: runs one replica, replaced not rolled, hardened
+    asserts:
+      - equal: { path: 'spec.replicas', value: 1 }
+      - equal: { path: 'spec.strategy.type', value: Recreate }
+      - equal: { path: 'spec.template.spec.automountServiceAccountToken', value: false }
+      - equal: { path: 'spec.template.spec.securityContext.runAsNonRoot', value: true }
+      - equal: { path: 'spec.template.spec.securityContext.runAsUser', value: 65532 }
+      - equal: { path: 'spec.template.spec.securityContext.fsGroup', value: 65532 }
+      - equal: { path: 'spec.template.spec.securityContext.seccompProfile.type', value: RuntimeDefault }
+      - equal: { path: 'spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem', value: true }
+      - equal: { path: 'spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation', value: false }
+      - equal: { path: 'spec.template.spec.containers[0].securityContext.capabilities.drop', value: [ALL] }
+      - equal: { path: 'spec.template.spec.nodeSelector', value: { kubernetes.io/os: linux, kubernetes.io/arch: amd64 } }
+      - equal: { path: 'spec.template.spec.containers[0].resources.limits.memory', value: 256Mi }
+      - notExists: { path: 'spec.template.spec.containers[0].resources.limits.cpu' }
+
+  - it: serves the prod channel's port with the mounted certificate and key
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: [serve, --bind, "0.0.0.0:4433", --cert, /etc/iw4l/tls/tls.crt, --key, /etc/iw4l/tls/tls.key]
+      - equal: { path: 'spec.template.spec.containers[0].ports[0]', value: { name: quic, containerPort: 4433, protocol: UDP } }
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: tls, mountPath: /etc/iw4l/tls, readOnly: true }
+
+  - it: mounts the Secret cert-manager writes, group-readable for the non-root user
+    asserts:
+      - equal:
+          path: spec.template.spec.volumes[0]
+          value: { name: tls, secret: { secretName: iw4l-master-tls, defaultMode: 0440 } }
+
+  - it: mounts an existing Secret instead
+    set:
+      tls.existingSecret: my-master-tls
+    asserts:
+      - equal: { path: 'spec.template.spec.volumes[0].secret.secretName', value: my-master-tls }
+
+  - it: mounts cert-manager's Secret under its own name
+    set:
+      tls.certManager.secretName: kept-tls
+    asserts:
+      - equal: { path: 'spec.template.spec.volumes[0].secret.secretName', value: kept-tls }
+
+  - it: refuses to render with no certificate at all
+    set:
+      tls.certManager.enabled: false
+    asserts:
+      - failedTemplate:
+          errorPattern: "tls: set existingSecret, or certManager.enabled"
+
+  - it: probes with the binary's own client, trusting the self-signed certificate
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.exec.command
+          value: [/usr/local/bin/iw4l-master, status, --connect, "127.0.0.1:4433", --server-name, iw4l-prod, --ca-cert, /etc/iw4l/tls/tls.crt]
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.exec.command
+          value: [/usr/local/bin/iw4l-master, status, --connect, "127.0.0.1:4433", --server-name, iw4l-prod, --ca-cert, /etc/iw4l/tls/tls.crt]
+      - equal: { path: 'spec.template.spec.containers[0].readinessProbe.periodSeconds', value: 60 }
+      - equal: { path: 'spec.template.spec.containers[0].livenessProbe.periodSeconds', value: 120 }
+      - notExists: { path: 'spec.template.spec.containers[0].startupProbe' }
+
+  - it: follows another port and label, and trusts the issuer's CA with an issuer of the user's
+    set:
+      server: { port: 4434, serverName: iw4l-dev }
+      tls.certManager.issuerRef: { name: my-ca, kind: ClusterIssuer }
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.exec.command
+          value: [/usr/local/bin/iw4l-master, status, --connect, "127.0.0.1:4434", --server-name, iw4l-dev, --ca-cert, /etc/iw4l/tls/ca.crt]
+      - contains: { path: 'spec.template.spec.containers[0].args', content: "0.0.0.0:4434" }
+
+  - it: overrides a probe's fields and drops one that is turned off
+    set:
+      probes: { liveness: { enabled: false }, readiness: { periodSeconds: 30 }, startup: { enabled: true } }
+    asserts:
+      - notExists: { path: 'spec.template.spec.containers[0].livenessProbe' }
+      - equal: { path: 'spec.template.spec.containers[0].readinessProbe.periodSeconds', value: 30 }
+      - exists: { path: 'spec.template.spec.containers[0].startupProbe.exec' }
+
+
+  - it: puts deployment labels and annotations on the Deployment, pod ones on the pod
+    set:
+      deploymentAnnotations: { argocd.argoproj.io/sync-options: "Replace=true" }
+      deploymentLabels: { team: games }
+      podAnnotations: { example.com/a: "1" }
+    asserts:
+      - equal: { path: 'metadata.annotations', value: { argocd.argoproj.io/sync-options: "Replace=true" } }
+      - equal: { path: 'metadata.labels.team', value: games }
+      - equal: { path: 'spec.template.metadata.annotations', value: { example.com/a: "1" } }
+
+  - it: takes a tag with a digest, as Image Updater writes it
+    set:
+      image.tag: latest@sha256:1111111111111111111111111111111111111111111111111111111111111111
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/noahsurprenant/iw4l-master:latest@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  - it: lets digest replace the tag's digest
+    set:
+      image.tag: sha-abc@sha256:1111111111111111111111111111111111111111111111111111111111111111
+      image.digest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/noahsurprenant/iw4l-master:sha-abc@sha256:2222222222222222222222222222222222222222222222222222222222222222
+  - it: uses the appVersion as the default tag
+    asserts:
+      - equal: { path: 'spec.template.spec.containers[0].image', value: "ghcr.io/noahsurprenant/iw4l-master:latest" }

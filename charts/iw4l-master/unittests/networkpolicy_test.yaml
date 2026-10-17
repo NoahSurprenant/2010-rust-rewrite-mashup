@@ -1,0 +1,30 @@
+suite: networkpolicy
+templates:
+  - templates/networkpolicy.yaml
+release:
+  name: iw4l-master
+tests:
+  - it: admits UDP on the QUIC port from anyone, pods included, and lets nothing out
+    asserts:
+      - equal: { path: spec.policyTypes, value: [Ingress, Egress] }
+      - equal: { path: spec.ingress, value: [{ ports: [{ protocol: UDP, port: 4433 }] }] }
+      - equal: { path: spec.egress, value: [] }
+      - equal: { path: spec.podSelector.matchLabels, value: { app.kubernetes.io/name: iw4l-master, app.kubernetes.io/instance: iw4l-master } }
+
+  - it: narrows who may connect, and adds rules
+    set:
+      server.port: 4434
+      networkPolicy:
+        from: [{ ipBlock: { cidr: 198.51.100.0/24 } }]
+        extraIngress: [{ from: [{ podSelector: {} }] }]
+        extraEgress: [{ to: [{ ipBlock: { cidr: 203.0.113.0/24 } }] }]
+    asserts:
+      - equal: { path: 'spec.ingress[0]', value: { ports: [{ protocol: UDP, port: 4434 }], from: [{ ipBlock: { cidr: 198.51.100.0/24 } }] } }
+      - equal: { path: 'spec.ingress[1]', value: { from: [{ podSelector: {} }] } }
+      - equal: { path: spec.egress, value: [{ to: [{ ipBlock: { cidr: 203.0.113.0/24 } }] }] }
+
+  - it: can be turned off
+    set:
+      networkPolicy.enabled: false
+    asserts:
+      - hasDocuments: { count: 0 }

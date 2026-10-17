@@ -15,9 +15,9 @@ name: Release
 on:
   push:
     branches: [main]
-    paths-ignore: ["**.md", "docs/**"]
+    paths-ignore: ["**.md", "docs/**", "charts/**", ".github/workflows/helm-charts.yml"]
   pull_request:
-    paths-ignore: ["**.md", "docs/**"]
+    paths-ignore: ["**.md", "docs/**", "charts/**", ".github/workflows/helm-charts.yml"]
   workflow_dispatch:
 
 permissions:

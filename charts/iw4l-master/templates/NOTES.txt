@@ -1,0 +1,26 @@
+IW4L master server {{ .Chart.Version }}: {{ include "iw4l-master.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+Certificate: {{ if .Values.tls.existingSecret }}Secret {{ .Values.tls.existingSecret }} (tls.existingSecret){{ else }}cert-manager, self-signed for "{{ .Values.server.serverName }}", in Secret {{ include "iw4l-master.tlsSecret" . }}{{ end }}.
+Keep that Secret: its key is the pin every player holds. The master prints the pin at start:
+
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "iw4l-master.fullname" . }} | grep key-sha256
+
+or, from the Secret:
+
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "iw4l-master.tlsSecret" . }} -o jsonpath='{.data.tls\.crt}' | base64 -d \
+    | openssl x509 -pubkey -noout | openssl pkey -pubin -outform der | sha256sum
+
+Players (and dedicated servers) set:
+
+  IW4L_MASTER_ADDR=<address>:{{ .Values.service.port }}
+  IW4L_MASTER_SERVER_NAME={{ .Values.server.serverName }}
+  IW4L_MASTER_KEY_SHA256=<the pin>
+
+In the cluster the address is {{ include "iw4l-master.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}.
+Players reach UDP port {{ .Values.service.port }} through Service {{ include "iw4l-master.fullname" . }} ({{ .Values.service.type }}).
+{{- if eq .Values.service.type "ClusterIP" }}
+A ClusterIP Service is not reachable from outside the cluster: set service.type to LoadBalancer or
+NodePort for players on the internet.
+{{- end }}
+Run the image of the commit the players' build came from: another master_protocol version is
+refused at the handshake.

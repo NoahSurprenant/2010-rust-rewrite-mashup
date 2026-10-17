@@ -1,0 +1,64 @@
+{{- if include "iw4l-master.certManager" . }}
+{{- $cm := .Values.tls.certManager }}
+{{- if not $cm.issuerRef }}
+# The master's self-signed issuer: no CA, no domain, nothing in Certificate Transparency logs.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "iw4l-master.issuerName" . }}
+  labels:
+    {{- include "iw4l-master.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+{{- end }}
+# The master's TLS identity. Players pin its public key (IW4L_MASTER_KEY_SHA256), so the key is
+# never rotated (privateKey.rotationPolicy Never by default): a renewal re-signs the same key.
+# cert-manager owns the Secret; deleting the Secret (not this Certificate) makes a new key, and a
+# new pin for every player.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $cm.certificateName | default (include "iw4l-master.fullname" .) }}
+  labels:
+    {{- include "iw4l-master.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "iw4l-master.tlsSecret" . }}
+  {{- if or $cm.secretLabels $cm.secretAnnotations }}
+  secretTemplate:
+    {{- with $cm.secretLabels }}
+    labels:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with $cm.secretAnnotations }}
+    annotations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+  {{- end }}
+  issuerRef:
+    {{- if $cm.issuerRef }}
+    {{- toYaml $cm.issuerRef | nindent 4 }}
+    {{- else }}
+    name: {{ include "iw4l-master.issuerName" . }}
+    kind: Issuer
+    {{- end }}
+  # A label, not a DNS name: players check it as IW4L_MASTER_SERVER_NAME.
+  commonName: {{ .Values.server.serverName }}
+  dnsNames:
+    - {{ .Values.server.serverName }}
+  duration: {{ $cm.duration }}
+  {{- with $cm.renewBefore }}
+  renewBefore: {{ . }}
+  {{- end }}
+  # A server certificate, not a CA: rustls accepts the self-signed leaf as its own trust anchor
+  # (the probes rely on it), but refuses one marked CA:TRUE as an end entity.
+  usages:
+    - digital signature
+    - server auth
+  # ECDSA P-256 in PKCS#8, which the master (rustls, ring) loads as is.
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    encoding: PKCS8
+    rotationPolicy: {{ $cm.privateKey.rotationPolicy }}
+{{- end }}

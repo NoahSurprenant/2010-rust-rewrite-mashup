@@ -44,6 +44,26 @@ image with `cosign verify ghcr.io/noahsurprenant/iw4l-master:latest
 --certificate-oidc-issuer https://token.actions.githubusercontent.com
 --certificate-identity-regexp '^https://github\.com/NoahSurprenant/2010-rust-rewrite-mashup/\.github/workflows/master-image\.yml@refs/heads/main$'`.
 
+## Kubernetes — the Helm chart
+
+`charts/iw4l-master` runs the image on Kubernetes: one pod, a Service for UDP
+4433, a NetworkPolicy, and the certificate made and kept by cert-manager (or
+a Secret of your own). Published as
+`oci://ghcr.io/noahsurprenant/charts/iw4l-master` and signed with cosign by
+`.github/workflows/helm-charts.yml`; every value is documented in its
+`values.yaml`, and its [`README.md`](../charts/iw4l-master/README.md) covers
+the pin, the network and the tests.
+
+```bash
+helm install iw4l-master oci://ghcr.io/noahsurprenant/charts/iw4l-master --version <version> \
+  -n iw4l-master --create-namespace --set image.tag=sha-<commit> \
+  --set service.type=LoadBalancer --set service.externalTrafficPolicy=Local
+kubectl -n iw4l-master logs deploy/iw4l-master | grep key-sha256   # the pin players set
+```
+
+The key is never rotated (`rotationPolicy: Never`), and the Secret outlives
+the release, so the pin does too.
+
 ## No domain required — the certificate is not tied to one
 
 The client connects by address but checks the certificate against a **separate**

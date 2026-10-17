@@ -48,3 +48,24 @@ docker run -d --name iw4l-dedicated --user 65532:65532 \
   -e IW4L_MASTER_KEY_SHA256=<pin> -e IW4L_MASTER_HOST_NAME='Minecraft' \
   ghcr.io/noahsurprenant/iw4l-dedicated:latest
 ```
+
+## Kubernetes — the Helm chart
+
+`charts/iw4l-dedicated` runs the image on Kubernetes: one pod, MW2 from a
+volume you give it (an existing claim, NFS or any volume source), `/data` on
+a claim of its own so the world survives restarts, readiness on its room
+being open, and a NetworkPolicy that lets nothing in. It takes the master's
+address, server name and key pin as values, and a master in the same cluster
+is typically the `iw4l-master` chart ([`MASTER.md`](MASTER.md), "Kubernetes").
+Published as `oci://ghcr.io/noahsurprenant/charts/iw4l-dedicated` and signed
+with cosign by `.github/workflows/helm-charts.yml`; its
+[`README.md`](../charts/iw4l-dedicated/README.md) and `values.yaml` document
+every value.
+
+```bash
+helm install iw4l-dedicated oci://ghcr.io/noahsurprenant/charts/iw4l-dedicated --version <version> \
+  -n iw4l-dedicated --create-namespace --set image.tag=sha-<commit> \
+  --set master.address=iw4l-master.iw4l-master.svc.cluster.local:4433 \
+  --set master.keySha256=<pin> --set room.name=Minecraft \
+  --set gameData.existingClaim=<a claim with MW2>
+```

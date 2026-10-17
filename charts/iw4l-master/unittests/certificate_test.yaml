@@ -1,0 +1,74 @@
+suite: certificate
+templates:
+  - templates/certificate.yaml
+release:
+  name: iw4l-master
+tests:
+  - it: makes a self-signed Issuer and a never-rotated ECDSA P-256 certificate for the label
+    asserts:
+      - hasDocuments: { count: 2 }
+      - isKind: { of: Issuer }
+        documentIndex: 0
+      - equal: { path: metadata.name, value: iw4l-master-selfsigned }
+        documentIndex: 0
+      - equal: { path: spec, value: { selfSigned: {} } }
+        documentIndex: 0
+      - isKind: { of: Certificate }
+        documentIndex: 1
+      - equal:
+          path: spec
+          value:
+            secretName: iw4l-master-tls
+            issuerRef: { name: iw4l-master-selfsigned, kind: Issuer }
+            commonName: iw4l-prod
+            dnsNames: [iw4l-prod]
+            duration: 87600h
+            usages: [digital signature, server auth]
+            privateKey: { algorithm: ECDSA, size: 256, encoding: PKCS8, rotationPolicy: Never }
+        documentIndex: 1
+      - equal: { path: metadata.name, value: iw4l-master }
+        documentIndex: 1
+
+  - it: makes nothing with an existing Secret
+    set:
+      tls.existingSecret: my-master-tls
+    asserts:
+      - hasDocuments: { count: 0 }
+
+  - it: makes nothing without cert-manager
+    set:
+      tls: { existingSecret: my-master-tls, certManager: { enabled: false } }
+    asserts:
+      - hasDocuments: { count: 0 }
+
+  - it: uses an issuer of the user's, and makes none
+    set:
+      tls.certManager:
+        issuerRef: { name: my-ca, kind: ClusterIssuer, group: cert-manager.io }
+        certificateName: kept
+        secretName: kept-tls
+        renewBefore: 720h
+        secretLabels: { team: games }
+    asserts:
+      - hasDocuments: { count: 1 }
+      - isKind: { of: Certificate }
+      - equal: { path: metadata.name, value: kept }
+      - equal: { path: spec.secretName, value: kept-tls }
+      - equal: { path: spec.issuerRef, value: { name: my-ca, kind: ClusterIssuer, group: cert-manager.io } }
+      - equal: { path: spec.renewBefore, value: 720h }
+      - equal: { path: spec.secretTemplate, value: { labels: { team: games } } }
+
+  - it: names the objects after the release
+    release:
+      name: games
+    set:
+      server.serverName: iw4l-dev
+    asserts:
+      - equal: { path: metadata.name, value: games-iw4l-master-selfsigned }
+        documentIndex: 0
+      - equal: { path: metadata.name, value: games-iw4l-master }
+        documentIndex: 1
+      - equal: { path: spec.secretName, value: games-iw4l-master-tls }
+        documentIndex: 1
+      - equal: { path: spec.dnsNames, value: [iw4l-dev] }
+        documentIndex: 1
