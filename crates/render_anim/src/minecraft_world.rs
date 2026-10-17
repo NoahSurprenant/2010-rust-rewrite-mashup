@@ -80,6 +80,10 @@ struct Loaded {
     celestial: Arc<image::RgbaImage>,
     cloud_mask: Option<CloudMask>,
     crack_texture: Arc<image::RgbaImage>,
+    /// The mobs and items, and the block sounds: built with the world, off
+    /// the main thread (a client builds them mid-match).
+    entities: Option<crate::minecraft_entities::Entities>,
+    sounds: Option<crate::minecraft_sounds::Sounds>,
 }
 
 /// The hand's swing and the timers of mining and placing by hand.
@@ -260,6 +264,8 @@ fn load(seed: i64, world: Option<std::path::PathBuf>, origin: Option<[f64; 3]>) 
     let celestial = Arc::new(celestial_image(&packs).map_err(|e| e.to_string())?);
     let cloud_mask = CloudMask::from_pack(&packs).ok();
     let crack_texture = Arc::new(crate::minecraft_mining::crack_strip(&packs).map_err(|e| e.to_string())?);
+    let entities = Some(crate::minecraft_entities::Entities::new(&stream, seed));
+    let sounds = Some(crate::minecraft_sounds::Sounds::load(&packs));
     Ok(Loaded {
         stream,
         scene,
@@ -272,6 +278,8 @@ fn load(seed: i64, world: Option<std::path::PathBuf>, origin: Option<[f64; 3]>) 
         celestial,
         cloud_mask,
         crack_texture,
+        entities,
+        sounds,
     })
 }
 
@@ -693,10 +701,11 @@ fn update(
                 view.celestial = Some(world.celestial.clone());
                 view.crack_texture = Some(world.crack_texture.clone());
                 runtime.mining = Default::default();
-                runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
-                let mut entities = crate::minecraft_entities::Entities::new(&world.stream, world.seed);
-                entities.remote = is_client;
-                runtime.entities = Some(entities);
+                runtime.sounds = world.sounds.take();
+                runtime.entities = world.entities.take();
+                if let Some(entities) = runtime.entities.as_mut() {
+                    entities.remote = is_client;
+                }
                 runtime.day = DayCycle::default();
                 // Game ticks since sunrise to start at: 6000 noon, 13000
                 // dusk, 18000 midnight.
