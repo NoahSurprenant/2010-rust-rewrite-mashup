@@ -1,4 +1,4 @@
-use crate::pcm::{PcmAudio, decode_audio_bytes};
+use crate::pcm::{PcmAudio, PcmSamples, decode_audio_bytes};
 
 pub(crate) fn decode(bytes: &[u8]) -> Option<PcmAudio> {
     let field = |offset: usize| -> Option<u32> {
@@ -69,8 +69,10 @@ pub(crate) fn decode_adpcm(data: &[u8], frames: u32, rate: u32, channels: u32) -
     if pcm.samples.len() < samples {
         return None;
     }
-    if pcm.samples.len() > samples {
-        pcm.samples = pcm.samples[..samples].into();
+    if pcm.samples.len() > samples
+        && let PcmSamples::F32(all) = &pcm.samples
+    {
+        pcm.samples = PcmSamples::F32(all[..samples].into());
     }
     Some(pcm)
 }

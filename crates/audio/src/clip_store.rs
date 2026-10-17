@@ -10,7 +10,7 @@ use asset_core::AssetNamespace;
 use assets::NamespaceSoundIwd;
 use bevy::prelude::*;
 
-use crate::pcm::{PcmAudio, decode_audio_bytes};
+use crate::pcm::{PcmAudio, PcmSamples, decode_audio_bytes};
 use crate::start::SoundClass;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -82,7 +82,7 @@ pub(crate) enum ClipError {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedPcm {
-    samples: Arc<[f32]>,
+    samples: PcmSamples,
     channels: u16,
     sample_rate: u32,
 }
@@ -454,7 +454,7 @@ impl ClipStore {
                 .and_then(|source| cache.ready(self.common_profile_id, &source))
         }) {
             self.reused_clips += 1;
-            self.reused_bytes += (pcm.samples.len() * size_of::<f32>()) as u64;
+            self.reused_bytes += pcm.samples.bytes() as u64;
             self.outcomes
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())
@@ -709,10 +709,7 @@ fn note_outcome(path: ClipPath, result: Result<&PreparedPcm, &ClipError>) {
     match result {
         Ok(prepared) => {
             PREPARED[slot].fetch_add(1, Ordering::Relaxed);
-            SAMPLE_BYTES[slot].fetch_add(
-                (prepared.samples.len() * size_of::<f32>()) as u64,
-                Ordering::Relaxed,
-            );
+            SAMPLE_BYTES[slot].fetch_add(prepared.samples.bytes() as u64, Ordering::Relaxed);
         }
         Err(_) => {
             FAILED[slot].fetch_add(1, Ordering::Relaxed);
@@ -760,7 +757,7 @@ fn prepare_jobs(
         for ((i, sound), pcm) in asked.into_iter().zip(decoded) {
             let result = pcm
                 .map_err(|_| ClipError::Decode)
-                .and_then(|bytes| pcm_from_bytes(16, &bytes, sound.channels(), sound.rate));
+                .and_then(|bytes| pcm_from_bytes(16, bytes.into(), sound.channels(), sound.rate));
             note_outcome(ClipPath::Xwma, result.as_ref());
             out[i] = Some(result);
         }
@@ -828,54 +825,56 @@ fn prepare_loaded(sound: &asset_audio::LoadedSoundPcm) -> Result<PreparedPcm, Cl
         )
         .ok_or(ClipError::Decode)?;
         return Ok(PreparedPcm {
-            samples: Arc::clone(pcm.samples()),
+            samples: pcm.samples().clone(),
             channels: pcm.channel_count(),
             sample_rate: pcm.rate(),
         });
     }
-    let decoded;
     let (bits, bytes) = if sound.is_t5_xwma() {
-        decoded = asset_audio::decode_t5_xwma(
+        let decoded = asset_audio::decode_t5_xwma(
             sound.encoded_bytes(),
             &sound.seek_table,
             sound.channels().max(0) as u32,
             sound.rate,
         )
         .map_err(|_| ClipError::Decode)?;
-        (16, decoded.as_slice())
+        (16, decoded.into())
     } else if sound.format() == 1 {
-        (sound.bits(), sound.encoded_bytes())
+        (sound.bits(), sound.encoded_arc())
     } else {
         return Err(ClipError::Decode);
     };
     pcm_from_bytes(bits, bytes, sound.channels(), sound.rate)
 }
 
-/// Encoded samples as the mixer wants them: interleaved `f32`, a whole number
-/// of frames, and never empty — a clip with no samples is a failed decode and
+/// Encoded samples as the mixer reads them: interleaved, a whole number of
+/// frames, and never empty — a clip with no samples is a failed decode and
 /// not a silent clip.
 fn pcm_from_bytes(
     bits: i32,
-    bytes: &[u8],
+    bytes: Arc<[u8]>,
     channels: i32,
     rate: u32,
 ) -> Result<PreparedPcm, ClipError> {
-    let mut samples: Vec<f32> = match bits {
-        8 => bytes.iter().map(|&b| (b as f32 - 128.0) / 128.0).collect(),
-        16 => bytes
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
-            .collect(),
+    let lanes = channels.max(1) as usize;
+    let samples = match bits {
+        8 => {
+            let mut samples: Vec<f32> = bytes.iter().map(|&b| (b as f32 - 128.0) / 128.0).collect();
+            samples.truncate(samples.len() / lanes * lanes);
+            PcmSamples::F32(samples.into())
+        }
+        16 => {
+            let len = bytes.len() / 2 / lanes * lanes;
+            PcmSamples::le16(bytes, len).ok_or(ClipError::Decode)?
+        }
         _ => return Err(ClipError::Decode),
     };
-    let lanes = channels.max(1) as usize;
-    samples.truncate(samples.len() / lanes * lanes);
     if samples.is_empty() {
         return Err(ClipError::Decode);
     }
     let channels = u16::try_from(channels.max(1)).map_err(|_| ClipError::Decode)?;
     Ok(PreparedPcm {
-        samples: samples.into(),
+        samples,
         channels,
         sample_rate: rate.max(1),
     })
@@ -918,7 +917,7 @@ fn prepare_streamed(
         return Err(ClipError::Decode);
     };
     Ok(Some(PreparedPcm {
-        samples: Arc::clone(pcm.samples()),
+        samples: pcm.samples().clone(),
         channels: pcm.channel_count(),
         sample_rate: pcm.rate(),
     }))
