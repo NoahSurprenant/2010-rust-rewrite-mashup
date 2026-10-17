@@ -15,10 +15,11 @@ use bevy::tasks::{Task, futures_lite::future};
 use super::sm3_wgsl::{PASS_VERTEX_ENTRY, ValidatedPassWgsl};
 use render_material::PortId;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 struct ModuleKey {
     port: PortId,
     cached_lighting: bool,
+    fragment_entry: String,
 }
 
 #[derive(Clone)]
@@ -151,6 +152,7 @@ impl ExactPipelineRegistry {
         let module = ModuleKey {
             port: key.port,
             cached_lighting: matches!(source, ExactModuleSource::CachedLighting(_)),
+            fragment_entry: plan.fragment_entry.clone(),
         };
         self.queued
             .entry(module)
@@ -224,10 +226,14 @@ fn build_port(
         Some(shader) => (shader, None),
         None => {
             let wgsl = super::minecraft_light::hooked(source.wgsl());
+            let source = match entry_module(&wgsl, &module.fragment_entry) {
+                Some(entry) => ShaderSource::Naga(std::borrow::Cow::Owned(entry)),
+                None => ShaderSource::Wgsl(wgsl),
+            };
             let shader = Arc::new(unsafe {
                 device.create_shader_module(ShaderModuleDescriptor {
                     label: Some(&label),
-                    source: ShaderSource::Wgsl(wgsl),
+                    source,
                 })
             });
             (shader.clone(), Some(shader))
@@ -292,4 +298,19 @@ fn build_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// The pass module cut down to its vertex entry and the one fragment entry
+/// these pipelines draw with. A pass module carries a fragment entry per
+/// alpha-test state, and wgpu keeps a module's whole IR alive for as long as
+/// any pipeline built from it, so one module shared across the states held
+/// every state's IR for the life of the map. A source naga does not parse is
+/// handed to wgpu as written, which reports the error.
+fn entry_module(wgsl: &str, fragment_entry: &str) -> Option<naga::Module> {
+    let mut module = naga::front::wgsl::parse_str(wgsl).ok()?;
+    module
+        .entry_points
+        .retain(|entry| entry.stage != naga::ShaderStage::Fragment || entry.name == fragment_entry);
+    naga::compact::compact(&mut module, naga::compact::KeepUnused::No);
+    Some(module)
 }
