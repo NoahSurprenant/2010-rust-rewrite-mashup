@@ -46,6 +46,7 @@ members = [
     "crates/minecraft_terrain",
     "crates/lighting_iw4",
     "crates/marks_iw4",
+    "crates/master_pin",
     "crates/master_protocol",
     "crates/math_iw4",
     "crates/movement_iw4",
@@ -148,6 +149,7 @@ launcher = { path = "crates/launcher" }
 lighting_iw4 = { path = "crates/lighting_iw4" }
 marks_iw4 = { path = "crates/marks_iw4" }
 math_iw4 = { path = "crates/math_iw4" }
+master_pin = { path = "crates/master_pin" }
 master_protocol = { path = "crates/master_protocol" }
 movement_iw4 = { path = "crates/movement_iw4" }
 net = { path = "crates/net" }

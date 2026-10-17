@@ -10,5 +10,9 @@ description = "The owner-approved end-to-end scenarios, run against a real iw4l 
 asset_transport.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+master_pin.workspace = true
+rustls = { version = "0.23.31", default-features = false, features = ["ring", "std"] }
+
 [lints]
 workspace = true

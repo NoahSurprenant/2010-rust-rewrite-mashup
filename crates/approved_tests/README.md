@@ -20,6 +20,11 @@ workspace.
 | `heavy_gameplay_lifecycle` | cold load `mp_overgrown` with 16 players, three input scenes, production disconnect, a watched menu, a second map with three scenes, production quit |
 | `crafting_table` | the Minecraft map at a fixed seed: builds a small arena, opens a crafting table with E, crafts a chest on its 3x3 grid, closes with Escape (the grid empties back, no MW2 menu), opens with E holding a gun, right click with a gun aims, right click with an item opens, crouched right click with a plank places against it and with an empty hand opens it, a key rebound to Use opens it, and the screen closes when the table breaks or the player moves away |
 
+The `master_pin` unit tests (`src/master_pin.rs`, approved 2026-10-17) check the
+master key pin: the right pin is accepted, a wrong one refused, a mistyped one
+reported, and the pin matches what the openssl command in `docs/MASTER.md`
+prints. They need no game data.
+
 `crafting_table` checks each step from a `minecraft-state:` line the game prints
 (`mc state <label>`); its steps and expectations are in
 `src/scenarios/crafting_table.rs`, with unit tests there for the judging (they

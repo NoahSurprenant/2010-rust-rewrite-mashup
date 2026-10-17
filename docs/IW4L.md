@@ -34,7 +34,7 @@ home, and diagnostic files sit on your disk until you attach them to a report.
 | rendering | One sorted drawsurf list; only the tess emitters fork per surface type. |
 | physics | Fixed 17 ms step on its own accumulator. Framerate changes nothing about how a body falls. |
 | simulation | One `TickInput → sim::step → Snapshot` funnel for server, prediction and replay. |
-| network | Custom p2p wire over UDP: deltas, reliability, reconciliation. A QUIC master only introduces peers. |
+| network | Custom wire: deltas, reliability, reconciliation, carried over QUIC through the master, which lists rooms and relays every packet between host and players. |
 | platforms | Linux, macOS (Metal) and a portable Windows build. |
 
 Retail protocols, the original ABI and patched executables are out of scope.
