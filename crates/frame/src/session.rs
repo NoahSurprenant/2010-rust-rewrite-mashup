@@ -26,6 +26,11 @@ impl RuntimeRole {
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Headless;
 
+/// A dedicated server: the process hosts the match and has no player of its
+/// own. The local client never joins, so client 0 never enters the authority.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DedicatedServer;
+
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum AppScreen {
     #[default]

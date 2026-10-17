@@ -109,6 +109,8 @@ pub struct Player {
     started: Instant,
     /// Every `minecraft-state:` and `minecraft-block:` line, by label.
     pub seen: BTreeMap<String, Event>,
+    /// A dedicated server's `dedicated-players:` lines, in order.
+    pub rosters: Vec<Event>,
     /// Peak resident memory sampled, in KiB.
     pub peak_rss_kib: u64,
 }
@@ -121,6 +123,17 @@ impl Player {
         session: u32,
         env: &[(&str, String)],
     ) -> Result<Self, String> {
+        Self::launch_with(bin, dir, name, session, &["menu"], env)
+    }
+
+    pub fn launch_with(
+        bin: &Path,
+        dir: &Path,
+        name: &'static str,
+        session: u32,
+        args: &[&str],
+        env: &[(&str, String)],
+    ) -> Result<Self, String> {
         let file = |file: &str| {
             std::fs::File::create(dir.join(file)).map_err(|e| format!("create {file}: {e}"))
         };
@@ -128,7 +141,7 @@ impl Player {
         let _ = std::fs::remove_file(dir.join("master.status"));
         let mut command = Command::new(bin);
         command
-            .arg("menu")
+            .args(args)
             .current_dir(dir)
             .env("IW4L_SETTINGS_PATH", dir.join("settings.cfg"))
             .env("IW4L_MASTER_STATUS_FILE", dir.join("master.status"))
@@ -169,6 +182,7 @@ impl Player {
             log: file(&format!("child_stdout_{session}.txt"))?,
             started,
             seen: BTreeMap::new(),
+            rosters: Vec::new(),
             peak_rss_kib: 0,
         })
     }
@@ -191,10 +205,36 @@ impl Player {
         self.child.0.try_wait().ok().flatten()
     }
 
+    /// Asks the process to stop as a supervisor does: SIGTERM, or the
+    /// console's `quit` where there is none.
+    pub fn terminate(&mut self) -> Result<(), String> {
+        println!(
+            "[{:>7.1}s] {} <- SIGTERM",
+            self.started.elapsed().as_secs_f64(),
+            self.name
+        );
+        if cfg!(unix) {
+            let status = Command::new("kill")
+                .args(["-TERM", &self.pid().to_string()])
+                .status()
+                .map_err(|e| format!("kill: {e}"))?;
+            if !status.success() {
+                return Err(format!("kill -TERM {}: {status}", self.pid()));
+            }
+            Ok(())
+        } else {
+            self.send("quit")
+        }
+    }
+
     /// Takes the lines printed so far.
     pub fn pump(&mut self) {
         while let Ok((at_ms, line)) = self.lines.try_recv() {
             let _ = writeln!(self.log, "{at_ms:>9} {line}");
+            if let Some(event) = parse(&line, "dedicated-players:", at_ms) {
+                println!("[{:>7.1}s] {} -> {line}", at_ms as f64 / 1000.0, self.name);
+                self.rosters.push(event);
+            }
             for prefix in ["minecraft-state:", "minecraft-block:"] {
                 if let Some(event) = parse(&line, prefix, at_ms) {
                     println!("[{:>7.1}s] {} -> {line}", at_ms as f64 / 1000.0, self.name);
@@ -231,6 +271,23 @@ pub fn rss_kib(pid: u32) -> u64 {
                 .and_then(|kib| kib.parse().ok())
         })
         .unwrap_or(0)
+}
+
+/// CPU time a process has used so far, in seconds (Linux; 0 elsewhere):
+/// user and system clock ticks from `/proc/<pid>/stat`, at the kernel's
+/// usual 100 a second.
+pub fn cpu_secs(pid: u32) -> f64 {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| {
+            // Fields after the parenthesised command, which may hold spaces.
+            let rest = stat.rsplit_once(')')?.1;
+            let fields: Vec<&str> = rest.split_whitespace().collect();
+            let utime: u64 = fields.get(11)?.parse().ok()?;
+            let stime: u64 = fields.get(12)?.parse().ok()?;
+            Some((utime + stime) as f64 / 100.0)
+        })
+        .unwrap_or(0.0)
 }
 
 /// Both games, sampled for memory as they are pumped.

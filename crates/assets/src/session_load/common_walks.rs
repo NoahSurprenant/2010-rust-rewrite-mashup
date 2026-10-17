@@ -442,7 +442,7 @@ pub(super) fn hold_image_plan(
     plan: Option<ImageDemandPlan>,
     job: load_jobs::Job,
 ) -> Option<HeldImagePlan> {
-    let plan = plan.filter(|plan| !plan.is_empty())?;
+    let plan = plan.filter(|plan| !plan.is_empty() && super::decodes_images())?;
     // The census names the winner of a disputed claim by plan id, so the id
     // and the label are printed together once, here, where both are known.
     diag::info!(

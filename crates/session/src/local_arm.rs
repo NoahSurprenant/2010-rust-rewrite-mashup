@@ -70,8 +70,9 @@ pub fn join_local_on_class_select(
     hold: Option<Res<AuthorityLoadHold>>,
     signon: Option<Res<SignonState>>,
     mut joining: Local<Option<sim::ActionRequestId>>,
+    dedicated: Option<Res<frame::DedicatedServer>>,
 ) {
-    if !matches!(*screen, AppScreen::ClassSelect) {
+    if !matches!(*screen, AppScreen::ClassSelect) || dedicated.is_some() {
         *joining = None;
         return;
     }

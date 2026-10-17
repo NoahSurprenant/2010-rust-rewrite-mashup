@@ -150,7 +150,11 @@ pub fn launch(
             run_menu(games, artifacts);
         }
         LaunchMode::Map(zone) => run_map(games, artifacts, zone, acceptance, Role::Listen, None),
-        LaunchMode::Serve(zone) => run_map(games, artifacts, zone, None, Role::Dedicated, None),
+        LaunchMode::Dedicated(zone) => {
+            diag::mirror_to_stdout();
+            assets::decode_images(false);
+            run_map(games, artifacts, zone, None, Role::Dedicated, None)
+        }
         LaunchMode::ExportGltf(zone) => {
             if acceptance.is_some() {
                 fatal("render acceptance is not available for export-gltf");
@@ -408,7 +412,21 @@ fn run_map(
     let requires = net::content_required_by_map(&zone_arg_lc)
         .unwrap_or_else(|error| fatal(&format!("master content: {error}")));
 
-    let master_intent = if role == Role::Replay {
+    let master_intent = if role == Role::Dedicated {
+        if let Err(error) = &zone_ff {
+            fatal(&format!("dedicated server: {error}"));
+        }
+        if have.0 & net::CONTENT_IW4 == 0 {
+            fatal("dedicated server: IW4 common_mp.ff is not installed");
+        }
+        net::MasterLaunchIntent::dedicated_from_env(
+            &zone,
+            have,
+            requires,
+            crate::dedicated::DEFAULT_ROOM_NAME,
+        )
+        .unwrap_or_else(|error| fatal(&format!("dedicated server: {error}")))
+    } else if role == Role::Replay {
         net::MasterLaunchIntent::disabled()
     } else if have.0 & net::CONTENT_IW4 == 0 {
         diag::warn!(
@@ -454,29 +472,28 @@ fn run_map(
     app.insert_resource(master_intent);
     let dedicated = config.role == Role::Dedicated;
     if dedicated {
-        app.insert_resource(bevy::winit::WinitSettings::continuous())
-            .insert_resource(frame::Headless);
-    }
-    app.add_plugins(crate::plugins::default_plugins_with_quiet_log(
-        WindowPlugin {
-            exit_condition: if dedicated {
-                bevy::window::ExitCondition::DontExit
-            } else {
-                bevy::window::ExitCondition::OnAllClosed
-            },
-            primary_window: (!dedicated).then(|| Window {
-                title: match config.role {
-                    Role::Replay => format!("iw4l — play {}", config.zone),
-                    Role::Listen | Role::Dedicated => format!("iw4l — {}", config.zone),
-                    Role::Client => format!("iw4l — join {}", config.zone),
-                },
-                resolution: (ACCEPTANCE_WIDTH, ACCEPTANCE_HEIGHT).into(),
-                present_mode,
+        app.insert_resource(frame::Headless)
+            .insert_resource(frame::DedicatedServer)
+            .insert_resource(audio::AudioSilent)
+            .add_plugins(crate::plugins::headless_default_plugins());
+        crate::dedicated::register(&mut app);
+    } else {
+        app.add_plugins(crate::plugins::default_plugins_with_quiet_log(
+            WindowPlugin {
+                primary_window: Some(Window {
+                    title: match config.role {
+                        Role::Replay => format!("iw4l — play {}", config.zone),
+                        Role::Listen | Role::Dedicated => format!("iw4l — {}", config.zone),
+                        Role::Client => format!("iw4l — join {}", config.zone),
+                    },
+                    resolution: (ACCEPTANCE_WIDTH, ACCEPTANCE_HEIGHT).into(),
+                    present_mode,
+                    ..default()
+                }),
                 ..default()
-            }),
-            ..default()
-        },
-    ));
+            },
+        ));
+    }
     if let Ok(path) = &zone_ff {
         app.insert_resource(LoadingPreviewSource {
             path: path.clone(),

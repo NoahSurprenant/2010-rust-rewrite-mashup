@@ -8,6 +8,7 @@ mod runner;
 mod scenario;
 mod scenarios {
     pub mod crafting_table;
+    pub mod dedicated_server;
     pub mod heavy_gameplay_lifecycle;
     pub mod minecraft_multiplayer;
 }
@@ -19,6 +20,7 @@ use serde_json::{Value, json};
 
 use scenario::{MapB, Place, ResolvedPlace, ResolvedScene};
 use scenarios::crafting_table;
+use scenarios::dedicated_server;
 use scenarios::heavy_gameplay_lifecycle::{self as hgl, SCENARIO};
 use scenarios::minecraft_multiplayer;
 
@@ -44,7 +46,7 @@ fn main() {
             eprintln!("{message}");
             eprintln!(
                 "usage: approved_tests heavy_gameplay_lifecycle [--seed N | --replay run.json] \
-                 [--cache cold|shared] [--bin path]\n       approved_tests crafting_table [--cache cold|shared] [--bin path]\n       approved_tests minecraft_multiplayer [--cache cold|shared] [--bin path]"
+                 [--cache cold|shared] [--bin path]\n       approved_tests crafting_table [--cache cold|shared] [--bin path]\n       approved_tests minecraft_multiplayer [--cache cold|shared] [--bin path]\n       approved_tests dedicated_server [--cache cold|shared] [--bin path]"
             );
             std::process::exit(2);
         }
@@ -55,12 +57,15 @@ fn main() {
         run_crafting_table
     } else if args.scenario == minecraft_multiplayer::NAME {
         run_minecraft_multiplayer
+    } else if args.scenario == dedicated_server::NAME {
+        run_dedicated_server
     } else {
         eprintln!(
-            "approved scenarios: {}, {}, {} (asked for {:?})",
+            "approved scenarios: {}, {}, {}, {} (asked for {:?})",
             SCENARIO.name,
             crafting_table::NAME,
             minecraft_multiplayer::NAME,
+            dedicated_server::NAME,
             args.scenario
         );
         std::process::exit(2);
@@ -671,6 +676,228 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
         .iter()
         .map(|(label, event)| (label.clone(), json!(event.fields)))
         .collect::<serde_json::Map<_, _>>()
+        .into();
+    manifest["answers"] = json!(facts.notes);
+    manifest["result"] = if passed { "passed" } else { "failed" }.into();
+    if let Some(failure) = failure {
+        manifest["failure"] = failure.into();
+    } else if !failed.is_empty() {
+        manifest["failure"] = format!("checkpoints failed: {}", failed.join(", ")).into();
+    }
+    report::write(&run_dir, &manifest)?;
+    println!(
+        "{}: {}",
+        manifest["result"].as_str().unwrap_or("?"),
+        run_dir.join("run.json").display()
+    );
+    Ok(passed)
+}
+
+/// The dedicated server's two lives, each with the client's visits, every
+/// step in `dedicated_server`. Rosters and memory peaks are kept even when
+/// a step fails.
+fn dedicated_sessions(
+    bin: &Path,
+    master_bin: &Path,
+    master: &duo::Master,
+    dirs: &[PathBuf; 2],
+    facts: &mut dedicated_server::Facts,
+    peaks: &mut Vec<Value>,
+) -> Result<(), String> {
+    use dedicated_server as ds;
+    let env = [
+        ("IW4L_MASTER_ADDR", master.addr.clone()),
+        ("IW4L_MASTER_SERVER_NAME", duo::SERVER_NAME.to_owned()),
+        ("IW4L_MASTER_CA_CERT", master.ca.display().to_string()),
+    ];
+    let mut server_env = env.to_vec();
+    server_env.push(("IW4L_MASTER_HOST_NAME", ds::ROOM.to_owned()));
+    server_env.push((
+        "IW4L_MINECRAFT_WORLDS",
+        dirs[0].join("minecraft-worlds").display().to_string(),
+    ));
+    let list = || {
+        let out = std::process::Command::new(master_bin)
+            .args([
+                "list",
+                "--connect",
+                &master.addr,
+                "--server-name",
+                duo::SERVER_NAME,
+            ])
+            .arg("--ca-cert")
+            .arg(&master.ca)
+            .output()
+            .map_err(|e| format!("iw4l-master list: {e}"))?;
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let client = |session| duo::Player::launch(bin, &dirs[1], "client", session, &env);
+    for life in [1, 2] {
+        let server = duo::Player::launch_with(
+            bin,
+            &dirs[0],
+            "server",
+            life,
+            &["dedicated", ds::MAP],
+            &server_env,
+        )?;
+        let mut pair = duo::Pair {
+            host: server,
+            client: None,
+            peak_combined_kib: 0,
+            peak_client_kib: 0,
+        };
+        let played = (|| {
+            if life == 1 {
+                let room = ds::server_ready(&mut pair, facts, "s_ready")?;
+                ds::measure(&mut pair, facts, "no_client")?;
+                pair.client = Some(client(1)?);
+                ds::first_visit(&mut pair, facts, &room)?;
+                ds::measure(&mut pair, facts, "one_client")?;
+                ds::leave(&mut pair)?;
+                ds::empty_room(&mut pair, facts, &list)?;
+                pair.client = Some(client(2)?);
+                ds::revisit(&mut pair, facts, &room, 2)?;
+                ds::leave(&mut pair)?;
+                ds::stop(&mut pair, facts, "stop1")
+            } else {
+                let room = ds::server_ready(&mut pair, facts, "s2_ready")?;
+                pair.client = Some(client(3)?);
+                ds::revisit(&mut pair, facts, &room, 3)?;
+                ds::leave(&mut pair)?;
+                ds::stop(&mut pair, facts, "stop2")
+            }
+        })();
+        pair.host.pump();
+        facts.rosters.append(&mut pair.host.rosters);
+        peaks.push(json!({
+            "server_life": life,
+            "server_peak_rss_mib": pair.host.peak_rss_kib / 1024,
+            "client_peak_rss_mib": pair.peak_client_kib / 1024,
+            "combined_peak_rss_mib": pair.peak_combined_kib / 1024,
+        }));
+        played.map_err(|e| format!("server life {life}: {e}"))?;
+    }
+    Ok(())
+}
+
+fn run_dedicated_server(root: &Path, args: &Args) -> Result<bool, String> {
+    asset_transport::load_dotenv();
+    if args.seed.is_some() || args.replay.is_some() {
+        return Err(
+            "dedicated_server takes no --seed or --replay: the server picks the seed".into(),
+        );
+    }
+    let master_bin = args
+        .bin
+        .with_file_name(format!("iw4l-master{}", std::env::consts::EXE_SUFFIX));
+    for bin in [&args.bin, &master_bin] {
+        if !bin.is_file() {
+            return Err(format!(
+                "{} is not built (cargo build --profile play -p launcher --bin iw4l -p iw4l-master)",
+                bin.display()
+            ));
+        }
+    }
+    let games = asset_transport::games_root_from_env()?;
+    let mw2_installed = asset_transport::list_mp_maps(&games)
+        .iter()
+        .any(|m| m.starts_with("iw4:"));
+    let run_id = format!("{}-{}", utc_stamp(), dedicated_server::NAME);
+    let run_dir = root.join("iw4l-artifacts/approved-tests").join(&run_id);
+    std::fs::create_dir_all(run_dir.parent().expect("has parent"))
+        .map_err(|e| format!("create run root: {e}"))?;
+    std::fs::create_dir(&run_dir).map_err(|e| format!("create {}: {e}", run_dir.display()))?;
+    let mut manifest = json!({
+        "scenario": dedicated_server::NAME,
+        "run_id": run_id,
+        "result": "running",
+        "build": report::build_facts(root, &args.bin),
+        "platform": report::platform_facts(),
+        "content": { "games_root": games.0.display().to_string(), "mw2_installed": mw2_installed },
+        "map": dedicated_server::MAP,
+    });
+    if !mw2_installed {
+        manifest["result"] = "blocked".into();
+        manifest["failure"] = "no MW2 multiplayer zone under the games root".into();
+        report::write(&run_dir, &manifest)?;
+        return Ok(false);
+    }
+    let dirs = [run_dir.join("server"), run_dir.join("client")];
+    let mut caches = Vec::new();
+    for (dir, name) in dirs.iter().zip(["server", dedicated_server::CLIENT]) {
+        let profile = dir.join("iw4l-artifacts/profile");
+        std::fs::create_dir_all(&profile)
+            .map_err(|e| format!("create {}: {e}", profile.display()))?;
+        std::fs::write(profile.join("classes.txt"), dedicated_server::CLASSES)
+            .map_err(|e| format!("write the class file: {e}"))?;
+        std::fs::write(
+            dir.join("settings.cfg"),
+            format!("resolution=960x540\nfullscreen=false\nvsync=true\nplayer_name={name}\n"),
+        )
+        .map_err(|e| format!("write the settings: {e}"))?;
+        caches.push(prepare_cache(root, dir, args.cache)?);
+        share_minecraft_files(root, dir)?;
+    }
+    manifest["cache"] = caches.into();
+    let bin = stage_binary(&args.bin, &run_dir)?;
+    report::write(&run_dir, &manifest)?;
+    println!("run: {}", run_dir.display());
+
+    let master = duo::Master::start(&master_bin, &run_dir.join("master"))?;
+    let mut facts = dedicated_server::Facts::default();
+    let mut peaks = Vec::new();
+    let failure =
+        dedicated_sessions(&bin, &master_bin, &master, &dirs, &mut facts, &mut peaks).err();
+    drop(master);
+    for dir in &dirs {
+        keep_minecraft_files(root, dir);
+    }
+    manifest["memory"] = peaks.into();
+    manifest["server_measures"] = facts
+        .measures
+        .iter()
+        .map(|(point, m)| {
+            (
+                (*point).to_owned(),
+                json!({
+                    "rss_mib": m.rss_mib,
+                    "peak_rss_mib": m.peak_rss_mib,
+                    "cpu_percent_of_one_core": (m.cpu_percent * 10.0).round() / 10.0,
+                }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>()
+        .into();
+    let checks = dedicated_server::judge(&facts);
+    for check in &checks {
+        match check.failures.as_slice() {
+            [] => println!("  pass  {}", check.label),
+            failures => println!("  FAIL  {}: {}", check.label, failures.join("; ")),
+        }
+    }
+    let failed: Vec<&str> = checks
+        .iter()
+        .filter(|c| !c.failures.is_empty())
+        .map(|c| c.label)
+        .collect();
+    let passed = failure.is_none() && failed.is_empty();
+    manifest["checks"] = checks
+        .iter()
+        .map(|c| json!({ "label": c.label, "failures": c.failures }))
+        .collect::<Vec<_>>()
+        .into();
+    manifest["lines"] = facts
+        .lines
+        .iter()
+        .map(|(label, event)| (label.clone(), json!(event.fields)))
+        .collect::<serde_json::Map<_, _>>()
+        .into();
+    manifest["rosters"] = facts
+        .rosters
+        .iter()
+        .map(|event| json!(event.fields))
+        .collect::<Vec<_>>()
         .into();
     manifest["answers"] = json!(facts.notes);
     manifest["result"] = if passed { "passed" } else { "failed" }.into();

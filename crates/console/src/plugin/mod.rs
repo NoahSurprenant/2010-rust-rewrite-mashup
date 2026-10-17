@@ -1952,7 +1952,9 @@ fn dispatch_console_command(
             }
         }
     }
-    let in_minecraft = minecraft.as_ref().is_some_and(|ui| ui.in_world);
+    let in_minecraft = minecraft
+        .as_ref()
+        .is_some_and(|ui| ui.in_world || (ui.net_role == "dedicated" && ui.seed.is_some()));
     if dispatch.wait_minecraft {
         if in_minecraft {
             dispatch.wait_minecraft = false;

@@ -2,6 +2,7 @@
 
 `iw4l-master` is a relay and server browser, not a game server: the host's client
 simulates the match. It pulls in no engine dependency, so a VPS needs no assets and no GPU. Publishing our own releases: [`DEPLOY.md`](DEPLOY.md).
+A room that stays up with nobody playing in it: [`DEDICATED.md`](DEDICATED.md).
 
 ## Install — from the machine with the clone; the VPS needs only ssh
 

@@ -243,8 +243,9 @@ pub(crate) fn sync_player_name(
     mut inbox: Option<ResMut<net::ClientActionInbox>>,
     mut seq: ResMut<net::ActionRequestIds>,
     mut sent: Local<Option<(frame::WorldGeneration, sim::ClientId, [u8; 16])>>,
+    dedicated: Option<Res<frame::DedicatedServer>>,
 ) {
-    if !has_world.0 || *role == frame::RuntimeRole::Replay {
+    if !has_world.0 || *role == frame::RuntimeRole::Replay || dedicated.is_some() {
         *sent = None;
         return;
     }

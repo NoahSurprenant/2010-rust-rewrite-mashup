@@ -38,7 +38,12 @@ impl Plugin for RenderPlugin {
 
         crate::diag::acceptance::register_acceptance_systems(app);
         register_render_frame_diag(app);
-        app.add_systems(Update, sample_render_frame_diag.in_set(ClientSet::Diag));
+        app.add_systems(
+            Update,
+            sample_render_frame_diag
+                .in_set(ClientSet::Diag)
+                .run_if(not(resource_exists::<frame::Headless>)),
+        );
         register_frame_spans(app);
         app.init_resource::<CaptureQueue>().add_systems(
             Update,
@@ -118,9 +123,13 @@ fn waiting_pipeline_shaders(
     out
 }
 
-fn keep_texels_unless_software(adapter: Option<Res<bevy::render::renderer::RenderAdapterInfo>>) {
+fn keep_texels_unless_software(
+    adapter: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
+    headless: Option<Res<frame::Headless>>,
+) {
     assets::keep_texels_for_next_load(
-        !adapter.is_some_and(|adapter| render_gpu::software_rasterizer(&adapter)),
+        headless.is_none()
+            && !adapter.is_some_and(|adapter| render_gpu::software_rasterizer(&adapter)),
     );
 }
 

@@ -92,7 +92,7 @@ impl Plugin for RenderPreparePlugin {
                 Update,
                 (
                     arm_world_spawn_on_install.before(spawn_world),
-                    spawn_world,
+                    spawn_world.run_if(not(resource_exists::<frame::Headless>)),
                     spawn_world_finish.after(spawn_world),
                     render_anim::prepare_fpv_compositions.after(spawn_world_finish),
                     render_anim::prepare_model_materials.after(spawn_world_finish),
