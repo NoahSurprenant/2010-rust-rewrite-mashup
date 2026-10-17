@@ -159,6 +159,14 @@ pub fn first_session(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     ))?;
     let broken = pair.poll_block(false, "h_plank_gone", plank, "air", Duration::from_secs(20))?;
     facts.notes.insert("h_plank_gone", broken);
+    // It walks onto the plank the break dropped, on the host, and picks it up.
+    let picked = pair.ask(
+        true,
+        "hold +forward; wait 0.4s; release +forward; wait 3s; mc state c_picked",
+        "c_picked",
+        step,
+    )?;
+    facts.keep("c_picked", picked);
     let last = pair.ask(true, "key 1; wait 1s; mc state c_final", "c_final", step)?;
     facts.keep("c_final", last);
     // Far from the host, the host still has ground under the client: it
@@ -258,7 +266,7 @@ fn want(got: &str, want: &str, what: &str) -> Result<(), String> {
 /// Judges what both games printed.
 pub fn judge(facts: &Facts) -> Vec<Check> {
     type Rule = fn(&Facts) -> Result<(), String>;
-    let rules: [(&'static str, Rule); 12] = [
+    let rules: [(&'static str, Rule); 13] = [
         ("seed_shared", |f| {
             let host = line(f, "h_ready")?.get("seed").unwrap_or("-");
             let client = line(f, "c_ready")?.get("seed").unwrap_or("-");
@@ -309,6 +317,14 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
         }),
         ("client_break_on_host", |f| {
             want(note(f, "h_plank_gone")?, "air", "host sees")
+        }),
+        ("client_picks_up_drop", |f| {
+            let slot: usize = note(f, "planks_slot")?.parse().map_err(|_| "bad slot")?;
+            want(
+                &slots(line(f, "c_picked")?)[slot],
+                "minecraft:oak_planks*4",
+                "client slot after walking onto the drop",
+            )
         }),
         ("client_ground_far_from_host", |f| {
             let want = [FAR[0], FAR[1] + 1, FAR[2]];
@@ -445,6 +461,10 @@ mod tests {
         f.lines.insert(
             "c_final".into(),
             ready("c_final", "client", with(5, "minecraft:oak_planks*3")),
+        );
+        f.lines.insert(
+            "c_picked".into(),
+            ready("c_picked", "client", with(5, "minecraft:oak_planks*4")),
         );
         for label in ["c_far1", "c_far2"] {
             f.lines
