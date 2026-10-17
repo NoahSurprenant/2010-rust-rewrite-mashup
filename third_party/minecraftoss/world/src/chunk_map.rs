@@ -731,8 +731,9 @@ impl ChunkMap {
         self.shared.work.notify_all();
         let evicting = Instant::now();
         // Dropped chunks, with any waiting edits, stay in memory until the
-        // saver has written them.
-        if !dropped.is_empty() {
+        // saver has written them; without storage there is no saver, and
+        // they go.
+        if !dropped.is_empty() && self.shared.storage.is_some() {
             let mut evicted = self.shared.evicted.lock().expect("evicted chunks");
             for (pos, slot) in dropped {
                 let (chunk, status) = match slot {
@@ -745,6 +746,10 @@ impl ChunkMap {
             }
             drop(evicted);
             self.shared.evicted_ready.notify_one();
+        } else {
+            for (pos, _) in &dropped {
+                self.edits.remove(pos);
+            }
         }
         self.last_tick_ms[6] = evicting.elapsed().as_secs_f64() * 1000.0;
     }

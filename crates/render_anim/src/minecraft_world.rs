@@ -134,6 +134,9 @@ struct Runtime {
     net: crate::minecraft_mp::NetRole,
     /// Edits for chunks not generated yet, applied when each arrives.
     deferred: HashMap<(i32, i32), Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)>>,
+    /// How many streams hold each chunk of the block world (the player's,
+    /// and on a host each client's collision stream).
+    voxel_holders: HashMap<(i32, i32), u32>,
 }
 
 /// Frames standing still on the spawn before the player counts as in the world.
@@ -342,6 +345,8 @@ fn seed() -> i64 {
 const REMOTE_REACH: f64 = 6.5;
 /// The most blocks one console box sets, as the console allows.
 const FILL_MAX: i64 = 4096;
+/// Chunks a host generates around each client for its collision.
+const CLIENT_COLLISION_DISTANCE: i32 = 3;
 
 /// Whether a block at `pos` would stand in the box of a player at `feet`.
 fn inside_player([fx, fy, fz]: [f64; 3], pos: (i32, i32, i32)) -> bool {
@@ -398,6 +403,80 @@ fn shape_of(
         shape_ids.insert(key, id);
         id
     })
+}
+
+/// A generated chunk column's collision shape ids, x fastest then z then y.
+fn chunk_shapes(
+    chunk: &minecraftoss_core::Chunk,
+    shapes: &mut HashMap<BlockStateId, u16>,
+    shape_ids: &mut HashMap<Vec<[u32; 6]>, u16>,
+    registries: &Registries,
+) -> Vec<u16> {
+    let (min_y, height) = (chunk.min_y(), chunk.height());
+    let mut ids = vec![0u16; (height * 256) as usize];
+    // Runs of one state (air, stone) skip the map.
+    let mut last = None;
+    for y in 0..height {
+        for z in 0..16usize {
+            for x in 0..16usize {
+                let state = chunk.block(x, min_y + y, z);
+                if let Some((last_state, id)) = last
+                    && last_state == state
+                {
+                    ids[((y as usize * 16) + z) * 16 + x] = id;
+                    continue;
+                }
+                let id = shape_of(shapes, shape_ids, registries, state);
+                last = Some((state, id));
+                ids[((y as usize * 16) + z) * 16 + x] = id;
+            }
+        }
+    }
+    ids
+}
+
+/// A chunk column's collision shapes: its generated blocks, with the
+/// scene's edits over them.
+fn chunk_collision(
+    chunk: &minecraftoss_core::Chunk,
+    world: &Loaded,
+    shapes: &mut HashMap<BlockStateId, u16>,
+    shape_ids: &mut HashMap<Vec<[u32; 6]>, u16>,
+) -> Vec<u16> {
+    let (min_y, height) = (chunk.min_y(), chunk.height());
+    let mut ids = chunk_shapes(chunk, shapes, shape_ids, &world.registries);
+    let (placed, cleared) = world.scene.chunk_edits((chunk.pos.x, chunk.pos.z));
+    let index = |(x, y, z): (i32, i32, i32)| {
+        let ly = y - min_y;
+        (0..height).contains(&ly).then(|| ((ly * 16 + (z & 15)) * 16 + (x & 15)) as usize)
+    };
+    for (pos, block) in placed.iter().flat_map(|placed| placed.iter()) {
+        if let Some(i) = index(*pos) {
+            let state = world.stream.states.state_of(block);
+            ids[i] = state.map_or(0, |state| shape_of(shapes, shape_ids, &world.registries, state));
+        }
+    }
+    for pos in cleared.iter().flat_map(|cleared| cleared.iter()) {
+        if let Some(i) = index(*pos) {
+            ids[i] = 0;
+        }
+    }
+    ids
+}
+
+/// One stream lets a chunk of the block world go; the last one to removes
+/// it, and says so.
+fn release_chunk(holders: &mut HashMap<(i32, i32), u32>, pos: (i32, i32)) -> bool {
+    let Some(count) = holders.get_mut(&pos) else {
+        return false;
+    };
+    *count = count.saturating_sub(1);
+    if *count > 0 {
+        return false;
+    }
+    holders.remove(&pos);
+    sim::voxel::remove_chunk(pos.0, pos.1);
+    true
 }
 
 /// Blocks set from the network or the host's clients: the scene, collision
@@ -698,6 +777,7 @@ fn update(
         steps,
         net: net_role,
         deferred,
+        voxel_holders,
         loading: _,
     } = &mut *runtime;
     let Some(world) = world.as_mut() else {
@@ -776,61 +856,12 @@ fn update(
             world.stream.record_edits(&world.scene, &positions);
             world.stream.mark_edited(&world.scene, &positions);
         }
-        let blocks = &world.registries.blocks;
         let (min_y, height) = (chunk.min_y(), chunk.height());
-        let mut ids = vec![0u16; (height * 256) as usize];
-        // Runs of one state (air, stone) skip the map.
-        let mut last = None;
-        for y in 0..height {
-            for z in 0..16usize {
-                for x in 0..16usize {
-                    let state = chunk.block(x, min_y + y, z);
-                    if let Some((last_state, id)) = last
-                        && last_state == state
-                    {
-                        ids[((y as usize * 16) + z) * 16 + x] = id;
-                        continue;
-                    }
-                    let id = *shapes.entry(state).or_insert_with(|| {
-                        let boxes = blocks.collision_boxes(state);
-                        if boxes.is_empty() {
-                            return 0;
-                        }
-                        let key: Vec<[u32; 6]> =
-                            boxes.iter().map(|b| b.map(|v| (v as f32).to_bits())).collect();
-                        if let Some(&id) = shape_ids.get(&key) {
-                            return id;
-                        }
-                        let boxes32 = boxes.iter().map(|b| b.map(|v| v as f32)).collect();
-                        let id = sim::voxel::add_shapes(vec![boxes32]).unwrap_or(0);
-                        shape_ids.insert(key, id);
-                        id
-                    });
-                    last = Some((state, id));
-                    ids[((y as usize * 16) + z) * 16 + x] = id;
-                }
-            }
-        }
-        // Collision follows the scene's edits over the generated terrain.
-        let (placed, cleared) = world.scene.chunk_edits((chunk.pos.x, chunk.pos.z));
-        let index = |(x, y, z): (i32, i32, i32)| {
-            let ly = y - min_y;
-            (0..height).contains(&ly).then(|| ((ly * 16 + (z & 15)) * 16 + (x & 15)) as usize)
-        };
-        for (pos, block) in placed.iter().flat_map(|placed| placed.iter()) {
-            if let Some(i) = index(*pos) {
-                let state = world.stream.states.state_of(block);
-                ids[i] = state.map_or(0, |state| shape_of(shapes, shape_ids, &world.registries, state));
-            }
-        }
-        for pos in cleared.iter().flat_map(|cleared| cleared.iter()) {
-            if let Some(i) = index(*pos) {
-                ids[i] = 0;
-            }
-        }
+        let ids = chunk_collision(&chunk, world, shapes, shape_ids);
         if let Some(entities) = entities.as_mut() {
             entities.load_chunk(&chunk);
         }
+        *voxel_holders.entry((chunk.pos.x, chunk.pos.z)).or_default() += 1;
         sim::voxel::set_chunk(
             chunk.pos.x,
             chunk.pos.z,
@@ -842,7 +873,14 @@ fn update(
         );
     }
     for pos in forgotten {
-        sim::voxel::remove_chunk(pos.x, pos.z);
+        // The stream dropped it from the scene; a client still standing there
+        // keeps it.
+        if !release_chunk(voxel_holders, (pos.x, pos.z))
+            && let NetRole::Host(host) = &*net_role
+            && let Some(chunk) = host.remotes.values().find_map(|remote| remote.held.get(&(pos.x, pos.z)))
+        {
+            world.scene.insert_chunk(chunk.clone());
+        }
         if let Some(entities) = entities.as_mut() {
             entities.unload_chunk(pos);
         }
@@ -924,6 +962,11 @@ fn update(
         let gone: Vec<u32> = host.remotes.keys().copied().filter(|id| !clients.contains(id)).collect();
         for id in gone {
             if let Some(remote) = host.remotes.remove(&id) {
+                for pos in remote.held.keys() {
+                    if release_chunk(voxel_holders, *pos) {
+                        world.scene.remove_chunk(*pos);
+                    }
+                }
                 host.keep_inventory(&remote.name, &remote.inventory, remote.selected);
                 diag::info!(World, "Minecraft: `{}` left; inventory kept", remote.name);
                 host.save_now();
@@ -973,6 +1016,48 @@ fn update(
                 .filter(|&w| authority.weapon_combat_row(w).is_some_and(|facts| facts.inventory_type == 0))
                 .collect();
             inventory_ui.sync_weapons(&mut remote.inventory, &owned);
+        }
+        // The ground under each client, wherever it goes: chunks generated
+        // around it, the log's changes laid over them.
+        for (&id, remote) in host.remotes.iter_mut() {
+            let Some(feet) = authority
+                .player(sim::ClientId(id))
+                .filter(|ps| ps.pm_type == 0)
+                .map(|ps| sim::voxel::to_block(origin, ps.origin))
+            else {
+                continue;
+            };
+            let collision = remote.collision.get_or_insert_with(|| {
+                minecraft_terrain::terrain::CollisionStream::new(world.stream.world_gen(), CLIENT_COLLISION_DISTANCE)
+            });
+            let (loaded, forgotten) = collision.tick((feet[0].floor() as i32, feet[1].floor() as i32, feet[2].floor() as i32));
+            for chunk in loaded {
+                let pos = (chunk.pos.x, chunk.pos.z);
+                if remote.held.insert(pos, chunk.clone()).is_some() {
+                    continue;
+                }
+                let count = voxel_holders.entry(pos).or_default();
+                *count += 1;
+                if *count > 1 {
+                    continue;
+                }
+                // The host's scene takes it too, so its edits, mining and placing
+                // work there; nothing draws it.
+                if world.scene.generated_chunk(pos).is_none() {
+                    world.scene.insert_chunk(chunk.clone());
+                    for (at, block) in deferred.remove(&pos).unwrap_or_default() {
+                        world.scene.set(at, block);
+                    }
+                }
+                let (min_y, height) = (chunk.min_y(), chunk.height());
+                let ids = chunk_collision(&chunk, world, shapes, shape_ids);
+                sim::voxel::set_chunk(pos.0, pos.1, sim::voxel::VoxelChunk { min_y, height, shapes: ids });
+            }
+            for pos in forgotten {
+                if remote.held.remove(&pos).is_some() && release_chunk(voxel_holders, pos) {
+                    world.scene.remove_chunk(pos);
+                }
+            }
         }
         let cheats = authority.cheats_enabled();
         for (client, request_id, bytes) in sim::voxel::take_intents() {
@@ -1692,8 +1777,7 @@ fn update(
         changed.dedup();
         for pos in changed {
             let block = minecraft_terrain::scene::Scene::block(&world.scene, pos).map(block_text);
-            host.log.push(pos, block);
-            host.dirty = true;
+            host.record(pos, block);
         }
         if let (Some(entities), Some(name)) = (entities.as_ref(), host.local_name.clone()) {
             host.keep_inventory(&name, &entities.inventory, entities.selected);
@@ -1903,6 +1987,7 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
     keep_world(runtime);
     runtime.net = crate::minecraft_mp::NetRole::None;
     runtime.deferred.clear();
+    runtime.voxel_holders.clear();
     if runtime.world.take().is_some() || runtime.loading.take().is_some() || view.active {
         sim::voxel::deactivate();
         view.active = false;

@@ -16,7 +16,7 @@
 //!
 //! Mobs are the host's alone: its level spawns and runs them around the
 //! host's player, and clients neither see them nor are hunted by them.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use minecraft_terrain::multiplayer::{
@@ -83,6 +83,10 @@ pub(crate) struct Remote {
     pub placed: bool,
     /// Where it was moved, not yet told.
     pub placed_at: Option<[f32; 3]>,
+    /// Chunks generated around it for the host's collision, and those of
+    /// them it holds in the block world.
+    pub collision: Option<minecraft_terrain::terrain::CollisionStream>,
+    pub held: HashMap<(i32, i32), std::sync::Arc<minecraftoss_core::Chunk>>,
 }
 
 pub(crate) struct Host {
@@ -185,6 +189,12 @@ impl Host {
         }
     }
 
+    /// Logs a block change.
+    pub(crate) fn record(&mut self, pos: BlockPos, block: Option<String>) {
+        self.log.push(pos, block);
+        self.dirty = true;
+    }
+
     /// The saved inventory of the player called `name`, if any.
     pub(crate) fn inventory_of(&self, name: &str) -> Option<&InventoryState> {
         self.players.get(name)
@@ -265,6 +275,8 @@ impl Remote {
             sent_items: None,
             placed: false,
             placed_at: None,
+            collision: None,
+            held: HashMap::new(),
         }
     }
 }
