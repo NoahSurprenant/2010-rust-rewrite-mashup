@@ -5,8 +5,10 @@
 //! a master of the run's own, with no player of its own. A client joins
 //! that room, sets a block and fills its inventory, and leaves; the room
 //! stays listed and the server keeps running with nobody in it, past the
-//! master session's silence deadline. The client joins again and finds its
-//! block and its inventory. Then the server is stopped with SIGTERM, as a
+//! master session's silence deadline, and meanwhile the server changes
+//! 2048 blocks, more history than one control message holds. The client
+//! joins again and finds its block, the last of those 2048, and its
+//! inventory. Then the server is stopped with SIGTERM, as a
 //! supervisor stops it, and started again: the world (seed, block) and the
 //! client's inventory come back. Memory and CPU of the server are recorded
 //! with no client and with one.
@@ -40,6 +42,11 @@ pub const STOP_SECS: u64 = 30;
 /// A block the client sets, from the world's spawn block.
 const GOLD: [i32; 3] = [2, 5, 0];
 const PLANKS: &str = "minecraft:oak_planks*5";
+/// A glass roof the server sets while the room is empty, from the world's
+/// spawn block: 32 x 2 x 32 blocks, some 60 KB of edit history a joining
+/// client is owed (a control message holds 16 KiB).
+const ROOF: ([i32; 3], [i32; 3]) = ([-16, 30, -16], [15, 31, 15]);
+const GLASS: &str = "minecraft:glass";
 
 #[derive(Default)]
 pub struct Facts {
@@ -236,14 +243,25 @@ pub fn empty_room(
         Duration::from_secs(STEP_SECS),
     )?;
     facts.keep("s_empty", answer);
+    let ([x1, y1, z1], [x2, y2, z2]) = ROOF;
+    pair.host
+        .send(&format!("mc set {x1} {y1} {z1} {x2} {y2} {z2} glass"))?;
+    let roof = pair.poll_block(
+        false,
+        "s_roof",
+        ROOF.1,
+        GLASS,
+        Duration::from_secs(SYNC_SECS),
+    )?;
+    facts.notes.insert("s_roof", roof);
     Ok(())
 }
 
 /// Back in the room: the client sees its block and has its inventory.
 pub fn revisit(pair: &mut Pair, facts: &mut Facts, room: &str, n: u32) -> Result<(), String> {
-    let (ready, gold) = match n {
-        2 => ("c2_ready", "c2_gold"),
-        _ => ("c3_ready", "c3_gold"),
+    let (ready, gold, roof) = match n {
+        2 => ("c2_ready", "c2_gold", "c2_roof"),
+        _ => ("c3_ready", "c3_gold", "c3_roof"),
     };
     let event = join(pair, room, ready)?;
     facts.keep(ready, event);
@@ -255,6 +273,8 @@ pub fn revisit(pair: &mut Pair, facts: &mut Facts, room: &str, n: u32) -> Result
         Duration::from_secs(SYNC_SECS),
     )?;
     facts.notes.insert(gold, block);
+    let block = pair.poll_block(true, roof, ROOF.1, GLASS, Duration::from_secs(SYNC_SECS))?;
+    facts.notes.insert(roof, block);
     Ok(())
 }
 
@@ -399,10 +419,12 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
                 line(f, "s_empty")?.get("role").unwrap_or(""),
                 "dedicated",
                 "server answers",
-            )
+            )?;
+            want(note(f, "s_roof")?, GLASS, "server roof")
         }),
         ("rejoin_world_kept", |f| {
             want(note(f, "c2_gold")?, "minecraft:gold_block", "client sees")?;
+            want(note(f, "c2_roof")?, GLASS, "client sees the roof")?;
             has_planks(f, "c2_ready")
         }),
         ("sigterm_saves_and_exits", |f| clean_stop(f, "stop1")),
@@ -418,6 +440,7 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
                 "client seed after the restart",
             )?;
             want(note(f, "c3_gold")?, "minecraft:gold_block", "client sees")?;
+            want(note(f, "c3_roof")?, GLASS, "client sees the roof")?;
             has_planks(f, "c3_ready")
         }),
         ("second_sigterm", |f| clean_stop(f, "stop2")),
@@ -484,6 +507,9 @@ mod tests {
             ("s_gold", "minecraft:gold_block"),
             ("c2_gold", "minecraft:gold_block"),
             ("c3_gold", "minecraft:gold_block"),
+            ("s_roof", GLASS),
+            ("c2_roof", GLASS),
+            ("c3_roof", GLASS),
             ("empty_state", "hosting"),
             ("empty_room", "ab12"),
             ("empty_members", "1"),
@@ -546,6 +572,13 @@ mod tests {
             state("label=c3_ready seed=7 role=client slots=-,-"),
         );
         assert_eq!(failed(&f), ["restart_world_kept"]);
+    }
+
+    #[test]
+    fn a_rejoin_short_of_the_long_history_fails() {
+        let mut f = passing();
+        f.notes.insert("c2_roof", "air".into());
+        assert_eq!(failed(&f), ["rejoin_world_kept"]);
     }
 
     #[test]
