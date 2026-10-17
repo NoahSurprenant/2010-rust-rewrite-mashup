@@ -386,7 +386,7 @@ fn sync_remote_bodies(
             }
             continue;
         };
-        if body_entry.skel.positions.is_empty() || body_entry.skel.bones.is_empty() {
+        if body_entry.skel.vertex_count() == 0 || body_entry.skel.bones.is_empty() {
             if remote.is_some() {
                 commands
                     .entity(entity)

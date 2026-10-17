@@ -90,10 +90,9 @@ fn blend_skel_vertices_inner<const DECODED: bool>(
 ) -> BlendedSkel {
     let (active_vert, rigid_vert) =
         vertex_stream_masks(skel, lod, surface_is_visible, surface_rigid);
-    let mut positions = DECODED.then(|| skel.positions.clone()).unwrap_or_default();
+    let mut positions = DECODED.then(|| skel.positions()).unwrap_or_default();
     let mut normals = DECODED.then(|| skel.normals()).unwrap_or_default();
-    let mut posed_packed =
-        (skel.packed_vertices.len() == skel.positions.len()).then(|| skel.packed_vertices.clone());
+    let mut posed_packed = Some(skel.packed_vertices.clone());
     let max_bone = skel
         .vert_skin
         .iter()
@@ -119,7 +118,7 @@ fn blend_skel_vertices_inner<const DECODED: bool>(
         if !active_vert.get(i).copied().unwrap_or(false) {
             continue;
         }
-        let p = Vec3::from_array(skel.positions[i]);
+        let p = Vec3::from_array(skel.position(i).unwrap_or_default());
         let n = DECODED.then(|| Vec3::from_array(skel.normal(i).unwrap_or([0.0, 0.0, 1.0])));
 
         let (mut posed_position, mut posed_normal, primary_basis) =
@@ -205,12 +204,12 @@ fn vertex_stream_masks(
 ) -> (Vec<bool>, Vec<bool>) {
     if skel.surface_vertex_ranges.is_empty() {
         return (
-            vec![true; skel.positions.len()],
-            vec![false; skel.positions.len()],
+            vec![true; skel.vertex_count()],
+            vec![false; skel.vertex_count()],
         );
     }
-    let mut active = vec![false; skel.positions.len()];
-    let mut rigid = vec![false; skel.positions.len()];
+    let mut active = vec![false; skel.vertex_count()];
+    let mut rigid = vec![false; skel.vertex_count()];
     for surface_index in skel.surfaces_for_lod(lod) {
         if !surface_is_visible(surface_index) {
             continue;
@@ -488,7 +487,7 @@ pub fn skin_packed_into(
             let Some(skin) = skel.vert_skin.get(src) else {
                 continue;
             };
-            let p = Vec3::from_array(skel.positions[src]);
+            let p = Vec3::from_array(skel.position(src).unwrap_or_default());
             let (posed_position, primary_basis) = if rigid_vert.get(src).copied().unwrap_or(false) {
                 let matrix = bone_cache[usize::from(skin.bones[0])].0;
                 (matrix.transform_point3(p), matrix)

@@ -593,7 +593,7 @@ pub fn occupy_remote_kit_dobj<'a>(
     let kits = bodies.0.kits();
     let kit = kits.kit(axis)?;
     let body = bodies.0.get(&kit.body)?;
-    if body.skel.positions.is_empty() || body.skel.bones.is_empty() {
+    if body.skel.vertex_count() == 0 || body.skel.bones.is_empty() {
         return None;
     }
     let _pose_src = body.skel.pose.as_ref()?;
