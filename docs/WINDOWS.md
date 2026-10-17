@@ -1,5 +1,17 @@
 # Portable Windows folder
 
+The zip on this fork's [Releases](../../../releases/latest),
+`2010-Rust-Rewrite-Mashup-windows-x64.zip`, is built by
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) for every
+push to `main` and published as `build-<run number>`. It has upstream's
+layout: `iw4l.exe`, `skate/iw4l-skate-convert.exe` with its licences, the
+four licence files below, `README.txt` and `Minecraft World.bat`. It carries
+no `.env`, update URL, master address or CA: `iw4l.exe` writes `.env` on first
+launch, and play is offline. Pull requests build the same zip as a workflow
+artifact.
+
+## IW4L's own bundles
+
 `make launcher windows` creates `dist/windows/iw4l-windows-{dev,prod}.zip`. Both
 archives use the password `contextrot` and are self-contained — the game binary
 is inside, so the folder runs with no network at all.

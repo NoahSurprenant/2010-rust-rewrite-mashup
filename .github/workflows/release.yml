@@ -1,0 +1,234 @@
+name: Release
+
+# The portable Windows folder players download (README, "How to play"),
+# built for every pull request and published from main as a GitHub release
+# tagged build-<run number> and marked latest. The asset keeps upstream's
+# name, so releases/latest/download/2010-Rust-Rewrite-Mashup-windows-x64.zip
+# is always the newest build.
+#
+# Nothing here needs a secret or a server. The archive is upstream's
+# layout: iw4l.exe, the Skate 3 converter, licences, README.txt. No .env,
+# update URL, master address or CA ships: iw4l.exe writes .env itself on
+# first launch (crates/launcher/src/first_run.rs) and plays offline.
+# iw4launcher (the updater) is not built; without an update server of our
+# own it has nothing to fetch.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
+  pull_request:
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PACKAGE: 2010-Rust-Rewrite-Mashup
+  # The revision skate/crates was taken from (skate/converter/build.ps1).
+  SKATE_ENGINE_REV: cb7968930f14dad38457e98720d1a274e469eec2
+
+jobs:
+  # The cross build `make build-windows` does (xtask/src/windows.rs), minus
+  # the updater and its CA.
+  game:
+    name: iw4l.exe (cargo xwin)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      TARGET: x86_64-pc-windows-msvc
+      IW4L_GIT_HASH: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
+      - name: Toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-18 lld-18 llvm-18
+          echo /usr/lib/llvm-18/bin >> "$GITHUB_PATH"
+          rustup target add "$TARGET"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-xwin
+      # The MSVC CRT and Windows SDK cargo-xwin downloads.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/cargo-xwin
+          key: cargo-xwin-v1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-play
+      - run: cargo xwin build --profile play --locked --target "$TARGET" -p launcher --bin iw4l
+      # crates/launcher/build.rs links with /STACK:8388608; a recursive zone
+      # walk overflows the 1 MiB default (xtask/src/windows.rs checks the same).
+      - name: Stack reserve
+        run: |
+          exe="target/$TARGET/play/iw4l.exe"
+          file "$exe"
+          reserve="$(objdump -p "$exe" | awk '/SizeOfStackReserve/ {print $2}')"
+          echo "SizeOfStackReserve=0x$reserve"
+          test "$((16#$reserve))" -ge 8388608
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iw4l-exe
+          path: target/x86_64-pc-windows-msvc/play/iw4l.exe
+          if-no-files-found: error
+          retention-days: 3
+
+  # PyInstaller only builds for the platform it runs on, so this one is
+  # Windows. Cached per skate engine revision and converter source.
+  converter:
+    name: iw4l-skate-convert.exe (PyInstaller)
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: converter
+          key: skate-convert-${{ env.SKATE_ENGINE_REV }}-${{ hashFiles('skate/converter/**', '.github/workflows/release.yml') }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: SK8-ENGINE/skate-3-rust-engine
+          ref: ${{ env.SKATE_ENGINE_REV }}
+          path: skate-engine
+          sparse-checkout: tools
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Build
+        run: |
+          python -m pip install --disable-pip-version-check -r skate-engine/tools/requirements-setup.txt
+          ./skate/converter/build.ps1 -SkateEngine skate-engine -Out converter
+      # What the converter bundles, under the names upstream's zip uses.
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Licences
+        run: |
+          New-Item -ItemType Directory -Force converter/licenses | Out-Null
+          Copy-Item skate-engine/tools/vendor/utt/LICENSE converter/licenses/UTT.txt
+          Copy-Item skate-engine/tools/vendor/university/LICENSE-PROJECT.md converter/licenses/CustomEngineLayer.txt
+          @'
+          import importlib.metadata as md, pathlib, shutil, sys
+          out = pathlib.Path('converter/licenses')
+          shutil.copy(pathlib.Path(sys.base_prefix, 'LICENSE.txt'), out / 'Python.txt')
+          for dist, name in (('numpy', 'NumPy.txt'), ('pillow', 'Pillow.txt')):
+              files = [f.locate() for f in md.distribution(dist).files
+                       if '.dist-info' in str(f) and f.name.upper().startswith(('LICENSE', 'COPYING'))]
+              shutil.copy(max(files, key=lambda f: f.stat().st_size), out / name)
+          '@ | python -
+          Get-ChildItem -Recurse converter | Format-Table Length, FullName
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skate-converter
+          path: converter
+          if-no-files-found: error
+          retention-days: 3
+
+  package:
+    name: Windows zip
+    needs: [game, converter]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble
+        run: |
+          dir="$RUNNER_TEMP/$PACKAGE"
+          mkdir -p "$dir/skate/licenses"
+          cp artifacts/iw4l-exe/iw4l.exe "$dir/"
+          cp artifacts/skate-converter/iw4l-skate-convert.exe "$dir/skate/"
+          cp artifacts/skate-converter/licenses/*.txt "$dir/skate/licenses/"
+          # xtask/src/release.rs LEGAL_FILES: iw4l.exe has both fonts compiled in.
+          cp LICENSE NOTICE crates/ui/assets/OFL-Oxanium.txt crates/console/assets/COPYING-FreeFont.txt "$dir/"
+          { cat packaging/windows/README.txt; printf '\nBuild %s, commit %s\n' "$GITHUB_RUN_NUMBER" "${GITHUB_SHA:0:12}"; } |
+            sed 's/$/\r/' > "$dir/README.txt"
+          sed 's/$/\r/' "packaging/windows/Minecraft World.bat" > "$dir/Minecraft World.bat"
+          # Exactly these files: nothing from a game, no .env, no keys.
+          cd "$RUNNER_TEMP"
+          find "$PACKAGE" -type f | sort > got.txt
+          diff -u - got.txt <<EOF
+          $PACKAGE/COPYING-FreeFont.txt
+          $PACKAGE/LICENSE
+          $PACKAGE/Minecraft World.bat
+          $PACKAGE/NOTICE
+          $PACKAGE/OFL-Oxanium.txt
+          $PACKAGE/README.txt
+          $PACKAGE/iw4l.exe
+          $PACKAGE/skate/iw4l-skate-convert.exe
+          $PACKAGE/skate/licenses/CustomEngineLayer.txt
+          $PACKAGE/skate/licenses/NumPy.txt
+          $PACKAGE/skate/licenses/Pillow.txt
+          $PACKAGE/skate/licenses/Python.txt
+          $PACKAGE/skate/licenses/UTT.txt
+          EOF
+          mkdir -p "$GITHUB_WORKSPACE/release"
+          zip -qrX "$GITHUB_WORKSPACE/release/$PACKAGE-windows-x64.zip" "$PACKAGE"
+          ls -l "$GITHUB_WORKSPACE/release"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: release/${{ env.PACKAGE }}-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish build-${{ github.run_number }}
+    needs: package
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-zip
+          path: release
+      - name: Publish
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          tag="build-$GITHUB_RUN_NUMBER"
+          zip="release/$PACKAGE-windows-x64.zip"
+          prev="$(gh release list --limit 100 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("build-"))] | sort_by(.createdAt) | last | .tagName // empty')"
+          {
+            if [ -n "$prev" ]; then
+              echo "Changes since $prev:"
+              echo
+              gh api "repos/$GH_REPO/compare/$prev...$GITHUB_SHA" \
+                --jq '.commits[] | select(.parents | length == 1) | "- \(.commit.message | split("\n")[0]) (\(.sha[0:7]))"'
+            else
+              gh api "repos/$GH_REPO/commits/$GITHUB_SHA" \
+                --jq '"- \(.commit.message | split("\n")[0]) (\(.sha[0:7]))"'
+            fi
+            echo
+            echo "**Setup**: extract the zip into its own folder (not Program Files) and run \`iw4l.exe\`. Updating? Extract over your old folder to keep your setup and settings. No game files are included; see the [README](https://github.com/$GH_REPO#readme)."
+            echo
+            echo "Build: $RUN_URL"
+            echo
+            echo "SHA-256 \`$(sha256sum "$zip" | cut -d' ' -f1)\`"
+          } > notes.md
+          cat notes.md
+          gh release create "$tag" "$zip" --target "$GITHUB_SHA" --latest \
+            --title "Build $GITHUB_RUN_NUMBER (${GITHUB_SHA:0:7})" --notes-file notes.md
