@@ -124,12 +124,12 @@ pub const STEPS: &[Step] = &[
         expect: &[Expect::Screen(Screen::Table)],
     },
     Step {
-        commands: "key e; wait 1s; look 0 23; wait 2t; key mouse2; wait 1s",
+        commands: "key e; wait 1s; look 0 23; wait 2t; key mouse2 0; wait 1s",
         label: "right_click_with_gun_aims",
         expect: &[Expect::Screen(Screen::None)],
     },
     Step {
-        commands: "key 6; wait 1s; look 0 23; wait 2t; key mouse2; wait 1s; screenshot approved/03_right_click_with_item",
+        commands: "key 6; wait 1s; look 0 23; wait 2t; key mouse2 0; wait 1s; screenshot approved/03_right_click_with_item",
         label: "right_click_with_item_opens",
         expect: &[Expect::Screen(Screen::Table)],
     },
@@ -139,7 +139,7 @@ pub const STEPS: &[Step] = &[
         expect: &[Expect::Screen(Screen::None)],
     },
     Step {
-        commands: "hold +movedown; wait 1s; look 0 23; wait 2t; key mouse2; wait 1s",
+        commands: "hold +movedown; wait 1s; look 0 23; wait 2t; key mouse2 0; wait 1s",
         label: "crouched_right_click_places",
         expect: &[
             Expect::Stance("crouch"),
@@ -155,7 +155,7 @@ pub const STEPS: &[Step] = &[
     // An open screen lets go of held MW2 inputs, so the stance is checked
     // before the click.
     Step {
-        commands: "key mouse2; wait 1s",
+        commands: "key mouse2 0; wait 1s",
         label: "crouched_empty_hand_opens",
         expect: &[Expect::Screen(Screen::Table)],
     },
