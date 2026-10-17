@@ -20,11 +20,11 @@ pub struct FxModelEntry {
 }
 
 impl FxModelEntry {
-    fn capture(skel: ModelSkel, materials: &MaterialCatalog) -> Self {
+    fn capture(skel: Arc<ModelSkel>, materials: &MaterialCatalog) -> Self {
         let (material_keys, material_edges) =
             capture_xmodel_material_slots(&skel.surface_materials, Some(materials));
         Self {
-            skel: Arc::new(skel),
+            skel,
             material_keys,
             material_edges,
         }
@@ -80,6 +80,10 @@ impl FxModelCatalog {
         else {
             return;
         };
+        self.insert(Arc::new(skel), materials);
+    }
+
+    pub fn insert(&mut self, skel: Arc<ModelSkel>, materials: &MaterialCatalog) {
         let key = (self.capture_ns, skel.name.clone());
         if !self.entries.contains_key(&key) {
             self.order.push(key.clone());

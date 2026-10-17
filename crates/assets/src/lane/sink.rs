@@ -1369,31 +1369,41 @@ impl AssetLinkSink for CommonWalkSink {
             self.tracers.note_loaded(slot, insert_slot);
         }
         if ty == AssetType::XModel {
+            // One capture shared by every catalog: common_mp holds thousands of
+            // models, and a copy per catalog cost gigabytes.
+            let mut captured = None;
             if let Some(geometry) = stream.xmodel()
                 && let Some(name) = geometry.name.and_then(|p| stream.cstr(p).ok())
             {
-                let asset = asset_model::capture_xmodel_skel(
+                captured = asset_model::capture_xmodel_skel(
                     stream,
                     &self.script_strings,
                     geometry,
                     Some(&self.materials),
                 )
-                .map(|skel| asset_world::MapXModelSceneAsset::Iw4(std::sync::Arc::new(skel)))
-                .unwrap_or(asset_world::MapXModelSceneAsset::Unavailable {
-                    reason: "common XModel skeleton capture failed",
-                });
+                .map(std::sync::Arc::new);
+                let asset = captured
+                    .clone()
+                    .map(asset_world::MapXModelSceneAsset::Iw4)
+                    .unwrap_or(asset_world::MapXModelSceneAsset::Unavailable {
+                        reason: "common XModel skeleton capture failed",
+                    });
                 if let asset_world::MapXModelSceneAsset::Iw4(skel) = &asset {
                     self.shared_surfaces.retain(stream, geometry, skel.clone());
                 }
                 self.scene_models
                     .insert(asset_world::MapXModelAssetKey(name.to_owned()), asset);
             }
-            self.fpv_meshes.capture(stream, &self.materials);
-            self.world_weapons.capture(stream, &self.materials);
-            self.projectile_meshes
-                .capture_unclassified(stream, &self.materials);
+            if let Some(skel) = &captured {
+                self.fpv_meshes.capture_shared(skel, &self.materials);
+                self.world_weapons.capture_shared(skel, &self.materials);
+                self.projectile_meshes
+                    .capture_unclassified_shared(skel, &self.materials);
+            }
             self.models.capture(stream);
-            self.fx_models.capture(stream, &self.materials);
+            if let Some(skel) = captured {
+                self.fx_models.insert(skel, &self.materials);
+            }
         }
         Ok(())
     }
