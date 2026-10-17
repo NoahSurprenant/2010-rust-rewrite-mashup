@@ -332,6 +332,15 @@ pub(crate) fn send_to(
         );
         remote.world_sent = true;
     }
+    // Until a client acks its first row, every row queued for it rides its
+    // bootstrap, which the master carries as one control message
+    // (`master_protocol::MAX_CONTROL_BYTES`): a long edit log would not fit.
+    if reliable
+        .queue(client)
+        .is_none_or(|queue| queue.ack_through() == 0)
+    {
+        return;
+    }
     if let Some(at) = remote.placed_at.take() {
         push(reliable, client, &HostMessage::Placed { at });
     }
