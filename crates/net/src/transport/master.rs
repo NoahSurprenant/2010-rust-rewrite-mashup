@@ -1830,7 +1830,11 @@ async fn session_main(
             } else {
                 RelayDatagram::ClientToHost(&payload)
             };
-            match master_protocol::encode_relay_stream(envelope) {
+            // A message too large for the control stream is dropped: written,
+            // it would end the session and every member's place in the room.
+            // The member it was for falls behind and is retired once its
+            // reliable stream overflows.
+            match master_protocol::encode_relay_control(envelope) {
                 Ok(bytes) => {
                     if let Err(error) =
                         enqueue_control(&control_tx, ControlFrame::Relay(bytes), role)
@@ -1840,12 +1844,10 @@ async fn session_main(
                     }
                 }
                 Err(error) => {
-                    control_error = Some(TransportFault::new(
-                        "control_encode",
-                        role,
-                        error.to_string(),
-                    ));
-                    break;
+                    diag::warn!(
+                        Net,
+                        "master {role} control message for {member_id:?} dropped: {error}"
+                    );
                 }
             }
         }

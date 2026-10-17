@@ -27,6 +27,12 @@ master key pin: the right pin is accepted, a wrong one refused, a mistyped one
 reported, and the pin matches what the openssl command in `docs/MASTER.md`
 prints. They need no game data.
 
+The `control_relay` unit tests (`src/control_relay.rs`, approved 2026-10-17)
+check the master's control stream bound: the rows a host owes a joining client
+are cut, in order, into relay messages that each fit `MAX_CONTROL_BYTES`, a
+message one byte too large is refused before the stream, and the master reads
+back what the host relays. They need no game data.
+
 `crafting_table` checks each step from a `minecraft-state:` line the game prints
 (`mc state <label>`); its steps and expectations are in
 `src/scenarios/crafting_table.rs`, with unit tests there for the judging (they

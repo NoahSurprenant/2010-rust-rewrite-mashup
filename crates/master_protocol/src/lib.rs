@@ -10,6 +10,9 @@ pub const MAX_OPAQUE_PAYLOAD: usize = 1100;
 pub const MAX_RELAY_STREAM_BYTES: usize = 2 + 16 + MAX_OPAQUE_PAYLOAD;
 
 pub const MAX_BOOTSTRAP_PAYLOAD: usize = 256 * 1024;
+/// The most game bytes one relay message on the control stream carries: what
+/// `MAX_CONTROL_BYTES` leaves past the message and relay headers.
+pub const MAX_CONTROL_RELAY_PAYLOAD: usize = MAX_CONTROL_BYTES - HEADER_BYTES - 2 - 16;
 pub const MAX_BOOTSTRAP_STREAM_BYTES: usize = 2 + 16 + MAX_BOOTSTRAP_PAYLOAD;
 
 pub const MAX_RELAY_UNI_STREAMS: u32 = 8;
@@ -1373,6 +1376,35 @@ pub fn encode_relay(datagram: RelayDatagram<'_>) -> Result<Vec<u8>, ProtocolErro
 
 pub fn encode_relay_stream(datagram: RelayDatagram<'_>) -> Result<Vec<u8>, ProtocolError> {
     encode_relay_bounded(datagram, MAX_BOOTSTRAP_PAYLOAD)
+}
+
+/// A relay message for the control stream. One that does not fit is refused
+/// here, where the caller can drop it, not by the stream's writer, which ends
+/// the session.
+pub fn encode_relay_control(datagram: RelayDatagram<'_>) -> Result<Vec<u8>, ProtocolError> {
+    encode_relay_bounded(datagram, MAX_CONTROL_RELAY_PAYLOAD)
+}
+
+/// Cuts items of the given encoded sizes, kept in order, into runs that each
+/// fit one control relay message beside `overhead` bytes of their own, and
+/// returns each run's length. An item too large for any message is a run of
+/// its own. No items is one empty run.
+pub fn control_relay_runs(sizes: &[usize], overhead: usize) -> Vec<usize> {
+    let budget = MAX_CONTROL_RELAY_PAYLOAD.saturating_sub(overhead);
+    let mut runs = Vec::new();
+    let (mut len, mut bytes) = (0_usize, 0_usize);
+    for &size in sizes {
+        if len > 0 && bytes + size > budget {
+            runs.push(len);
+            (len, bytes) = (0, 0);
+        }
+        len += 1;
+        bytes += size;
+    }
+    if len > 0 || runs.is_empty() {
+        runs.push(len);
+    }
+    runs
 }
 
 fn encode_relay_bounded(

@@ -159,6 +159,15 @@ impl ReliablePayload {
 const ROW_TAG_EVENT: u8 = 0;
 const ROW_TAG_OUTCOME: u8 = 1;
 
+/// The bytes one row adds to an encoded payload.
+pub fn encoded_row_len(row: &(u16, ReliableRow)) -> usize {
+    let mut out = WireWriter::new();
+    encode_reliable_payload(&mut out, 0, std::slice::from_ref(row), 0);
+    let mut empty = WireWriter::new();
+    encode_reliable_payload(&mut empty, 0, &[], 0);
+    out.len() - empty.len()
+}
+
 pub fn encode_reliable_payload(
     out: &mut WireWriter,
     ack_through: u16,

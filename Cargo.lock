@@ -203,6 +203,7 @@ version = "0.1.0"
 dependencies = [
  "asset_transport",
  "master_pin",
+ "master_protocol",
  "rcgen",
  "rustls",
  "serde_json",

@@ -14,6 +14,7 @@ rcgen = "0.13"
 
 [dev-dependencies]
 master_pin.workspace = true
+master_protocol.workspace = true
 rustls = { version = "0.23.31", default-features = false, features = ["ring", "std"] }
 
 [lints]

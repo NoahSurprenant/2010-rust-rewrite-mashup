@@ -227,26 +227,51 @@ impl PeerReplicationState {
         if payload.rows.is_empty() && payload.dropped_oldest == self.control_drops_sent {
             return Ok(());
         }
-        let last = payload
-            .rows
-            .last()
-            .map(|(seq, _)| *seq)
-            .or(self.last_control_seq);
-        let dropped = payload.dropped_oldest;
-        let packet = ServerPacket::Control {
-            header: PacketHeader {
-                connection,
-                sequence: 0,
-                ack: 0,
-                epoch,
-            },
-            payload,
+        let header = PacketHeader {
+            connection,
+            sequence: 0,
+            ack: 0,
+            epoch,
         };
-        mailbox
-            .push_control_outbound(member, packet.to_bytes())
-            .map_err(relay_send_error)?;
-        self.last_control_seq = last;
-        self.control_drops_sent = dropped;
+        let crate::ReliablePayload {
+            ack_through,
+            rows,
+            dropped_oldest,
+        } = payload;
+        // One relay message on the master's control stream is bounded; the
+        // rows a client is owed (a long edit log on its join) can be more.
+        let overhead = ServerPacket::Control {
+            header,
+            payload: crate::ReliablePayload {
+                ack_through,
+                rows: Vec::new(),
+                dropped_oldest,
+            },
+        }
+        .to_bytes()
+        .len();
+        let sizes: Vec<usize> = rows
+            .iter()
+            .map(crate::transport::reliable::encoded_row_len)
+            .collect();
+        let mut rows = rows.into_iter();
+        for run in master_protocol::control_relay_runs(&sizes, overhead) {
+            let rows: Vec<_> = rows.by_ref().take(run).collect();
+            let last = rows.last().map(|(seq, _)| *seq).or(self.last_control_seq);
+            let packet = ServerPacket::Control {
+                header,
+                payload: crate::ReliablePayload {
+                    ack_through,
+                    rows,
+                    dropped_oldest,
+                },
+            };
+            mailbox
+                .push_control_outbound(member, packet.to_bytes())
+                .map_err(relay_send_error)?;
+            self.last_control_seq = last;
+            self.control_drops_sent = dropped_oldest;
+        }
         Ok(())
     }
 

@@ -26,6 +26,9 @@ pub const INTENT_BYTES: usize = 96;
 pub const MAX_ID_BYTES: usize = 64;
 /// Block changes in one `HostMessage::Edits`, so one reliable row stays small.
 pub const EDITS_PER_MESSAGE: usize = 256;
+/// The most bytes the changes of one `HostMessage::Edits` take: a row has to
+/// fit one message on the master's control stream with room to spare.
+pub const EDITS_BYTES_PER_MESSAGE: usize = 4 * 1024;
 /// Item entities in one `HostMessage::Items`.
 pub const MAX_ITEMS: usize = 64;
 
@@ -733,6 +736,24 @@ impl HostMessage {
     }
 }
 
+/// How many of `edits`, from the first, one `HostMessage::Edits` takes: at
+/// most `EDITS_PER_MESSAGE` and `EDITS_BYTES_PER_MESSAGE`, and at least one.
+pub fn edits_that_fit(edits: &[(BlockPos, Option<String>)]) -> usize {
+    let mut bytes = 0;
+    let mut count = 0;
+    for (pos, block) in edits.iter().take(EDITS_PER_MESSAGE) {
+        let mut w = Writer::default();
+        w.pos(*pos);
+        w.opt_str(block.as_deref());
+        bytes += w.0.len();
+        if count > 0 && bytes > EDITS_BYTES_PER_MESSAGE {
+            break;
+        }
+        count += 1;
+    }
+    count
+}
+
 /// Every block the host changed, in order. Each client reads it from its own
 /// cursor, so one that joins late is sent the whole history first.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -757,10 +778,11 @@ impl EditLog {
         &self.entries
     }
 
-    /// Up to `EDITS_PER_MESSAGE` changes from `from`, and the cursor after them.
+    /// The changes from `from` that fit one `HostMessage::Edits`, and the
+    /// cursor after them.
     pub fn batch(&self, from: usize) -> (Vec<(BlockPos, Option<String>)>, usize) {
         let from = from.min(self.entries.len());
-        let to = (from + EDITS_PER_MESSAGE).min(self.entries.len());
+        let to = from + edits_that_fit(&self.entries[from..]);
         (self.entries[from..to].to_vec(), to)
     }
 
@@ -1178,6 +1200,35 @@ mod tests {
         // A live edit after the joiner caught up is the next batch.
         log.push((0, 70, 0), None);
         assert_eq!(log.batch(cursor), (vec![((0, 70, 0), None)], log.len()));
+    }
+
+    #[test]
+    fn a_long_log_of_long_block_ids_goes_in_small_rows() {
+        let long = "minecraft:oak_stairs[facing=east,half=bottom,shape=straight,waterlogged=false]";
+        let mut log = EditLog::default();
+        for i in 0..20_000 {
+            log.push((i, 64, -i), (i % 3 != 0).then(|| long.to_owned()));
+        }
+        let mut cursor = 0;
+        let mut seen = Vec::new();
+        while cursor < log.len() {
+            let (batch, next) = log.batch(cursor);
+            assert!(!batch.is_empty() && batch.len() <= EDITS_PER_MESSAGE);
+            let row = HostMessage::Edits(batch.clone()).encode();
+            assert!(row.len() <= EDITS_BYTES_PER_MESSAGE + 5, "{}", row.len());
+            seen.extend(batch);
+            cursor = next;
+        }
+        assert_eq!(seen, log.entries());
+    }
+
+    #[test]
+    fn a_change_larger_than_a_row_still_goes_alone() {
+        let huge = "x".repeat(EDITS_BYTES_PER_MESSAGE * 2);
+        let edits = vec![((0, 0, 0), Some(huge)), ((1, 0, 0), None)];
+        assert_eq!(edits_that_fit(&edits), 1);
+        assert_eq!(edits_that_fit(&edits[1..]), 1);
+        assert_eq!(edits_that_fit(&[]), 0);
     }
 
     #[test]
