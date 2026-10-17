@@ -4,6 +4,7 @@ mod report;
 mod runner;
 mod scenario;
 mod scenarios {
+    pub mod crafting_table;
     pub mod heavy_gameplay_lifecycle;
 }
 
@@ -13,6 +14,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use scenario::{MapB, Place, ResolvedPlace, ResolvedScene};
+use scenarios::crafting_table;
 use scenarios::heavy_gameplay_lifecycle::{self as hgl, SCENARIO};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -37,18 +39,24 @@ fn main() {
             eprintln!("{message}");
             eprintln!(
                 "usage: approved_tests heavy_gameplay_lifecycle [--seed N | --replay run.json] \
-                 [--cache cold|shared] [--bin path]"
+                 [--cache cold|shared] [--bin path]\n       approved_tests crafting_table [--cache cold|shared] [--bin path]"
             );
             std::process::exit(2);
         }
     };
-    if args.scenario != SCENARIO.name {
+    let run = if args.scenario == SCENARIO.name {
+        run
+    } else if args.scenario == crafting_table::NAME {
+        run_crafting_table
+    } else {
         eprintln!(
-            "approved scenarios: {} (asked for {:?})",
-            SCENARIO.name, args.scenario
+            "approved scenarios: {}, {} (asked for {:?})",
+            SCENARIO.name,
+            crafting_table::NAME,
+            args.scenario
         );
         std::process::exit(2);
-    }
+    };
     std::process::exit(match run(&root, &args) {
         Ok(true) => 0,
         Ok(false) => 1,
@@ -334,6 +342,153 @@ fn run(root: &Path, args: &Args) -> Result<bool, String> {
         run_dir.join("run.json").display()
     );
     Ok(passed)
+}
+
+fn run_crafting_table(root: &Path, args: &Args) -> Result<bool, String> {
+    asset_transport::load_dotenv();
+    if args.seed.is_some() || args.replay.is_some() {
+        return Err("crafting_table runs at its fixed world seed: no --seed or --replay".into());
+    }
+    if !args.bin.is_file() {
+        return Err(format!(
+            "{} is not built (make approved builds it)",
+            args.bin.display()
+        ));
+    }
+    let games = asset_transport::games_root_from_env()?;
+    let mw2_installed = asset_transport::list_mp_maps(&games)
+        .iter()
+        .any(|m| m.starts_with("iw4:"));
+
+    let run_id = format!("{}-{}", utc_stamp(), crafting_table::NAME);
+    let run_dir = root.join("iw4l-artifacts/approved-tests").join(&run_id);
+    std::fs::create_dir_all(run_dir.parent().expect("has parent"))
+        .map_err(|e| format!("create run root: {e}"))?;
+    std::fs::create_dir(&run_dir).map_err(|e| format!("create {}: {e}", run_dir.display()))?;
+
+    let script = crafting_table::script();
+    let child_args = vec![
+        "map".to_owned(),
+        crafting_table::MAP.to_owned(),
+        "--cmds".to_owned(),
+        script.clone(),
+    ];
+    let mut manifest = json!({
+        "scenario": crafting_table::NAME,
+        "run_id": run_id,
+        "result": "running",
+        "build": report::build_facts(root, &args.bin),
+        "platform": report::platform_facts(),
+        "content": { "games_root": games.0.display().to_string(), "mw2_installed": mw2_installed },
+        "map": crafting_table::MAP,
+        "minecraft_seed": crafting_table::SEED,
+        "timeouts_secs": { "phase": crafting_table::PHASE_TIMEOUT_SECS, "quit": crafting_table::QUIT_TIMEOUT_SECS },
+        "script": script,
+    });
+    if !mw2_installed {
+        manifest["result"] = "blocked".into();
+        manifest["failure"] = "no MW2 multiplayer zone under the games root".into();
+        report::write(&run_dir, &manifest)?;
+        return Ok(false);
+    }
+
+    let profile = run_dir.join("iw4l-artifacts/profile");
+    std::fs::create_dir_all(&profile).map_err(|e| format!("create {}: {e}", profile.display()))?;
+    std::fs::write(profile.join("classes.txt"), crafting_table::CLASSES)
+        .map_err(|e| format!("write the class file: {e}"))?;
+    manifest["cache"] = prepare_cache(root, &run_dir, args.cache)?;
+    manifest["minecraft_files"] = share_minecraft_files(root, &run_dir)?.into();
+    let bin = stage_binary(&args.bin, &run_dir)?;
+    manifest["command_line"] = json!([bin.display().to_string(), child_args]);
+    report::write(&run_dir, &manifest)?;
+    println!("run: {}", run_dir.display());
+
+    let outcome = runner::run(runner::Launch {
+        bin: &bin,
+        cwd: &run_dir,
+        args: child_args,
+        env: vec![("IW4L_MINECRAFT_SEED", crafting_table::SEED.into())],
+        phase_timeout: Duration::from_secs(crafting_table::PHASE_TIMEOUT_SECS),
+        quit_timeout: Duration::from_secs(crafting_table::QUIT_TIMEOUT_SECS),
+    });
+
+    keep_minecraft_files(root, &run_dir);
+    let checks = crafting_table::judge(&outcome.minecraft);
+    for check in &checks {
+        match check.failures.as_slice() {
+            [] => println!("  pass  {}", check.label),
+            failures => println!("  FAIL  {}: {}", check.label, failures.join("; ")),
+        }
+    }
+    let exit = match outcome.end {
+        runner::End::Exited { code: Some(0), .. } => None,
+        runner::End::Exited { code, .. } => Some(format!("game exited with {code:?}")),
+        runner::End::Timeout { waiting_for, .. } => {
+            Some(format!("killed waiting for {waiting_for}"))
+        }
+        runner::End::SpawnFailed(why) => Some(why),
+    };
+    let failed: Vec<&str> = checks
+        .iter()
+        .filter(|c| !c.failures.is_empty())
+        .map(|c| c.label)
+        .collect();
+    let passed = exit.is_none() && failed.is_empty();
+    manifest["checks"] = checks
+        .iter()
+        .map(|c| json!({ "label": c.label, "failures": c.failures }))
+        .collect::<Vec<_>>()
+        .into();
+    manifest["result"] = if passed { "passed" } else { "failed" }.into();
+    if let Some(exit) = exit {
+        manifest["failure"] = exit.into();
+    } else if !failed.is_empty() {
+        manifest["failure"] = format!("checkpoints failed: {}", failed.join(", ")).into();
+    }
+    report::write(&run_dir, &manifest)?;
+    println!(
+        "{}: {}",
+        manifest["result"].as_str().unwrap_or("?"),
+        run_dir.join("run.json").display()
+    );
+    Ok(passed)
+}
+
+const MINECRAFT_FILES: &str = "iw4l-artifacts/minecraft-26.3";
+
+/// The game fetches Minecraft's files into its working directory. A run
+/// directory links the repository's complete copy; a link to an incomplete
+/// one would be replaced by the fetch, which swaps its result into place.
+fn share_minecraft_files(root: &Path, run_dir: &Path) -> Result<String, String> {
+    let shared = root.join(MINECRAFT_FILES);
+    if !shared.join(".complete").is_file() {
+        return Ok("fetched in the run; kept for the next".into());
+    }
+    let child = run_dir.join("iw4l-artifacts");
+    std::fs::create_dir_all(&child).map_err(|e| format!("create {}: {e}", child.display()))?;
+    let link = run_dir.join(MINECRAFT_FILES);
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&shared, &link);
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_dir(&shared, &link);
+    linked.map_err(|e| format!("link {}: {e}", link.display()))?;
+    Ok(shared.display().to_string())
+}
+
+/// Moves files a run fetched to where the next run links them from.
+fn keep_minecraft_files(root: &Path, run_dir: &Path) {
+    let fetched = run_dir.join(MINECRAFT_FILES);
+    let shared = root.join(MINECRAFT_FILES);
+    if fetched.is_symlink()
+        || !fetched.join(".complete").is_file()
+        || shared.join(".complete").is_file()
+    {
+        return;
+    }
+    let _ = std::fs::remove_dir_all(&shared);
+    if let Err(e) = std::fs::rename(&fetched, &shared) {
+        eprintln!("keep {}: {e}", fetched.display());
+    }
 }
 
 /// On Windows the launcher enters the folder holding its executable, so the binary must sit in the run directory.

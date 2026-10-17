@@ -69,8 +69,6 @@ pub(crate) fn decode_adpcm(data: &[u8], frames: u32, rate: u32, channels: u32) -
     if pcm.samples.len() < samples {
         return None;
     }
-    if pcm.samples.len() > samples {
-        pcm.samples = pcm.samples[..samples].into();
-    }
+    pcm.samples.truncate(samples);
     Some(pcm)
 }

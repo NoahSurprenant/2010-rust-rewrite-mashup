@@ -40,3 +40,11 @@ pub use drawsurf::{
     MinecraftWorldFrame,
 };
 pub use plugin::RenderGpuPlugin;
+
+/// Whether the adapter rasterizes on the CPU (lavapipe, llvmpipe, WARP). Its
+/// "device memory" is host RAM and every pipeline it holds costs megabytes of
+/// compiled shader state, so it trades load-time warm-up and resident caches
+/// for memory where a GPU would not.
+pub fn software_rasterizer(adapter: &bevy::render::renderer::RenderAdapterInfo) -> bool {
+    adapter.0.device_type == wgpu_types::DeviceType::Cpu
+}

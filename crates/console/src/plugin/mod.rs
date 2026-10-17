@@ -168,7 +168,10 @@ impl Plugin for ConsolePlugin {
                             .chain(),
                         crate::debug_move::route_debug_move_commands,
                         crate::debug_script_mover::route_debug_script_mover_commands,
-                        crate::debug_draw_method::route_debug_draw_method_commands,
+                        (
+                            crate::debug_draw_method::route_debug_draw_method_commands,
+                            crate::debug_minecraft::route_debug_minecraft_commands,
+                        ),
                         crate::debug_view_proj::route_view_proj_commands,
                         (
                             crate::debug_dof::route,
@@ -293,7 +296,7 @@ fn publish_client_action_input(
     binds: Res<KeyBinds>,
     mut scripted: ResMut<ConsoleInputState>,
     console: Res<ConsoleState>,
-    (script_menus, minecraft): (Option<Res<hud::ScriptMenus>>, Option<Res<frame::MinecraftUi>>),
+    (script_menus, mut minecraft): (Option<Res<hud::ScriptMenus>>, Option<ResMut<frame::MinecraftUi>>),
     mut hud_input: ResMut<frame::HudInputView>,
     settings: Res<frame::GameSettings>,
     mut out: ResMut<ClientActionInput>,
@@ -347,7 +350,7 @@ fn publish_client_action_input(
         *wheel_carry = 0.0;
     }
     let script_menu = script_menus.is_some_and(|menus| menus.captures_input());
-    let inventory_open = minecraft.is_some_and(|ui| ui.active && ui.inventory_open);
+    let inventory_open = minecraft.as_ref().is_some_and(|ui| ui.active && ui.inventory_open);
     skate.input_blocked = console.open || script_menu;
     // J, or clicking both sticks in together, toggles skating.
     let sticks_clicked = pad.is_some_and(|pad| {
@@ -365,6 +368,18 @@ fn publish_client_action_input(
         || keys.just_pressed(KeyCode::Escape)
         || pad.is_some_and(|pad| pad.just_pressed(bevy::input::gamepad::GamepadButton::Start));
     let captured = !devices.focused || modal_captured;
+    if let Some(ui) = minecraft.as_mut()
+        && ui.active
+        && !captured
+        && binds.iter().any(|(button, _)| {
+            // E is the Minecraft screens' own key.
+            button != crate::binds::BindButton::Key(KeyCode::KeyE)
+                && matches!(binds.binding_name(button), Some("+activate" | "+usereload"))
+                && inputs.just_pressed(button)
+        })
+    {
+        ui.use_pressed = true;
+    }
     hud_input.console_open = console.open;
     physical.blocked.retain(|button| inputs.pressed(*button));
 
@@ -734,6 +749,7 @@ fn setup_console(
     crate::debug_move::register_debug_move_commands(&mut registry);
     crate::debug_script_mover::register_debug_script_mover_commands(&mut registry);
     crate::debug_draw_method::register_debug_draw_method_commands(&mut registry);
+    crate::debug_minecraft::register_debug_minecraft_commands(&mut registry);
     crate::debug_view_proj::register_view_proj_commands(&mut registry);
     crate::debug_dof::register(&mut registry);
     crate::debug_glow::register(&mut registry);
@@ -1799,7 +1815,7 @@ fn dispatch_console_command(
     scene: Option<Res<WorldScene>>,
     screen: Option<Res<AppScreen>>,
     has_world: Option<Res<HasWorld>>,
-    ambient_booted: Option<Res<audio::MapAmbientBooted>>,
+    (ambient_booted, minecraft): (Option<Res<audio::MapAmbientBooted>>, Option<Res<frame::MinecraftUi>>),
     presented: Option<Res<PresentedSnapshot>>,
     (authority, clock): (
         Option<Res<net::AuthorityWorld>>,
@@ -1821,6 +1837,7 @@ fn dispatch_console_command(
         || dispatch.wait_spawn_admit
         || dispatch.wait_torn
         || dispatch.wait_ambient
+        || dispatch.wait_minecraft
         || dispatch.wait_move.is_some()
         || dispatch.wait_playing
         || dispatch.wait_tick.is_some()
@@ -1926,6 +1943,31 @@ fn dispatch_console_command(
                 abort_script_on_wait_timeout(
                     "wait ambient",
                     "MapAmbientBooted=0",
+                    &mut queue,
+                    &mut console,
+                    capacity,
+                );
+            } else {
+                return;
+            }
+        }
+    }
+    let in_minecraft = minecraft.as_ref().is_some_and(|ui| ui.in_world);
+    if dispatch.wait_minecraft {
+        if in_minecraft {
+            dispatch.wait_minecraft = false;
+            diag::info!(
+                Console,
+                "wait minecraft: on the world spawn after {:.1}s",
+                dispatch.wait_minecraft_elapsed
+            );
+        } else {
+            dispatch.wait_minecraft_elapsed += time.delta_secs();
+            if dispatch.wait_minecraft_elapsed >= WAIT_WORLD_TIMEOUT_SECS {
+                dispatch.wait_minecraft = false;
+                abort_script_on_wait_timeout(
+                    "wait minecraft",
+                    "not on the Minecraft world spawn",
                     &mut queue,
                     &mut console,
                     capacity,
@@ -2184,6 +2226,15 @@ fn dispatch_console_command(
                         dispatch.wait_ambient = true;
                         dispatch.wait_ambient_elapsed = 0.0;
                         diag::info!(Console, "wait ambient: until MapAmbientBooted");
+                    }
+                }
+                WaitKind::Minecraft => {
+                    if in_minecraft {
+                        diag::info!(Console, "wait minecraft: already on the world spawn");
+                    } else {
+                        dispatch.wait_minecraft = true;
+                        dispatch.wait_minecraft_elapsed = 0.0;
+                        diag::info!(Console, "wait minecraft: until on the world spawn");
                     }
                 }
                 WaitKind::Ticks(n) => match clock.as_ref() {

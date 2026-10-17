@@ -291,7 +291,15 @@ impl WorldImageUpload {
         self.upload_stage.take()
     }
 
-    pub fn arm(&mut self, scene: &mut WorldScene, progress: Option<&asset_transport::LoadProgress>) {
+    /// `hide_map_surfaces` is for a map that only stands in for the Minecraft
+    /// world: its world and static model surfaces are never drawn, so neither
+    /// their pipelines nor the textures only they sample are made for it.
+    pub fn arm(
+        &mut self,
+        scene: &mut WorldScene,
+        progress: Option<&asset_transport::LoadProgress>,
+        hide_map_surfaces: bool,
+    ) {
         self.pipeline_world_materials = Arc::new(
             scene
                 .batches
@@ -336,6 +344,32 @@ impl WorldImageUpload {
             &scene.runtime_material_catalog,
             &scene.exact_material_names,
         );
+        if hide_map_surfaces {
+            let hidden: HashSet<u16> = self
+                .pipeline_world_materials
+                .iter()
+                .chain(self.pipeline_smodel_materials.iter())
+                .copied()
+                .collect();
+            let images_of = |drawn: bool| -> HashSet<u32> {
+                scene
+                    .runtime_material_catalog
+                    .materials
+                    .iter()
+                    .filter(|material| hidden.contains(&material.asset_id.0) != drawn)
+                    .flat_map(|material| material.textures.iter())
+                    .filter_map(|(_, texture)| texture.as_ref().map(|binding| binding.image.0))
+                    .collect()
+            };
+            let drawn = images_of(true);
+            for image in images_of(false) {
+                if !drawn.contains(&image) {
+                    self.reachable_exact.remove(&image);
+                }
+            }
+            self.pipeline_world_materials = Arc::default();
+            self.pipeline_smodel_materials = Arc::default();
+        }
 
         self.reachable_exact.extend(
             scene
@@ -471,7 +505,7 @@ impl WorldImageUpload {
                 // and lets its own copy go: the two are the same texels under
                 // the same sampler, and a second `add` is a second texture.
                 let Some(variant) = variant else {
-                    return images.add((*image).clone());
+                    return images.add(Arc::unwrap_or_clone(image));
                 };
                 if let Some(handle) = self.exact_by_variant.get(&variant) {
                     if common_owned && self.common_profile_id != 0 {
@@ -496,7 +530,7 @@ impl WorldImageUpload {
                     self.exact_by_variant.insert(variant, handle.clone());
                     return handle;
                 }
-                let handle = images.add((*image).clone());
+                let handle = images.add(Arc::unwrap_or_clone(image));
                 if common_owned && self.common_profile_id != 0 {
                     common.by_variant.insert(variant, handle.clone());
                 }

@@ -81,7 +81,9 @@ pub async fn load_prepared_match(
     let MatchLoadOutcome::Ready(mut prepared) = outcome else {
         return outcome;
     };
-    if let (Some(zone), Some(common)) = (stamp, common) {
+    if let (Some(zone), Some(common)) = (stamp, common)
+        && super::keeps_texels_for_next_load()
+    {
         let keeping = std::time::Instant::now();
         let resident = prepared.clone();
         prepared.report.push(format!(

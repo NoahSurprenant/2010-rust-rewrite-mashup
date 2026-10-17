@@ -33,6 +33,9 @@ pub struct ConsoleDispatch {
     pub wait_ambient: bool,
     pub wait_ambient_elapsed: f32,
 
+    pub wait_minecraft: bool,
+    pub wait_minecraft_elapsed: f32,
+
     pub wait_move: Option<WaitMovePose>,
     pub wait_move_elapsed: f32,
 
@@ -60,6 +63,7 @@ impl ConsoleDispatch {
         self.pending_spawn_class = None;
         self.wait_torn = false;
         self.wait_ambient = false;
+        self.wait_minecraft = false;
         self.wait_move = None;
         self.wait_playing = false;
         self.wait_tick = None;
@@ -84,6 +88,7 @@ pub(crate) enum WaitKind {
     Spawn,
     Torn,
     Ambient,
+    Minecraft,
 }
 
 pub(crate) fn parse_wait_args(args: &[String]) -> WaitKind {
@@ -92,6 +97,7 @@ pub(crate) fn parse_wait_args(args: &[String]) -> WaitKind {
         Some(s) if s.eq_ignore_ascii_case("spawn") => WaitKind::Spawn,
         Some(s) if s.eq_ignore_ascii_case("torn") => WaitKind::Torn,
         Some(s) if s.eq_ignore_ascii_case("ambient") => WaitKind::Ambient,
+        Some(s) if s.eq_ignore_ascii_case("minecraft") => WaitKind::Minecraft,
         Some(s) if s.ends_with(['t', 'T']) && s[..s.len() - 1].parse::<u32>().is_ok() => {
             WaitKind::Ticks(s[..s.len() - 1].parse().unwrap_or(0))
         }

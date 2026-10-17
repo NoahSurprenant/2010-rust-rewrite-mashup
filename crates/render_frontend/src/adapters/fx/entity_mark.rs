@@ -282,7 +282,7 @@ fn stage(
                 state.unsupported_triangles += 1;
                 continue;
             }
-            let [Some(p0), Some(p1), Some(p2)] = ids.map(|i| skel.positions.get(i).copied()) else {
+            let [Some(p0), Some(p1), Some(p2)] = ids.map(|i| skel.position(i)) else {
                 continue;
             };
             let world =
@@ -300,7 +300,7 @@ fn stage(
             if n < 3 {
                 continue;
             }
-            let [Some(n0), Some(n1), Some(n2)] = ids.map(|i| skel.normals.get(i).copied()) else {
+            let [Some(n0), Some(n1), Some(n2)] = ids.map(|i| skel.normal(i)) else {
                 continue;
             };
             let inverse = matrix.inverse();

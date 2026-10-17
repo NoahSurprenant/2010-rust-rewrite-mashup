@@ -44,7 +44,7 @@ pub enum McClick {
     Swap { slot: McSlot, hotbar: usize },
     /// A drag across slots with a carried stack: shares it out.
     Spread { slots: Vec<usize>, right: bool },
-    /// The screen closed: the carried stack and the crafting grid go back.
+    /// The screen closed: the carried stack and the crafting grids go back.
     Close,
 }
 
@@ -52,15 +52,28 @@ pub enum McClick {
 pub struct MinecraftUi {
     /// A Minecraft world is in play and the player is alive.
     pub active: bool,
+    /// The player stands in the Minecraft world: alive, moved onto its spawn
+    /// and standing on its ground.
+    pub in_world: bool,
     /// The match's Minecraft world is still being generated; the loading
     /// screen holds until it is in, so its setup never lands mid-match.
     pub loading_world: bool,
     /// The inventory screen is open (the HUD's to change).
     pub inventory_open: bool,
+    /// The open screen is a crafting table's, at this block, rather than the
+    /// inventory's (the world's to change).
+    pub workbench: Option<(i32, i32, i32)>,
+    /// MW2's Use went down this frame, outside any screen (the world's to
+    /// clear): it opens the crafting table the player looks at.
+    pub use_pressed: bool,
+    /// The crafting table the player looks at within reach: E opens it
+    /// rather than the inventory.
+    pub table_in_view: Option<(i32, i32, i32)>,
     /// The selected hotbar slot.
     pub selected: usize,
     pub slots: Vec<Option<McStack>>,
-    pub crafting: [Option<McStack>; 4],
+    /// The open screen's crafting grid: 2x2 in the inventory, 3x3 at a table.
+    pub crafting: Vec<Option<McStack>>,
     pub result: Option<McStack>,
     /// The stack on the cursor.
     pub cursor: Option<McStack>,
@@ -71,6 +84,13 @@ pub struct MinecraftUi {
     pub names: HashMap<String, String>,
     /// Clicks the HUD took this frame, for the inventory's owner.
     pub clicks: Vec<McClick>,
+    /// Items the console gives the player: item id and count.
+    pub give: Vec<(String, u8)>,
+    /// The console empties the inventory of everything but the guns.
+    pub clear_items: bool,
+    /// Boxes of blocks the console sets, corners relative to the block at
+    /// the player's feet; no id is air.
+    pub fill: Vec<([i32; 3], [i32; 3], Option<String>)>,
     /// A hotbar slot the player picked (scroll or number key).
     pub select: Option<usize>,
     /// A drop of the selected stack (`Q`; with the whole stack on control).

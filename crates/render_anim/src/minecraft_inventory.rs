@@ -1,5 +1,6 @@
 //! The player's inventory on the Minecraft map: MinecraftOSS's vanilla
-//! `Inventory` (slots, stacking, container clicks, the 2x2 crafting grid),
+//! `Inventory` (slots, stacking, container clicks, the 2x2 crafting grid and
+//! a crafting table's 3x3),
 //! published for the HUD to draw with item icons and names made the way the
 //! viewer makes them. The player's MW2 guns are items in it too: selecting
 //! one on the hotbar raises that gun.
@@ -59,7 +60,12 @@ impl InventoryUi {
         let keep = |stack: &Option<ItemStack>| {
             stack.as_ref().is_none_or(|s| weapon_of(s).is_none_or(|w| owned.contains(&w)))
         };
-        for slot in inventory.slots.iter_mut().chain(inventory.crafting.iter_mut()) {
+        for slot in inventory
+            .slots
+            .iter_mut()
+            .chain(inventory.crafting.iter_mut())
+            .chain(inventory.workbench.iter_mut())
+        {
             if !keep(slot) {
                 *slot = None;
             }
@@ -71,6 +77,7 @@ impl InventoryUi {
             .slots
             .iter()
             .chain(inventory.crafting.iter())
+            .chain(inventory.workbench.iter())
             .chain(std::iter::once(&inventory.cursor))
             .filter_map(|s| s.as_ref().and_then(weapon_of))
             .collect();
@@ -97,6 +104,19 @@ impl InventoryUi {
         selected: &mut usize,
     ) -> Vec<ItemStack> {
         let mut thrown = Vec::new();
+        if std::mem::take(&mut ui.clear_items) {
+            for slot in &mut inventory.slots {
+                if slot.as_ref().is_some_and(|s| weapon_of(s).is_none()) {
+                    *slot = None;
+                }
+            }
+        }
+        for (id, count) in std::mem::take(&mut ui.give) {
+            let stack = inventory.recipes.stack(&id, count);
+            if let Some(rest) = inventory.add_item(stack, *selected) {
+                thrown.push(rest);
+            }
+        }
         for click in std::mem::take(&mut ui.clicks) {
             match click {
                 McClick::Slot { slot: McSlot::Inventory(index), right, shift } => {
@@ -105,10 +125,18 @@ impl InventoryUi {
                     }
                 }
                 McClick::Slot { slot: McSlot::Crafting(index), right, shift } => {
-                    inventory.click_crafting_slot(index, right, shift);
+                    if ui.workbench.is_some() {
+                        inventory.click_workbench_slot(index, right, shift);
+                    } else {
+                        inventory.click_crafting_slot(index, right, shift);
+                    }
                 }
                 McClick::Slot { slot: McSlot::Result, shift, .. } => {
-                    inventory.take_crafting_output(shift);
+                    if ui.workbench.is_some() {
+                        inventory.take_workbench_output(shift);
+                    } else {
+                        inventory.take_crafting_output(shift);
+                    }
                 }
                 McClick::Outside { right } => {
                     if let Some(stack) = inventory.click(None, right, false) {
@@ -120,7 +148,9 @@ impl InventoryUi {
                 McClick::Swap { .. } => {}
                 McClick::Spread { slots, right } => inventory.distribute(&slots, right),
                 McClick::Close => {
+                    ui.workbench = None;
                     thrown.extend(inventory.settle_crafting());
+                    thrown.extend(inventory.settle_workbench());
                     if let Some(rest) = inventory.settle_cursor() {
                         thrown.push(rest);
                     }
@@ -205,8 +235,13 @@ impl InventoryUi {
             })
         };
         ui.slots = inventory.slots.iter().take(frame::minecraft_ui::MC_INVENTORY_SLOTS).map(&mut convert).collect();
-        ui.crafting = std::array::from_fn(|i| convert(&inventory.crafting[i]));
-        ui.result = convert(&inventory.crafting_output());
+        if ui.workbench.is_some() {
+            ui.crafting = inventory.workbench.iter().map(&mut convert).collect();
+            ui.result = convert(&inventory.workbench_output());
+        } else {
+            ui.crafting = inventory.crafting.iter().map(&mut convert).collect();
+            ui.result = convert(&inventory.crafting_output());
+        }
         ui.cursor = convert(&inventory.cursor);
         if ui.selected != selected {
             let name = inventory.slots[selected]

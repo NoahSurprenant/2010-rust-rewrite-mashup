@@ -1789,10 +1789,20 @@ struct PreparedExactDraw {
 
     indirect_arg: Option<u32>,
     arena_lane: u8,
+}
 
-    /// The loaded map only stands in for a Minecraft world: this draw of
-    /// its world is prepared but not submitted.
-    minecraft_hidden: bool,
+/// The loaded map only stands in for a Minecraft world: its own world draws
+/// are neither prepared nor submitted (nor cast shadows), so no pipeline is
+/// built for them.
+fn hidden_under_minecraft(kind: &RetainedDrawKind) -> bool {
+    super::minecraft_world::hides_map()
+        && matches!(
+            kind,
+            RetainedDrawKind::World { .. }
+                | RetainedDrawKind::Smodel { .. }
+                | RetainedDrawKind::Glass { .. }
+                | RetainedDrawKind::MarkMesh { .. }
+        )
 }
 
 fn bsp_draw_source(kind: &RetainedDrawKind) -> (Option<BspCameraLane>, u16, u16, u16) {
@@ -4220,8 +4230,7 @@ fn record_shadowmap_draws<'a>(
     let mut bound_depth = None;
     let mut constants_bound = false;
     let mut indexed = 0u32;
-    // A map standing in for a Minecraft world casts no shadows.
-    for draw in draws.into_iter().filter(|draw| !draw.minecraft_hidden) {
+    for draw in draws {
         let Some(gpu_pipeline) = registry.ready(draw.pipeline) else {
             *miss = miss.saturating_add(1);
             *miss_rows.entry("PipelineNotReady".into()).or_default() += 1;
@@ -5556,6 +5565,9 @@ impl ExactPrepare<'_> {
                 || execution_binds_code_texture(execution, CODE_TEXTURE_RESOLVED_POST_SUN)
                 || execution_binds_code_texture(execution, CODE_TEXTURE_FLOATZ));
         let kind = item.kind;
+        if hidden_under_minecraft(&kind) {
+            return Ok(0);
+        }
         let key = item.key;
         let (tess, start, count, vertex_type) = match kind {
             RetainedDrawKind::World { surf, .. } => {
@@ -5928,14 +5940,6 @@ impl ExactPrepare<'_> {
                     tess,
                     owner_object_id: matches!(kind, RetainedDrawKind::XModel { .. })
                         .then(|| drawsurf_object_id(key)),
-                    minecraft_hidden: super::minecraft_world::hides_map()
-                        && matches!(
-                            kind,
-                            RetainedDrawKind::World { .. }
-                                | RetainedDrawKind::Smodel { .. }
-                                | RetainedDrawKind::Glass { .. }
-                                | RetainedDrawKind::MarkMesh { .. }
-                        ),
                     depth_min,
                     depth_max,
                     state: GfxPassState::from_bits(executable.state),

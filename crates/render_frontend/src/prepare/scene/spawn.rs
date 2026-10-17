@@ -299,13 +299,13 @@ pub(crate) fn spawn_world(
     }
 
     if job.phase == WorldSpawnPhase::Programs && !job.compile.armed {
-        if load
+        let minecraft = load
             .as_deref()
-            .is_some_and(|load| assets::minecraft_map::is_minecraft_load(&load.zone))
-        {
+            .is_some_and(|load| assets::minecraft_map::is_minecraft_load(&load.zone));
+        if minecraft {
             neutral_reflection_probes(&mut scene.reflection_probes);
         }
-        job.images.arm(&mut scene, progress.as_ref());
+        job.images.arm(&mut scene, progress.as_ref(), minecraft);
     }
     let images_finished = if job.images.unfinished() {
         let gap_ms = job.slice_gap_ms(frame_started);

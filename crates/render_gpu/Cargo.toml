@@ -27,6 +27,7 @@ render_frame.workspace = true
 render_material.workspace = true
 bevy.workspace = true
 naga = { version = "29", features = ["wgsl-in"] }
+wgpu-types.workspace = true
 
 [lints]
 workspace = true

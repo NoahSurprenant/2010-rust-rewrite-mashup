@@ -232,7 +232,7 @@ impl BodyMeshCatalog {
                     "bodies: {} bones={} verts={} (rigid={}, blend={}) [{side}]",
                     kit.body,
                     body.bone_count(),
-                    body.skel.positions.len(),
+                    body.skel.vertex_count(),
                     body.skel.rigid_verts,
                     body.skel.blend_verts,
                 ));
@@ -245,7 +245,7 @@ impl BodyMeshCatalog {
                         "  head={} bones={} verts={}",
                         head,
                         h.bone_count(),
-                        h.skel.positions.len()
+                        h.skel.vertex_count()
                     )),
                     None => lines.push(format!("  head={head} missing skel")),
                 },

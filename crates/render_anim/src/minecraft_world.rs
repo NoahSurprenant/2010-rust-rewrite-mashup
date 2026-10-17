@@ -279,6 +279,25 @@ fn celestial_image(packs: &PackStack) -> anyhow::Result<image::RgbaImage> {
 
 /// A controller trigger, held or just pressed: with a block or an empty hand
 /// the right trigger mines and the left places, as the mouse buttons do.
+fn is_crafting_table(scene: &HandcraftedScene, pos: (i32, i32, i32)) -> bool {
+    minecraft_terrain::scene::Scene::block(scene, pos)
+        .is_some_and(|block| block.id.namespace == "minecraft" && block.id.path == "crafting_table")
+}
+
+/// The crafting table the player looks at, within survival reach.
+fn table_in_reach(scene: &HandcraftedScene, feet: [f64; 3], yaw: f32, pitch: f32) -> Option<(i32, i32, i32)> {
+    let mut player = minecraftoss_player::Player::new(glam::DVec3::from_array(feet));
+    player.yaw = f64::from(yaw);
+    player.pitch = f64::from(pitch);
+    player.target(scene, 4.5).map(|hit| hit.pos).filter(|&pos| is_crafting_table(scene, pos))
+}
+
+fn open_table(ui: &mut frame::MinecraftUi, hand: &mut HandState, pos: (i32, i32, i32)) {
+    hand.swing = Some(0.0);
+    ui.inventory_open = true;
+    ui.workbench = Some(pos);
+}
+
 fn pad_trigger(pad: Option<&bevy::input::gamepad::Gamepad>, button: GamepadButton, just: bool) -> bool {
     pad.is_some_and(|pad| if just { pad.just_pressed(button) } else { pad.pressed(button) })
 }
@@ -422,11 +441,15 @@ fn update(
     let Some(world) = world.as_mut() else {
         ui.active = false;
         ui.inventory_open = false;
+        ui.workbench = None;
+        ui.table_in_view = None;
+        ui.in_world = false;
         puppet.active = false;
         return;
     };
     let Some(ps) = presented.player(local.0) else {
         ui.active = false;
+        ui.in_world = false;
         puppet.active = false;
         return;
     };
@@ -443,13 +466,20 @@ fn update(
     } else if !alive {
         *was_alive = false;
     }
-
     let feet = sim::voxel::to_block(origin, ps.origin);
     let block = (
         feet[0].floor() as i32,
         feet[1].floor() as i32,
         feet[2].floor() as i32,
     );
+    // Standing: a block under some corner of the player's box. Right after the move to the
+    // spawn the player can still be above the ground with no speed yet.
+    let below = (feet[1] - 0.05).floor() as i32;
+    let grounded = [(-0.3, -0.3), (-0.3, 0.3), (0.3, -0.3), (0.3, 0.3)].iter().any(|(dx, dz)| {
+        let pos = ((feet[0] + dx).floor() as i32, below, (feet[2] + dz).floor() as i32);
+        minecraft_terrain::scene::Scene::block(&world.scene, pos).is_some()
+    });
+    ui.in_world = alive && *was_alive && grounded && ps.velocity[2].abs() < 1.0;
     let (loaded, forgotten) = world.stream.server_tick(block, &mut world.scene);
     for chunk in loaded {
         let blocks = &world.registries.blocks;
@@ -587,6 +617,21 @@ fn update(
     hand.clock += dt_hand;
     let hand_ticks = (hand.clock / TICK_SECONDS) as u32;
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
+    // A crafting table in reach opens on MW2's Use whatever the hand holds,
+    // and on a right click with an item or an empty hand, unless crouched with
+    // something in hand: crouching stands in for vanilla's sneak, which then
+    // places against it.
+    ui.table_in_view = (alive && !ui.inventory_open)
+        .then(|| table_in_reach(&world.scene, feet, mc_yaw, ps.viewangles[0]))
+        .flatten();
+    let use_pressed = std::mem::take(&mut ui.use_pressed);
+    let crouched = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
+    if use_pressed
+        && entities.is_some()
+        && let Some(pos) = ui.table_in_view
+    {
+        open_table(&mut ui, hand, pos);
+    }
     if let Some(entities) = entities.as_mut()
         && ui.holding_item
         && !ui.inventory_open
@@ -622,7 +667,10 @@ fn update(
         hand.place_delay = hand.place_delay.saturating_sub(hand_ticks);
         let place = (buttons.just_pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, true))
             || ((buttons.pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, false)) && hand.place_delay == 0);
-        if place {
+        if let Some(pos) = ui.table_in_view.filter(|_| place && (!crouched || ui.empty_hand)) {
+            hand.place_delay = 4;
+            open_table(&mut ui, hand, pos);
+        } else if place {
             hand.place_delay = 4;
             if let Some(pos) = player.place_selected(
                 &mut world.scene,
@@ -814,8 +862,35 @@ fn update(
         };
         let bright_outside = world.environment.sky_light_level() > 11.0;
         let ticks_before = entities.client_ticks();
-        let (changes, hits) = entities.tick(dt, day.ticks as i64, bright_outside, &player);
+        let (mut changes, hits) = entities.tick(dt, day.ticks as i64, bright_outside, &player);
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
+        let mut filled = Vec::new();
+        for (a, b, id) in std::mem::take(&mut ui.fill) {
+            let block_of = match id
+                .as_deref()
+                .map(minecraft_terrain::pack::ResourceId::parse)
+            {
+                None => None,
+                Some(Ok(id)) => Some(minecraft_terrain::scene::Block {
+                    id,
+                    properties: Default::default(),
+                }),
+                Some(Err(error)) => {
+                    diag::warn!(World, "Minecraft fill: {error}");
+                    continue;
+                }
+            };
+            let span = |i: usize| a[i].min(b[i])..=a[i].max(b[i]);
+            for x in span(0) {
+                for y in span(1) {
+                    for z in span(2) {
+                        let pos = (block.0 + x, block.1 + y, block.2 + z);
+                        changes.push((pos, block_of.clone()));
+                        filled.push(pos);
+                    }
+                }
+            }
+        }
         if !changes.is_empty() {
             let blocks = &world.registries.blocks;
             let mut positions = Vec::with_capacity(changes.len());
@@ -843,6 +918,10 @@ fn update(
             }
             world.stream.mark_edited(&world.scene, &positions);
         }
+        world.stream.record_edits(&world.scene, &filled);
+        for pos in filled {
+            entities.placed(&world.scene, pos);
+        }
         for (amount, from) in hits {
             sim::voxel::push_player_damage(local.0.0, amount, from.map(|b| sim::voxel::to_map(origin, b)));
         }
@@ -856,8 +935,16 @@ fn update(
             .filter(|&w| authority.0.weapon_combat_row(w).is_some_and(|facts| facts.inventory_type == 0))
             .collect();
         ui.active = alive;
-        if !alive {
+        // A crafting table's screen holds while its table stands within
+        // eight blocks of the player, as vanilla's `stillValid`.
+        let table_lost = ui.workbench.is_some_and(|pos| {
+            let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
+            let far = (0..3).map(|i| (feet[i] - centre[i]).powi(2)).sum::<f64>() > 64.0;
+            far || !is_crafting_table(&world.scene, pos)
+        });
+        if ui.inventory_open && (!alive || table_lost) {
             ui.inventory_open = false;
+            ui.clicks.push(frame::McClick::Close);
         }
         inventory_ui.sync_weapons(&mut entities.inventory, &owned);
         let mut selected = entities.selected;

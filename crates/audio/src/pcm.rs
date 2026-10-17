@@ -58,9 +58,62 @@ impl LiveGain {
     }
 }
 
+/// Interleaved samples. Linear 16-bit PCM out of a zone is read where it lies:
+/// the sound bank keeps those bytes resident for as long as the clip can play,
+/// and widening them to `f32` would hold the clip a second time at twice its
+/// size.
+#[derive(Clone, Debug)]
+pub(crate) enum PcmSamples {
+    F32(Arc<[f32]>),
+    Le16 { bytes: Arc<[u8]>, len: usize },
+}
+
+impl PcmSamples {
+    /// The first `len` samples of `bytes`, read as little-endian `i16`.
+    pub(crate) fn le16(bytes: Arc<[u8]>, len: usize) -> Option<Self> {
+        (len.checked_mul(2)? <= bytes.len()).then_some(Self::Le16 { bytes, len })
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::F32(samples) => samples.len(),
+            Self::Le16 { len, .. } => *len,
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub(crate) fn truncate(&mut self, len: usize) {
+        match self {
+            Self::F32(samples) if samples.len() > len => *samples = samples[..len].into(),
+            Self::Le16 { len: kept, .. } => *kept = (*kept).min(len),
+            Self::F32(_) => {}
+        }
+    }
+
+    /// What the samples occupy, whether or not the sound bank shares them.
+    pub(crate) fn bytes(&self) -> usize {
+        match self {
+            Self::F32(samples) => samples.len() * size_of::<f32>(),
+            Self::Le16 { len, .. } => len * size_of::<i16>(),
+        }
+    }
+
+    fn get(&self, index: usize) -> Option<f32> {
+        match self {
+            Self::F32(samples) => samples.get(index).copied(),
+            Self::Le16 { bytes, len } => (index < *len).then(|| {
+                i16::from_le_bytes([bytes[index * 2], bytes[index * 2 + 1]]) as f32 / 32768.0
+            }),
+        }
+    }
+}
+
 #[derive(Asset, TypePath, Clone)]
 pub struct PcmAudio {
-    samples: Arc<[f32]>,
+    samples: PcmSamples,
     channels: u16,
     sample_rate: u32,
     live_pan: Option<LivePan>,
@@ -88,7 +141,7 @@ impl LoopingPcmPlayback {
 
 impl PcmAudio {
     pub(crate) fn from_prepared(
-        samples: Arc<[f32]>,
+        samples: PcmSamples,
         channels: u16,
         sample_rate: u32,
     ) -> Option<Self> {
@@ -105,7 +158,7 @@ impl PcmAudio {
         })
     }
 
-    pub(crate) fn samples(&self) -> &Arc<[f32]> {
+    pub(crate) fn samples(&self) -> &PcmSamples {
         &self.samples
     }
 
@@ -119,7 +172,7 @@ impl PcmAudio {
 
     pub fn with_live_pan(&self) -> Self {
         Self {
-            samples: Arc::clone(&self.samples),
+            samples: self.samples.clone(),
             channels: self.channels,
             sample_rate: self.sample_rate,
             live_pan: Some(LivePan::unity()),
@@ -162,7 +215,7 @@ impl PcmAudio {
 
     fn decoder_with_looping(&self, looping: bool) -> PcmDecoder {
         PcmDecoder {
-            samples: Arc::clone(&self.samples),
+            samples: self.samples.clone(),
             pos: 0,
             src_channels: self.channels,
             sample_rate: self.sample_rate,
@@ -195,7 +248,7 @@ impl LoopingPcmAudio {
 }
 
 pub struct PcmDecoder {
-    samples: Arc<[f32]>,
+    samples: PcmSamples,
 
     pos: usize,
     src_channels: u16,
@@ -216,14 +269,14 @@ impl PcmDecoder {
             return None;
         }
         let Some(live) = &self.live else {
-            let sample = self.samples[self.pos];
+            let sample = self.samples.get(self.pos)?;
             self.pos += 1;
             return Some(sample);
         };
         let (gain_l, gain_r) = live.get();
         let ch = self.src_channels.max(1) as usize;
-        let left = *self.samples.get(self.pos)?;
-        let right = self.samples.get(self.pos + 1).copied().unwrap_or(left);
+        let left = self.samples.get(self.pos)?;
+        let right = self.samples.get(self.pos + 1).unwrap_or(left);
         self.pos += ch;
         self.pending_right = Some(right * gain_r);
         Some(left * gain_l)
@@ -346,7 +399,7 @@ pub fn decode_audio_bytes(bytes: &[u8]) -> Option<PcmAudio> {
         .make(&track.codec_params, &DecoderOptions::default())
         .ok()?;
 
-    let mut samples: Vec<f32> = Vec::new();
+    let mut le16: Vec<u8> = Vec::new();
     let mut channels: u16 = 0;
     loop {
         let packet = match format.next_packet() {
@@ -362,15 +415,25 @@ pub fn decode_audio_bytes(bytes: &[u8]) -> Option<PcmAudio> {
             Err(_) => continue,
         };
         channels = channels.max(decoded.spec().channels.count() as u16);
-        let mut interleaved = SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
+        // Kept as 16-bit PCM: exact for the 16-bit WAVs, and an MP3 decoded to
+        // `f32` is rounded and clamped to it. As `f32` every streamed clip,
+        // menu music included, was resident at twice the size.
+        let mut interleaved = SampleBuffer::<i16>::new(decoded.capacity() as u64, *decoded.spec());
         interleaved.copy_interleaved_ref(decoded);
-        samples.extend_from_slice(interleaved.samples());
+        le16.extend(
+            interleaved
+                .samples()
+                .iter()
+                .flat_map(|sample| sample.to_le_bytes()),
+        );
     }
+    let len = le16.len() / 2;
+    let samples = PcmSamples::le16(le16.into(), len)?;
     if samples.is_empty() || channels == 0 {
         return None;
     }
     Some(PcmAudio {
-        samples: samples.into(),
+        samples,
         channels,
         sample_rate,
         live_pan: None,

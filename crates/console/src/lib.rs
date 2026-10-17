@@ -12,6 +12,7 @@ mod debug_fx;
 mod debug_fx_marks;
 mod debug_glow;
 mod debug_lod;
+mod debug_minecraft;
 mod debug_move;
 mod debug_scalar;
 mod debug_script_mover;

@@ -190,7 +190,7 @@ impl PreparedFpvModel {
         Ok(Self {
             catalog_entry,
             posed_surface_n: lod_range.len(),
-            packed_ok: skel.packed_vertices.len() == skel.positions.len(),
+            packed_ok: true,
             layout,
             surfaces,
             refusal,
