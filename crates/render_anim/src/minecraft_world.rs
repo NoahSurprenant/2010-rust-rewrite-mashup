@@ -126,7 +126,12 @@ struct Runtime {
     /// Boxes of each shape id, to reuse an id for a repeated shape.
     shape_ids: HashMap<Vec<[u32; 6]>, u16>,
     was_alive: bool,
+    /// Frames in a row the player has stood still on the spawn since the move there.
+    settled: u32,
 }
+
+/// Frames standing still on the spawn before the player counts as in the world.
+const SETTLE_FRAMES: u32 = 10;
 
 /// The player's MW2 body stands in the inventory's character window, on a
 /// black card: placed from this frame's camera and projection where the
@@ -408,6 +413,7 @@ fn update(
                 runtime.shapes.clear();
                 runtime.shape_ids.clear();
                 runtime.was_alive = false;
+                runtime.settled = 0;
             }
             Err(error) => {
                 diag::warn!(World, "Minecraft world failed to load: {error}");
@@ -422,6 +428,7 @@ fn update(
         shapes,
         shape_ids,
         was_alive,
+        settled,
         day,
         environment_accumulator,
         environment_primed,
@@ -462,6 +469,7 @@ fn update(
         if authority.0.teleport(local.0, [0.0, 0.0, 0.0]) {
             diag::info!(World, "Minecraft spawn: moved to the world spawn");
             *was_alive = true;
+            *settled = 0;
         }
     } else if !alive {
         *was_alive = false;
@@ -479,7 +487,17 @@ fn update(
         let pos = ((feet[0] + dx).floor() as i32, below, (feet[2] + dz).floor() as i32);
         minecraft_terrain::scene::Scene::block(&world.scene, pos).is_some()
     });
-    ui.in_world = alive && *was_alive && grounded && ps.velocity[2].abs() < 1.0;
+    // The presented pose lags the move, and MW2's own spawn can land anywhere (under the map
+    // when its ground trace finds no terrain yet): the player is in the world once a pose over
+    // the spawn has stood still for a few frames, and stays so until it dies.
+    let over_spawn = ps.origin[0].hypot(ps.origin[1]) < sim::voxel::BLOCK * 0.5;
+    if !(alive && *was_alive) {
+        *settled = 0;
+    } else if *settled < SETTLE_FRAMES {
+        let still = grounded && ps.velocity[2].abs() < 1.0;
+        *settled = if over_spawn && still { *settled + 1 } else { 0 };
+    }
+    ui.in_world = *settled >= SETTLE_FRAMES;
     let (loaded, forgotten) = world.stream.server_tick(block, &mut world.scene);
     for chunk in loaded {
         let blocks = &world.registries.blocks;
