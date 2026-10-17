@@ -85,6 +85,14 @@ impl PcmSamples {
         self.len() == 0
     }
 
+    pub(crate) fn truncate(&mut self, len: usize) {
+        match self {
+            Self::F32(samples) if samples.len() > len => *samples = samples[..len].into(),
+            Self::Le16 { len: kept, .. } => *kept = (*kept).min(len),
+            Self::F32(_) => {}
+        }
+    }
+
     /// What the samples occupy, whether or not the sound bank shares them.
     pub(crate) fn bytes(&self) -> usize {
         match self {
@@ -391,7 +399,7 @@ pub fn decode_audio_bytes(bytes: &[u8]) -> Option<PcmAudio> {
         .make(&track.codec_params, &DecoderOptions::default())
         .ok()?;
 
-    let mut samples: Vec<f32> = Vec::new();
+    let mut le16: Vec<u8> = Vec::new();
     let mut channels: u16 = 0;
     loop {
         let packet = match format.next_packet() {
@@ -407,15 +415,25 @@ pub fn decode_audio_bytes(bytes: &[u8]) -> Option<PcmAudio> {
             Err(_) => continue,
         };
         channels = channels.max(decoded.spec().channels.count() as u16);
-        let mut interleaved = SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
+        // Kept as 16-bit PCM: exact for the 16-bit WAVs, and an MP3 decoded to
+        // `f32` is rounded and clamped to it. As `f32` every streamed clip,
+        // menu music included, was resident at twice the size.
+        let mut interleaved = SampleBuffer::<i16>::new(decoded.capacity() as u64, *decoded.spec());
         interleaved.copy_interleaved_ref(decoded);
-        samples.extend_from_slice(interleaved.samples());
+        le16.extend(
+            interleaved
+                .samples()
+                .iter()
+                .flat_map(|sample| sample.to_le_bytes()),
+        );
     }
+    let len = le16.len() / 2;
+    let samples = PcmSamples::le16(le16.into(), len)?;
     if samples.is_empty() || channels == 0 {
         return None;
     }
     Some(PcmAudio {
-        samples: PcmSamples::F32(samples.into()),
+        samples,
         channels,
         sample_rate,
         live_pan: None,
