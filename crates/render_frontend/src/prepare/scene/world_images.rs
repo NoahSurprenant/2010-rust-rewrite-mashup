@@ -505,7 +505,7 @@ impl WorldImageUpload {
                 // and lets its own copy go: the two are the same texels under
                 // the same sampler, and a second `add` is a second texture.
                 let Some(variant) = variant else {
-                    return images.add((*image).clone());
+                    return images.add(Arc::unwrap_or_clone(image));
                 };
                 if let Some(handle) = self.exact_by_variant.get(&variant) {
                     if common_owned && self.common_profile_id != 0 {
@@ -530,7 +530,7 @@ impl WorldImageUpload {
                     self.exact_by_variant.insert(variant, handle.clone());
                     return handle;
                 }
-                let handle = images.add((*image).clone());
+                let handle = images.add(Arc::unwrap_or_clone(image));
                 if common_owned && self.common_profile_id != 0 {
                     common.by_variant.insert(variant, handle.clone());
                 }

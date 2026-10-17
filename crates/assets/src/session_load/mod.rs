@@ -44,6 +44,21 @@ pub use common_walks::{
 };
 pub use resident_map::load_prepared_match;
 
+static KEEP_TEXELS_FOR_NEXT_LOAD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+/// Whether a load keeps its decoded texels once they are handed to the GPU:
+/// the common set's payloads for the next map, and the resident copy of the
+/// match for a same-map load. Off for a software rasterizer, whose textures
+/// already live in host memory; the next load then decodes them again.
+pub fn keep_texels_for_next_load(keep: bool) {
+    KEEP_TEXELS_FOR_NEXT_LOAD.store(keep, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn keeps_texels_for_next_load() -> bool {
+    KEEP_TEXELS_FOR_NEXT_LOAD.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 static PROCESS_CPUS: std::sync::OnceLock<Vec<usize>> = std::sync::OnceLock::new();
 
 pub fn publish_process_cpus(cpus: Vec<usize>) {

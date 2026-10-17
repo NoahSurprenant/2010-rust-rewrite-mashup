@@ -512,13 +512,17 @@ pub(super) async fn walk_prepared_match(
     {
         let job = pending.job;
         let (label, batch) = pending.join().await;
-        let kept = common.retain(&batch);
-        report.push(format!(
-            "{label} payloads kept for the next map: +{:.1}MiB (common set holds {} payloads, {:.1}MiB)",
-            kept as f64 / (1024.0 * 1024.0),
-            common.retained_payloads(),
-            common.retained_bytes() as f64 / (1024.0 * 1024.0),
-        ));
+        if super::keeps_texels_for_next_load() {
+            let kept = common.retain(&batch);
+            report.push(format!(
+                "{label} payloads kept for the next map: +{:.1}MiB (common set holds {} payloads, {:.1}MiB)",
+                kept as f64 / (1024.0 * 1024.0),
+                common.retained_payloads(),
+                common.retained_bytes() as f64 / (1024.0 * 1024.0),
+            ));
+        } else {
+            report.push(format!("{label} payloads not kept for the next map"));
+        }
         merge_image_batch(&mut global, label, batch, job, &mut report);
     }
     if let Ok(path) = &zone_ff {
