@@ -134,7 +134,7 @@ pub fn first_session(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     let placed = pair.ask(
         true,
         &format!(
-            "key {}; wait 1s; look 0 23; wait 2t; key mouse2 0; wait 2s; mc state c_placed",
+            "key {}; wait 1s; look 0 23; wait 0.2s; key mouse2 0; wait 2s; mc state c_placed",
             planks + 1
         ),
         "c_placed",
@@ -150,7 +150,7 @@ pub fn first_session(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
         .position(|s| s == "-")
         .ok_or("no empty hotbar slot on the client")?;
     pair.client.as_mut().ok_or("no client")?.send(&format!(
-        "key {}; wait 1s; look 0 23; wait 2t; key mouse1 4",
+        "key {}; wait 1s; look 0 23; wait 0.2s; key mouse1 4",
         empty + 1
     ))?;
     let broken = pair.poll_block(false, "h_plank_gone", plank, "air", Duration::from_secs(20))?;

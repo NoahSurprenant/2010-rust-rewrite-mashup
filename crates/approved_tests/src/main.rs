@@ -484,6 +484,7 @@ fn open_duo(
         host,
         client: None,
         peak_combined_kib: 0,
+        peak_client_kib: 0,
     };
     pair.host
         .send(&format!("{setup}; ui_create_lobby; ui_lobby_privacy"))?;
@@ -629,7 +630,7 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
         peaks.push(json!({
             "session": session,
             "host_peak_rss_mib": pair.host.peak_rss_kib / 1024,
-            "client_peak_rss_mib": pair.client.as_ref().map(|c| c.peak_rss_kib / 1024),
+            "client_peak_rss_mib": pair.peak_client_kib / 1024,
             "combined_peak_rss_mib": pair.peak_combined_kib / 1024,
         }));
         if let Err(e) = played.and(closed) {

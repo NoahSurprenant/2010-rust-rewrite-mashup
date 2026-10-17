@@ -237,6 +237,8 @@ pub struct Pair {
     pub client: Option<Player>,
     /// The most both held at once, in KiB.
     pub peak_combined_kib: u64,
+    /// The most the client held, in KiB, kept after it exits.
+    pub peak_client_kib: u64,
 }
 
 impl Pair {
@@ -280,6 +282,7 @@ impl Pair {
             client.pump();
             let rss = rss_kib(client.pid());
             client.peak_rss_kib = client.peak_rss_kib.max(rss);
+            self.peak_client_kib = self.peak_client_kib.max(rss);
             combined += rss;
         }
         self.peak_combined_kib = self.peak_combined_kib.max(combined);
