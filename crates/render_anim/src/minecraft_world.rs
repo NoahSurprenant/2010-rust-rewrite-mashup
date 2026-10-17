@@ -380,6 +380,22 @@ fn client_spawn(scene: &HandcraftedScene, origin: [f64; 3], nth: usize) -> [f32;
     sim::voxel::to_map(origin, [origin[0], feet, origin[2] + 3.0 * nth as f64])
 }
 
+/// The lowest feet height at or above `feet` where a player fits (two
+/// blocks without collision), within sixteen blocks; `feet` itself if it
+/// fits.
+fn clear_feet(world: &Loaded, feet: [f64; 3]) -> Option<f64> {
+    use minecraft_terrain::scene::Scene;
+    let (x, y, z) = (feet[0].floor() as i32, feet[1].floor() as i32, feet[2].floor() as i32);
+    let solid = |y: i32| {
+        world.scene.block((x, y, z)).and_then(|b| world.stream.states.state_of(b)).is_some_and(|state| !world.registries.blocks.collision_boxes(state).is_empty())
+    };
+    let fits = |y: i32| !solid(y) && !solid(y + 1);
+    if fits(y) {
+        return Some(feet[1]);
+    }
+    (y + 1..=y + 16).find(|&y| fits(y)).map(f64::from)
+}
+
 /// Chunks streamed around the player: `IW4L_MINECRAFT_VIEW_DISTANCE` (2 to
 /// 32), else `VIEW_DISTANCE`.
 fn view_distance() -> i32 {
@@ -1083,6 +1099,16 @@ fn update(
             if waiting != remote.held_still {
                 remote.held_still = waiting;
                 authority.set_external_motion(sim::ClientId(id), waiting);
+                // It may have sunk a little before the hold began: once there is
+                // ground, out of any block it stands in.
+                if !waiting
+                    && let Some(clear) = clear_feet(world, feet)
+                    && clear > feet[1]
+                {
+                    let mut at = sim::voxel::to_map(origin, [feet[0], clear, feet[2]]);
+                    at[2] += 1.0;
+                    authority.teleport(sim::ClientId(id), at);
+                }
             }
         }
         let cheats = authority.cheats_enabled();
