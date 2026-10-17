@@ -17,6 +17,32 @@ binary, installs it with the certificates under `/usr/local/lib/iw4l/` and
 `status` and `uninstall` follow, each taking `--channel dev` and `--ca DIR`;
 `uninstall` keeps the certificates and CA, so a reinstall stays trusted.
 
+## Docker — any host with a public UDP port
+
+`ghcr.io/noahsurprenant/iw4l-master` is built from `main` by
+`.github/workflows/master-image.yml` (`packaging/iw4l-master/Dockerfile`) and
+signed keyless with cosign. Tags: `sha-<commit>` and `latest`. Run the tag of
+the commit your players' build came from: a different `master_protocol`
+version is refused at the handshake.
+
+```bash
+# A self-signed certificate for the label iw4l-prod; keep the key to keep the pin.
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
+  -keyout tls.key -out tls.crt -subj /CN=iw4l-prod -addext subjectAltName=DNS:iw4l-prod \
+  -addext basicConstraints=critical,CA:FALSE
+openssl pkcs8 -topk8 -nocrypt -in tls.key -out tls.key   # the master reads PKCS#8
+docker run -d --name iw4l-master -p 4433:4433/udp --user "$(id -u):$(id -g)" \
+  -v "$PWD/tls.crt:/etc/iw4l/tls/tls.crt:ro" -v "$PWD/tls.key:/etc/iw4l/tls/tls.key:ro" \
+  ghcr.io/noahsurprenant/iw4l-master:latest
+docker logs iw4l-master | grep key-sha256   # the pin players set
+```
+
+Players then set `IW4L_MASTER_ADDR=<host>:4433`, `IW4L_MASTER_SERVER_NAME=iw4l-prod`
+and `IW4L_MASTER_KEY_SHA256=<pin>` (see below); no CA file is needed. Verify the
+image with `cosign verify ghcr.io/noahsurprenant/iw4l-master:latest
+--certificate-oidc-issuer https://token.actions.githubusercontent.com
+--certificate-identity-regexp '^https://github\.com/NoahSurprenant/2010-rust-rewrite-mashup/\.github/workflows/master-image\.yml@refs/heads/main$'`.
+
 ## No domain required — the certificate is not tied to one
 
 The client connects by address but checks the certificate against a **separate**
