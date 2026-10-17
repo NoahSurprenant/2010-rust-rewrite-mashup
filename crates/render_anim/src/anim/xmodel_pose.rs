@@ -91,7 +91,7 @@ fn blend_skel_vertices_inner<const DECODED: bool>(
     let (active_vert, rigid_vert) =
         vertex_stream_masks(skel, lod, surface_is_visible, surface_rigid);
     let mut positions = DECODED.then(|| skel.positions.clone()).unwrap_or_default();
-    let mut normals = DECODED.then(|| skel.normals.clone()).unwrap_or_default();
+    let mut normals = DECODED.then(|| skel.normals()).unwrap_or_default();
     let mut posed_packed =
         (skel.packed_vertices.len() == skel.positions.len()).then(|| skel.packed_vertices.clone());
     let max_bone = skel
@@ -120,7 +120,7 @@ fn blend_skel_vertices_inner<const DECODED: bool>(
             continue;
         }
         let p = Vec3::from_array(skel.positions[i]);
-        let n = DECODED.then(|| Vec3::from_array(skel.normals[i]));
+        let n = DECODED.then(|| Vec3::from_array(skel.normal(i).unwrap_or([0.0, 0.0, 1.0])));
 
         let (mut posed_position, mut posed_normal, primary_basis) =
             if rigid_vert.get(i).copied().unwrap_or(false) {
@@ -247,8 +247,14 @@ pub(crate) fn meshes_from_blended(
         );
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, skel.uvs.clone());
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, skel.colors.clone());
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_UV_0,
+            skel.uvs(0..skel.packed_vertices.len())?,
+        );
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_COLOR,
+            skel.colors(0..skel.packed_vertices.len())?,
+        );
         mesh.insert_indices(Indices::U32(skel.indices.clone()));
         return Some(vec![PosedModelSurface {
             surface_index: 0,
@@ -290,8 +296,7 @@ pub(crate) fn meshes_from_blended(
         let vertex_end = first_vertex.checked_add(vertex_count)?;
         let index_end = index_start.checked_add(index_count)?;
         if vertex_end > positions.len()
-            || vertex_end > skel.uvs.len()
-            || vertex_end > skel.colors.len()
+            || vertex_end > skel.packed_vertices.len()
             || vertex_end > normals.len()
             || index_end > skel.indices.len()
         {
@@ -326,13 +331,10 @@ pub(crate) fn meshes_from_blended(
             Mesh::ATTRIBUTE_NORMAL,
             normals[first_vertex..vertex_end].to_vec(),
         );
-        mesh.insert_attribute(
-            Mesh::ATTRIBUTE_UV_0,
-            skel.uvs[first_vertex..vertex_end].to_vec(),
-        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, skel.uvs(first_vertex..vertex_end)?);
         mesh.insert_attribute(
             Mesh::ATTRIBUTE_COLOR,
-            skel.colors[first_vertex..vertex_end].to_vec(),
+            skel.colors(first_vertex..vertex_end)?,
         );
         mesh.insert_indices(Indices::U32(local_indices));
         let packed_vertices = posed_packed
@@ -567,8 +569,7 @@ pub fn smodel_surfaces_from_blended(
         let vertex_end = first_vertex.checked_add(vertex_count)?;
         let index_end = index_start.checked_add(index_count)?;
         if vertex_end > vertex_n
-            || vertex_end > skel.uvs.len()
-            || vertex_end > skel.colors.len()
+            || vertex_end > skel.packed_vertices.len()
             || index_end > skel.indices.len()
         {
             return None;
