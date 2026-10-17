@@ -291,6 +291,14 @@ impl WorldImageUpload {
         self.upload_stage.take()
     }
 
+    /// For a map that only stands in for the Minecraft world: its world, static
+    /// model and sun surfaces are never drawn, so their pipelines are not
+    /// built for it.
+    pub fn skip_map_surface_pipelines(&mut self) {
+        self.pipeline_world_materials = Arc::default();
+        self.pipeline_smodel_materials = Arc::default();
+    }
+
     pub fn arm(&mut self, scene: &mut WorldScene, progress: Option<&asset_transport::LoadProgress>) {
         self.pipeline_world_materials = Arc::new(
             scene
