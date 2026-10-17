@@ -297,7 +297,7 @@ pub(crate) fn push_intent(client: u32, request_id: u32, bytes: Vec<u8>) {
 }
 
 pub fn take_intents() -> Vec<(u32, u32, Vec<u8>)> {
-    INTENTS.lock().map(|mut i| std::mem::take(&mut *i)).unwrap_or_default()
+    INTENTS.lock().map_or_else(|_| Vec::new(), |mut i| std::mem::take(&mut *i))
 }
 
 pub fn take_events() -> Vec<VoxelEvent> {

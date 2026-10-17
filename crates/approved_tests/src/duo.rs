@@ -124,6 +124,8 @@ impl Player {
         let file = |file: &str| {
             std::fs::File::create(dir.join(file)).map_err(|e| format!("create {file}: {e}"))
         };
+        // A status left by an earlier session would name its room.
+        let _ = std::fs::remove_file(dir.join("master.status"));
         let mut command = Command::new(bin);
         command
             .arg("menu")
@@ -205,7 +207,7 @@ impl Player {
     }
 
     pub fn status(&self) -> String {
-        std::fs::read_to_string(self.dir.join("master.status")).unwrap_or_default()
+        std::fs::read_to_string(self.dir.join("master.status")).unwrap_or_else(|_| String::new())
     }
 }
 
