@@ -420,9 +420,7 @@ pub(super) fn draw_exact_colour(
             &registry,
             &constant_arena,
             [table_binds[0], table_binds[1]],
-            prepared
-                .iter()
-                .filter(|draw| !draw.after_scene_resolve && !draw.minecraft_hidden),
+            prepared.iter().filter(|draw| !draw.after_scene_resolve),
             "iw4_exact_colour_pass",
             &mut refused_draws,
             &mut last_refusal,
@@ -474,9 +472,7 @@ pub(super) fn draw_exact_colour(
                         &registry,
                         &constant_arena,
                         [table_binds[2], table_binds[3]],
-                        prepared
-                            .iter()
-                            .filter(|draw| draw.after_scene_resolve && !draw.minecraft_hidden),
+                        prepared.iter().filter(|draw| draw.after_scene_resolve),
                         "iw4_exact_emissive_pass",
                         &mut refused_draws,
                         &mut last_refusal,
