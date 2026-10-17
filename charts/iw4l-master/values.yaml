@@ -1,0 +1,176 @@
+# iw4l-master chart: IW4L's master server (docs/MASTER.md), the lobby browser and QUIC packet relay
+# that games host and join rooms through. One replica: rooms live in the process's memory, so a
+# second pod would be a separate lobby.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/noahsurprenant/iw4l-master
+  # Empty: the chart's appVersion (latest). Run the tag of the commit the players' build came from
+  # (sha-<commit>): a master with another master_protocol version is refused at the handshake.
+  # Image Updater can write <tag>@sha256:... here.
+  tag: ""
+  # sha256:... ; replaces any digest in tag.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Secrets to pull the image with, if its registry needs them: [{name: my-pull-secret}].
+imagePullSecrets: []
+
+server:
+  # The label the certificate is issued for, which players set as IW4L_MASTER_SERVER_NAME and the
+  # probes check (`iw4l-master status --server-name`). Not a DNS name: nothing resolves it, and the
+  # address players connect to does not matter. iw4l-prod is the prod channel's, iw4l-dev the dev
+  # channel's.
+  serverName: iw4l-prod
+  # The UDP port the master binds (serve --bind 0.0.0.0:<port>): 4433 is the prod channel's, 4434
+  # the dev channel's.
+  port: 4433
+
+# The master's TLS identity, mounted at /etc/iw4l/tls (tls.crt, tls.key). Players trust it by the
+# SHA-256 of its public key (IW4L_MASTER_KEY_SHA256), which the master prints at start
+# (`iw4l-master key-sha256=...`): a new key is a new pin for every player, so keep the Secret.
+tls:
+  # An existing Secret with tls.crt and tls.key (the key in PKCS#8, which the master reads: an
+  # ECDSA P-256 key from `openssl pkcs8 -topk8 -nocrypt`, as docs/MASTER.md makes it). The
+  # certificate must be a self-signed one (not a CA) for server.serverName: the probes trust it as
+  # is. Set: the chart makes no certificate and tls.certManager is ignored.
+  existingSecret: ""
+  # Or cert-manager (which must be installed) makes the certificate and keeps it: a self-signed
+  # ECDSA P-256 certificate for server.serverName, with no domain and no public CA.
+  certManager:
+    enabled: true
+    # The Certificate's name. Empty: the release's full name.
+    certificateName: ""
+    # The Secret cert-manager writes the certificate and key to. Empty: <full name>-tls.
+    secretName: ""
+    # The issuer. Empty: the chart makes a self-signed Issuer, <full name>-selfsigned, in the
+    # release's namespace. Or another one: {name: my-issuer, kind: ClusterIssuer, group:
+    # cert-manager.io}. Players pin the key, so the issuer does not matter to them; the probes then
+    # trust the issuer's CA (ca.crt in the Secret) instead of the certificate itself.
+    issuerRef: {}
+    # Ten years. cert-manager renews it two-thirds of the way through, with the same key.
+    duration: 87600h
+    # Empty: cert-manager's default (a third of the duration).
+    renewBefore: ""
+    privateKey:
+      # Never: a renewal re-signs the same key, so the pin players hold stays valid. Always would
+      # make a new key, and a new pin, at each renewal.
+      rotationPolicy: Never
+    # Labels and annotations for the Secret cert-manager writes (secretTemplate).
+    secretLabels: {}
+    secretAnnotations: {}
+
+service:
+  # ClusterIP, NodePort or LoadBalancer. Players connect from outside the cluster, so a real
+  # deployment needs NodePort or LoadBalancer (and, behind a router, a forward to it).
+  type: ClusterIP
+  # The Service's port; the container listens on server.port. Keep them the same unless the router
+  # forwards to a different one: players' IW4L_MASTER_ADDR names the port they use.
+  port: 4433
+  # With NodePort or LoadBalancer: a fixed node port. Empty: one is assigned.
+  nodePort: ""
+  # spec.loadBalancerIP, which Kubernetes deprecates: most implementations take a fixed address as
+  # an annotation instead (service.annotations; MetalLB: metallb.io/loadBalancerIPs). Empty: none.
+  loadBalancerIP: ""
+  annotations: {}
+  labels: {}
+  # With NodePort or LoadBalancer: Local keeps the players' own addresses (no SNAT to a node), which
+  # the master's per-address connection cap (32) counts, and sends replies from the node the pod is
+  # on. Empty: the cluster's default (Cluster), with which every player counts as the node.
+  externalTrafficPolicy: ""
+  loadBalancerClass: ""
+  loadBalancerSourceRanges: []
+
+# More labels and annotations for the Deployment itself (not its pods: podLabels and
+# podAnnotations), e.g. a reloader's or a GitOps tool's.
+deploymentLabels: {}
+deploymentAnnotations: {}
+
+# A rollout stops the old pod first: two masters would share one address.
+strategy:
+  type: Recreate
+
+# Up to 256 connections, each with 128 KiB datagram buffers each way; idle, a few MiB. No CPU limit:
+# the relay forwards game traffic and must not be throttled mid-match.
+resources:
+  requests:
+    cpu: 20m
+    memory: 32Mi
+  limits:
+    memory: 256Mi
+
+# The image is a static amd64 binary.
+nodeSelector:
+  kubernetes.io/os: linux
+  kubernetes.io/arch: amd64
+affinity: {}
+tolerations: []
+priorityClassName: ""
+
+podAnnotations: {}
+podLabels: {}
+
+terminationGracePeriodSeconds: 10
+
+# The image's user (distroless nonroot). fsGroup group-owns the mounted key (mode 0440), which the
+# master reads as this group.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# The probes run the binary's own client: a QUIC handshake to 127.0.0.1:<server.port> that trusts
+# only the mounted certificate (its issuer's CA, with tls.certManager.issuerRef) for
+# server.serverName (an expired or wrong certificate fails it),
+# then a Status request; the client gives up after 8 seconds. Each check is a connection in the log
+# (four lines), hence the long periods. Each probe's fields (other than its exec) override the
+# defaults here; enabled: false drops it.
+probes:
+  startup:
+    enabled: false
+    periodSeconds: 2
+    failureThreshold: 30
+    timeoutSeconds: 10
+  readiness:
+    enabled: true
+    initialDelaySeconds: 2
+    periodSeconds: 60
+    failureThreshold: 3
+    timeoutSeconds: 10
+  liveness:
+    enabled: true
+    initialDelaySeconds: 30
+    periodSeconds: 120
+    failureThreshold: 3
+    timeoutSeconds: 10
+
+# Manage the namespace's default ServiceAccount with automountServiceAccountToken: false. The master
+# never calls the Kubernetes API, and its pod mounts no token either way. Every namespace already
+# has a default ServiceAccount: Argo CD adopts it, but plain helm install needs --take-ownership.
+defaultServiceAccount:
+  manage: false
+
+networkPolicy:
+  enabled: true
+  # Who may reach the QUIC port, as a NetworkPolicy rule's from. Empty: anyone - players on the
+  # internet and the LAN, and pods in the cluster (a dedicated server; an ipBlock of 0.0.0.0/0 is
+  # not relied on to match pods, so the rule names no peer at all).
+  from: []
+  # Nothing out: the master only answers connections made to it (replies are part of them) and looks
+  # no names up. More rules, as in a NetworkPolicy's ingress and egress.
+  extraIngress: []
+  extraEgress: []
+
+# More objects to render with the release (templated).
+extraObjects: []

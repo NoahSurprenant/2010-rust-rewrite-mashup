@@ -1,0 +1,160 @@
+suite: deployment
+templates:
+  - templates/deployment.yaml
+release:
+  name: iw4l-dedicated
+set:
+  gameData.existingClaim: mw2
+  master:
+    address: iw4l-master.iw4l-master.svc.cluster.local:4433
+    keySha256: abababababababababababababababababababababababababababababababab
+tests:
+  - it: refuses to render without MW2, which is never in the image
+    set:
+      gameData.existingClaim: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "gameData: set existingClaim"
+
+  - it: refuses to render without a master address
+    set:
+      master.address: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "master.address: give the master's"
+
+  - it: refuses to render without the master's key pin
+    set:
+      master.keySha256: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "master.keySha256"
+
+  - it: hosts the zone on the master it trusts by its pin, and writes its room state for the probe
+    asserts:
+      - equal: { path: 'spec.template.spec.containers[0].args', value: [dedicated, "minecraft:overworld"] }
+      - equal:
+          path: spec.template.spec.containers[0].env
+          value:
+            - { name: IW4L_MASTER_ADDR, value: "iw4l-master.iw4l-master.svc.cluster.local:4433" }
+            - { name: IW4L_MASTER_SERVER_NAME, value: iw4l-prod }
+            - { name: IW4L_MASTER_KEY_SHA256, value: abababababababababababababababababababababababababababababababab }
+            - { name: IW4L_MASTER_STATUS_FILE, value: /tmp/master.status }
+
+  - it: names the room, caps it, takes its password from a Secret and names the world
+    set:
+      zone: minecraft:nether
+      room: { name: Home Minecraft, maxPlayers: 8, password: { existingSecret: room, key: pw } }
+      minecraft.world: home
+    asserts:
+      - equal: { path: 'spec.template.spec.containers[0].args', value: [dedicated, "minecraft:nether"] }
+      - contains: { path: 'spec.template.spec.containers[0].env', content: { name: IW4L_MASTER_HOST_NAME, value: Home Minecraft } }
+      - contains: { path: 'spec.template.spec.containers[0].env', content: { name: IW4L_MASTER_MAX_PLAYERS, value: "8" } }
+      - contains: { path: 'spec.template.spec.containers[0].env', content: { name: IW4L_MASTER_PASSWORD, valueFrom: { secretKeyRef: { name: room, key: pw } } } }
+      - contains: { path: 'spec.template.spec.containers[0].env', content: { name: IW4L_MINECRAFT_WORLD, value: home } }
+
+  - it: puts extraEnv after the chart's variables, so it can override them
+    set:
+      extraEnv: [{ name: IW4L_MASTER_SERVER_NAME, value: iw4l-dev }]
+    asserts:
+      - equal: { path: 'spec.template.spec.containers[0].env[-1:]', value: { name: IW4L_MASTER_SERVER_NAME, value: iw4l-dev } }
+
+  - it: runs one replica, replaced not rolled, hardened
+    asserts:
+      - equal: { path: 'spec.replicas', value: 1 }
+      - equal: { path: 'spec.strategy.type', value: Recreate }
+      - equal: { path: 'spec.template.spec.automountServiceAccountToken', value: false }
+      - equal: { path: 'spec.template.spec.securityContext.runAsNonRoot', value: true }
+      - equal: { path: 'spec.template.spec.securityContext.runAsUser', value: 65532 }
+      - equal: { path: 'spec.template.spec.securityContext.fsGroup', value: 65532 }
+      - equal: { path: 'spec.template.spec.securityContext.seccompProfile.type', value: RuntimeDefault }
+      - equal: { path: 'spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem', value: true }
+      - equal: { path: 'spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation', value: false }
+      - equal: { path: 'spec.template.spec.containers[0].securityContext.capabilities.drop', value: [ALL] }
+      - equal: { path: 'spec.template.spec.nodeSelector', value: { kubernetes.io/os: linux, kubernetes.io/arch: amd64 } }
+      - equal: { path: 'spec.template.spec.terminationGracePeriodSeconds', value: 30 }
+      - equal: { path: 'spec.template.spec.containers[0].resources.limits.memory', value: 4Gi }
+      - notExists: { path: 'spec.template.spec.containers[0].resources.limits.cpu' }
+
+  - it: can be stopped with replicas 0
+    set:
+      replicas: 0
+    asserts:
+      - equal: { path: 'spec.replicas', value: 0 }
+
+  - it: is ready once its room is open, with no liveness probe by default
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe
+          value: { exec: { command: [grep, -q, "^state=hosting$", /tmp/master.status] }, initialDelaySeconds: 20, periodSeconds: 15, failureThreshold: 3, timeoutSeconds: 2 }
+      - notExists: { path: 'spec.template.spec.containers[0].livenessProbe' }
+      - notExists: { path: 'spec.template.spec.containers[0].startupProbe' }
+
+  - it: turns on the other probes when asked
+    set:
+      probes: { liveness: { enabled: true, periodSeconds: 30 }, startup: { enabled: true } }
+    asserts:
+      - equal: { path: 'spec.template.spec.containers[0].livenessProbe.periodSeconds', value: 30 }
+      - exists: { path: 'spec.template.spec.containers[0].startupProbe.exec' }
+
+  - it: mounts MW2 read-only at /games/mw2 from an existing claim
+    asserts:
+      - contains: { path: 'spec.template.spec.volumes', content: { name: game-data, persistentVolumeClaim: { claimName: mw2, readOnly: true } } }
+      - contains: { path: 'spec.template.spec.containers[0].volumeMounts', content: { name: game-data, mountPath: /games/mw2, readOnly: true } }
+
+  - it: mounts MW2 from an NFS export, with a subPath
+    set:
+      gameData: { existingClaim: "", nfs: { server: nfs.example.com, path: /games }, subPath: mw2 }
+    asserts:
+      - contains: { path: 'spec.template.spec.volumes', content: { name: game-data, nfs: { server: nfs.example.com, path: /games, readOnly: true } } }
+      - contains: { path: 'spec.template.spec.containers[0].volumeMounts', content: { name: game-data, mountPath: /games/mw2, readOnly: true, subPath: mw2 } }
+
+  - it: takes any other volume source for MW2
+    set:
+      gameData: { existingClaim: "", volume: { hostPath: { path: /srv/mw2, type: Directory } } }
+    asserts:
+      - contains: { path: 'spec.template.spec.volumes', content: { name: game-data, hostPath: { path: /srv/mw2, type: Directory } } }
+
+  - it: keeps /data on the chart's claim, or an existing one, or an emptyDir
+    asserts:
+      - contains: { path: 'spec.template.spec.volumes', content: { name: data, persistentVolumeClaim: { claimName: iw4l-dedicated-data } } }
+      - contains: { path: 'spec.template.spec.containers[0].volumeMounts', content: { name: data, mountPath: /data } }
+  - it: uses an existing claim for /data
+    set:
+      persistence.existingClaim: world
+    asserts:
+      - contains: { path: 'spec.template.spec.volumes', content: { name: data, persistentVolumeClaim: { claimName: world } } }
+  - it: uses an emptyDir for /data without persistence
+    set:
+      persistence.enabled: false
+    asserts:
+      - contains: { path: 'spec.template.spec.volumes', content: { name: data, emptyDir: { sizeLimit: 4Gi } } }
+
+  - it: mounts no cache volume by default, and the given one at /data/iw4l-artifacts
+    asserts:
+      - notContains: { path: 'spec.template.spec.containers[0].volumeMounts', content: { name: cache, mountPath: /data/iw4l-artifacts } }
+  - it: mounts the cache volume
+    set:
+      cache.volume: { emptyDir: { sizeLimit: 2Gi } }
+    asserts:
+      - contains: { path: 'spec.template.spec.volumes', content: { name: cache, emptyDir: { sizeLimit: 2Gi } } }
+      - contains: { path: 'spec.template.spec.containers[0].volumeMounts', content: { name: cache, mountPath: /data/iw4l-artifacts } }
+
+  - it: adds extra volumes and mounts
+    set:
+      extraVolumes: [{ name: ca, secret: { secretName: master-ca } }]
+      extraVolumeMounts: [{ name: ca, mountPath: /etc/iw4l, readOnly: true }]
+    asserts:
+      - contains: { path: 'spec.template.spec.volumes', content: { name: ca, secret: { secretName: master-ca } } }
+      - contains: { path: 'spec.template.spec.containers[0].volumeMounts', content: { name: ca, mountPath: /etc/iw4l, readOnly: true } }
+
+  - it: pins the image by digest
+    set:
+      image: { tag: sha-2b9461976477b1b4b9c08e30612784a8e9877a29, digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111" }
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/noahsurprenant/iw4l-dedicated:sha-2b9461976477b1b4b9c08e30612784a8e9877a29@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  - it: uses the appVersion as the default tag
+    asserts:
+      - equal: { path: 'spec.template.spec.containers[0].image', value: "ghcr.io/noahsurprenant/iw4l-dedicated:latest" }

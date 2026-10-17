@@ -1,0 +1,89 @@
+# Every option the chart has, for lint and the schema check (not installed: the issuer is made up).
+image:
+  tag: latest@sha256:0000000000000000000000000000000000000000000000000000000000000000
+imagePullSecrets:
+  - name: registry-credentials
+server:
+  serverName: iw4l-dev
+  port: 4434
+tls:
+  certManager:
+    enabled: true
+    certificateName: example-master
+    secretName: example-master-tls
+    issuerRef:
+      name: example-ca
+      kind: ClusterIssuer
+      group: cert-manager.io
+    duration: 8760h
+    renewBefore: 720h
+    privateKey:
+      rotationPolicy: Never
+    secretLabels:
+      team: games
+    secretAnnotations:
+      example.com/backup: "true"
+service:
+  type: LoadBalancer
+  port: 4434
+  nodePort: 30434
+  loadBalancerIP: 192.0.2.10
+  annotations:
+    example.com/address: 192.0.2.10
+  labels:
+    team: games
+  externalTrafficPolicy: Local
+  loadBalancerClass: example.com/lb
+  loadBalancerSourceRanges: [0.0.0.0/0]
+deploymentLabels:
+  team: games
+deploymentAnnotations:
+  example.com/reload: "true"
+resources:
+  requests:
+    cpu: 10m
+    memory: 16Mi
+  limits:
+    memory: 128Mi
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: node-role.kubernetes.io/control-plane
+              operator: DoesNotExist
+tolerations:
+  - key: dedicated
+    operator: Equal
+    value: games
+    effect: NoSchedule
+podAnnotations:
+  example.com/scrape: "false"
+podLabels:
+  team: games
+probes:
+  startup:
+    enabled: true
+  liveness:
+    periodSeconds: 300
+defaultServiceAccount:
+  manage: true
+networkPolicy:
+  from:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    - namespaceSelector: {}
+  extraEgress:
+    - to:
+        - ipBlock:
+            cidr: 203.0.113.0/24
+      ports:
+        - protocol: TCP
+          port: 443
+extraObjects:
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: '{{ .Release.Name }}-extra'
+    data:
+      hello: world

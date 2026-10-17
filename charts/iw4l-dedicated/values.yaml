@@ -1,0 +1,226 @@
+# iw4l-dedicated chart: IW4L's dedicated server (docs/DEDICATED.md), `iw4l dedicated <zone>`: a
+# game with no player of its own that keeps one room open on a master, headless (no window, no GPU,
+# no sound). It only connects out, to the master, which relays every player's packets: nothing
+# connects in, so there is no Service. The master is not part of this chart: the iw4l-master chart,
+# or any master the server can reach.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/noahsurprenant/iw4l-dedicated
+  # Empty: the chart's appVersion (latest). Run the tag of the commit the master and the players'
+  # build came from (sha-<commit>): they must share master_protocol's version, and the players the
+  # game's. Image Updater can write <tag>@sha256:... here.
+  tag: ""
+  # sha256:... ; replaces any digest in tag.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Secrets to pull the image with, if its registry needs them: [{name: my-pull-secret}].
+imagePullSecrets: []
+
+# 1, or 0 to stop the server and keep everything else. Never more: one world, one room.
+replicas: 1
+
+# The zone the server hosts: `iw4l dedicated <zone>`, as `make map` takes it.
+zone: minecraft:overworld
+
+# The master the room is hosted on (docs/MASTER.md, "Hand out to players"): the same settings
+# players use. The server trusts it by its key pin, as players do.
+master:
+  # IW4L_MASTER_ADDR: <host>:<port>, a name or an address, with the port. In the same cluster, the
+  # master's Service: <service>.<namespace>.svc.cluster.local:4433. Required.
+  address: ""
+  # IW4L_MASTER_SERVER_NAME: the label of the master's certificate (the iw4l-master chart's
+  # server.serverName).
+  serverName: iw4l-prod
+  # IW4L_MASTER_KEY_SHA256: the SHA-256 of the master's public key, hex as sha256sum prints it
+  # (the iw4l-master chart's NOTES show how to read it). Required.
+  keySha256: ""
+
+# The room, as players see it in the menu's server browser.
+room:
+  # IW4L_MASTER_HOST_NAME: at most 48 bytes; the browser shows the first 16 characters, so keep
+  # what tells rooms apart within them. Empty: the game's, "Dedicated server".
+  name: ""
+  # IW4L_MASTER_MAX_PLAYERS: the room's capacity, 2 to 18, the server's own slot included. 0: the
+  # game's, 18.
+  maxPlayers: 0
+  # IW4L_MASTER_PASSWORD, from an existing Secret: players joining through the menu are asked for
+  # it. Empty: no password.
+  password:
+    existingSecret: ""
+    key: password
+
+# The Minecraft map's kept world.
+minecraft:
+  # IW4L_MINECRAFT_WORLD: the world's name, a folder of /data/minecraft-worlds. Empty: the game's,
+  # "world".
+  world: ""
+
+# MW2's multiplayer game data, from your own copy of the game: the folder with MW2's zone files, the
+# one the game reads as <IW4L_GAMES>/mw2. It is never in the image. Mounted read-only at /games/mw2.
+# Exactly one source is required; the chart sets no default.
+gameData:
+  # An existing PersistentVolumeClaim (ReadOnlyMany, or any mode the volume allows).
+  existingClaim: ""
+  # Or an NFS export, mounted read-only by the kubelet.
+  nfs:
+    server: ""
+    path: ""
+  # Or any other volume source, as in a pod's volumes (without the name), e.g.
+  # {hostPath: {path: /srv/mw2, type: Directory}}.
+  volume: {}
+  # The folder within the volume that is MW2's. Empty: the volume's root.
+  subPath: ""
+
+# The working directory /data: the Minecraft worlds (/data/minecraft-worlds: seed, block changes,
+# every player's inventory by player name), settings.cfg, the logs and, without a cache volume, the
+# Minecraft files fetched from Mojang on the first start (about 260 MB) and the asset cache. Without
+# persistence, an emptyDir: the world is lost at each restart, and the files fetched again.
+persistence:
+  enabled: true
+  existingClaim: ""
+  size: 5Gi
+  # Empty: the cluster's default storage class.
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  annotations: {}
+  # The emptyDir's limit, without persistence.
+  emptyDirSizeLimit: 4Gi
+
+# The Minecraft files and the asset cache (/data/iw4l-artifacts) on a volume of their own, e.g. an
+# emptyDir to keep them off a backed-up world volume. Optional; at most one source. Without one,
+# they are in /data.
+cache:
+  existingClaim: ""
+  # Any other volume source, as in a pod's volumes (without the name), e.g.
+  # {emptyDir: {sizeLimit: 2Gi}}.
+  volume: {}
+  subPath: ""
+
+# More environment variables for the container, as in a pod spec ({name, value} or {name,
+# valueFrom}); they come after the chart's, so the same name overrides it.
+extraEnv: []
+# More volumes and their mounts in the container, as in a pod spec.
+extraVolumes: []
+extraVolumeMounts: []
+
+# More labels and annotations for the Deployment itself (not its pods: podLabels and
+# podAnnotations).
+deploymentLabels: {}
+deploymentAnnotations: {}
+
+# The data volume is ReadWriteOnce, and two servers would write one world: a rollout stops the old
+# pod first.
+strategy:
+  type: Recreate
+
+# Measured in the dedicated_server scenario (headless, minecraft:overworld): 2.1-2.2 GiB resident and
+# 20% of a core with nobody in the room, 30% with one player, 2.3 GiB at the load's peak (64% of a
+# core while it loads). No CPU limit: the match must not be throttled.
+resources:
+  requests:
+    cpu: 250m
+    memory: 2560Mi
+  limits:
+    memory: 4Gi
+
+# The image is amd64 only.
+nodeSelector:
+  kubernetes.io/os: linux
+  kubernetes.io/arch: amd64
+affinity: {}
+tolerations: []
+priorityClassName: ""
+
+podAnnotations: {}
+podLabels: {}
+
+# SIGTERM saves the world and leaves the master in well under a second.
+terminationGracePeriodSeconds: 30
+
+# The image's user. fsGroup makes the data volume writable by it.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# The probes read the server's room state (IW4L_MASTER_STATUS_FILE=/tmp/master.status): ready once
+# its room is open on the master (state=hosting). The first start fetches the Minecraft files and
+# loads the map, a minute or more. No liveness probe by default: the server exits by itself (status
+# 1) when the master drops its room or its match ends, and the kubelet starts it again with a new
+# room. Each probe's fields (other than its exec) override the defaults here; enabled: false drops
+# it.
+probes:
+  startup:
+    enabled: false
+    periodSeconds: 10
+    failureThreshold: 60
+    timeoutSeconds: 2
+  readiness:
+    enabled: true
+    initialDelaySeconds: 20
+    periodSeconds: 15
+    failureThreshold: 3
+    timeoutSeconds: 2
+  liveness:
+    enabled: false
+    periodSeconds: 60
+    failureThreshold: 5
+    timeoutSeconds: 2
+
+# Manage the namespace's default ServiceAccount with automountServiceAccountToken: false. The server
+# never calls the Kubernetes API, and its pod mounts no token either way. Every namespace already
+# has a default ServiceAccount: Argo CD adopts it, but plain helm install needs --take-ownership.
+defaultServiceAccount:
+  manage: false
+
+networkPolicy:
+  enabled: true
+  # Nothing in: players reach the server through the master's relay. extraIngress adds rules.
+  # DNS: the cluster's DNS pods (kube-system, k8s-app: kube-dns), UDP and TCP 53.
+  dns:
+    to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+  # The master: UDP to the port of master.address. A Service's address is translated to its pod's
+  # before the policy sees it, so name the master's pods (in the cluster), or its address as an
+  # ipBlock (outside it). Empty: any destination on that port.
+  master:
+    to: []
+  # Public HTTPS: Mojang's file servers (piston-meta.mojang.com, piston-data.mojang.com,
+  # resources.download.minecraft.net; a NetworkPolicy cannot name hosts). The private ranges are
+  # excepted, so the server reaches nothing else on the local network or in the cluster.
+  internet:
+    cidr: 0.0.0.0/0
+    except:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 100.64.0.0/10
+      - 169.254.0.0/16
+    tcpPorts:
+      - 443
+  # More rules, as in a NetworkPolicy's ingress and egress.
+  extraIngress: []
+  extraEgress: []
+
+# More objects to render with the release (templated).
+extraObjects: []

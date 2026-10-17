@@ -1,0 +1,14 @@
+IW4L dedicated server {{ .Chart.Version }}: {{ include "iw4l-dedicated.fullname" . }} in namespace {{ .Release.Namespace }}{{ if eq (int .Values.replicas) 0 }} (stopped: replicas 0){{ end }}.
+
+Hosting {{ .Values.zone }} as the room "{{ .Values.room.name | default "Dedicated server" }}"{{ if gt (len (.Values.room.name | default "Dedicated server")) 16 }} (the browser shows "{{ trunc 16 (.Values.room.name | default "Dedicated server") }}"){{ end }} on the master {{ .Values.master.address }} ({{ .Values.master.serverName }}){{ if .Values.room.password.existingSecret }}, with a password{{ end }}.
+The server, the master and the players' games must come from the same commit's master_protocol.
+
+The pod is ready once the room is open; the first start fetches Minecraft's files from Mojang
+(about 260 MB) and loads the map, a minute or more. Its log:
+
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "iw4l-dedicated.fullname" . }} | grep -E 'dedicated|master relay|Minecraft'
+
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "iw4l-dedicated.fullname" . }} -- cat /tmp/master.status
+
+The world is in /data/minecraft-worlds/{{ .Values.minecraft.world | default "world" }}{{ if .Values.persistence.enabled }}, on the claim {{ include "iw4l-dedicated.dataClaim" . }}{{ else }}, in an emptyDir: it is lost at each restart (persistence.enabled keeps it){{ end }}.
+If the master restarts or the match ends, the server exits and the pod starts it again with a new room.

@@ -1,0 +1,11 @@
+# The smallest install that renders: no MW2 (an emptyDir in its place), so the server cannot load
+# its match and never gets ready. Installed by e2e/run.sh with an iw4l-master release beside it. A
+# real install gives gameData.existingClaim or gameData.nfs instead (README, Quick start).
+gameData:
+  volume:
+    emptyDir: {}
+master:
+  address: iw4l-master.iw4l-e2e.svc.cluster.local:4433
+  keySha256: "0000000000000000000000000000000000000000000000000000000000000000"
+persistence:
+  enabled: false

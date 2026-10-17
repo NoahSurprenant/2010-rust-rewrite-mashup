@@ -1,0 +1,29 @@
+suite: persistence
+templates:
+  - templates/data-pvc.yaml
+release:
+  name: iw4l-dedicated
+tests:
+  - it: makes a claim for /data by default
+    asserts:
+      - isKind: { of: PersistentVolumeClaim }
+      - equal: { path: metadata.name, value: iw4l-dedicated-data }
+      - equal: { path: spec.accessModes, value: [ReadWriteOnce] }
+      - equal: { path: spec.resources.requests.storage, value: 5Gi }
+      - notExists: { path: spec.storageClassName }
+  - it: takes a storage class and size
+    set:
+      persistence: { storageClass: longhorn, size: 10Gi }
+    asserts:
+      - equal: { path: spec.storageClassName, value: longhorn }
+      - equal: { path: spec.resources.requests.storage, value: 10Gi }
+  - it: makes none with an existing claim or without persistence
+    set:
+      persistence.existingClaim: world
+    asserts:
+      - hasDocuments: { count: 0 }
+  - it: makes none without persistence
+    set:
+      persistence.enabled: false
+    asserts:
+      - hasDocuments: { count: 0 }
