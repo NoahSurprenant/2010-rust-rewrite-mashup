@@ -87,6 +87,8 @@ pub(crate) struct Remote {
     /// them it holds in the block world.
     pub collision: Option<minecraft_terrain::terrain::CollisionStream>,
     pub held: HashMap<(i32, i32), std::sync::Arc<minecraftoss_core::Chunk>>,
+    /// The host holds it still: there is no ground where it stands yet.
+    pub held_still: bool,
 }
 
 pub(crate) struct Host {
@@ -277,6 +279,7 @@ impl Remote {
             placed_at: None,
             collision: None,
             held: HashMap::new(),
+            held_still: false,
         }
     }
 }

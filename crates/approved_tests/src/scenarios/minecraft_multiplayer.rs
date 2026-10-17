@@ -29,6 +29,10 @@ pub const SYNC_SECS: u64 = 30;
 
 const GOLD: [i32; 3] = [2, 5, 0];
 const DIAMOND: [i32; 3] = [3, 6, 0];
+/// A stone platform far out of the host's view (320 blocks east, 60 up), and
+/// the map point (36 units a block) just over its middle.
+const FAR: [i32; 3] = [320, 60, 0];
+const FAR_MAP: [i32; 3] = [FAR[0] * 36, -FAR[2] * 36, (FAR[1] + 1) * 36 + 18];
 
 /// Each line both games printed, by label (`h_` the host's, `c_` the
 /// client's), and the facts the steps worked out.
@@ -157,6 +161,30 @@ pub fn first_session(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     facts.notes.insert("h_plank_gone", broken);
     let last = pair.ask(true, "key 1; wait 1s; mc state c_final", "c_final", step)?;
     facts.keep("c_final", last);
+    // Far from the host, the host still has ground under the client: it
+    // stands on a platform it asked for there (the host has no terrain
+    // there of its own).
+    pair.client.as_mut().ok_or("no client")?.send(&format!(
+        "mc set {} {} {} {} {} {} stone; wait 2s; tp {} {} {}; wait 8s",
+        FAR[0] - 1,
+        FAR[1],
+        FAR[2] - 1,
+        FAR[0] + 1,
+        FAR[1],
+        FAR[2] + 1,
+        FAR_MAP[0],
+        FAR_MAP[1],
+        FAR_MAP[2]
+    ))?;
+    let far = pair.ask(
+        true,
+        "mc state c_far1",
+        "c_far1",
+        Duration::from_secs(STEP_SECS),
+    )?;
+    facts.keep("c_far1", far);
+    let far = pair.ask(true, "wait 2s; mc state c_far2", "c_far2", step)?;
+    facts.keep("c_far2", far);
     Ok(())
 }
 
@@ -230,7 +258,7 @@ fn want(got: &str, want: &str, what: &str) -> Result<(), String> {
 /// Judges what both games printed.
 pub fn judge(facts: &Facts) -> Vec<Check> {
     type Rule = fn(&Facts) -> Result<(), String>;
-    let rules: [(&'static str, Rule); 11] = [
+    let rules: [(&'static str, Rule); 12] = [
         ("seed_shared", |f| {
             let host = line(f, "h_ready")?.get("seed").unwrap_or("-");
             let client = line(f, "c_ready")?.get("seed").unwrap_or("-");
@@ -281,6 +309,18 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
         }),
         ("client_break_on_host", |f| {
             want(note(f, "h_plank_gone")?, "air", "host sees")
+        }),
+        ("client_ground_far_from_host", |f| {
+            let want = [FAR[0], FAR[1] + 1, FAR[2]];
+            for label in ["c_far1", "c_far2"] {
+                let at = feet(line(f, label)?).ok_or_else(|| format!("no feet in `{label}`"))?;
+                if at != want {
+                    return Err(format!(
+                        "{label}: feet {at:?}, want {want:?} on the platform"
+                    ));
+                }
+            }
+            Ok(())
         }),
         ("restart_same_seed", |f| {
             let seed = line(f, "h_ready")?.get("seed").unwrap_or("-");
@@ -406,6 +446,10 @@ mod tests {
             "c_final".into(),
             ready("c_final", "client", with(5, "minecraft:oak_planks*3")),
         );
+        for label in ["c_far1", "c_far2"] {
+            f.lines
+                .insert(label.into(), event(&format!("label={label} feet=320,61,0")));
+        }
         for (label, block) in [
             ("h2_diamond", "minecraft:diamond_block"),
             ("h2_gold", "air"),

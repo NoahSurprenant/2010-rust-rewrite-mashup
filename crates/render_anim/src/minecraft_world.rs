@@ -1058,6 +1058,14 @@ fn update(
                     world.scene.remove_chunk(pos);
                 }
             }
+            // Until there is ground where it stands, the host holds it still
+            // rather than let it fall through.
+            let column = ((feet[0].floor() as i32) >> 4, (feet[2].floor() as i32) >> 4);
+            let waiting = !voxel_holders.contains_key(&column);
+            if waiting != remote.held_still {
+                remote.held_still = waiting;
+                authority.set_external_motion(sim::ClientId(id), waiting);
+            }
         }
         let cheats = authority.cheats_enabled();
         for (client, request_id, bytes) in sim::voxel::take_intents() {
