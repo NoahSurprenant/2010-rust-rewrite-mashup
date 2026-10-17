@@ -305,10 +305,7 @@ pub(crate) fn spawn_world(
         if minecraft {
             neutral_reflection_probes(&mut scene.reflection_probes);
         }
-        job.images.arm(&mut scene, progress.as_ref());
-        if minecraft {
-            job.images.skip_map_surface_pipelines();
-        }
+        job.images.arm(&mut scene, progress.as_ref(), minecraft);
     }
     let images_finished = if job.images.unfinished() {
         let gap_ms = job.slice_gap_ms(frame_started);
