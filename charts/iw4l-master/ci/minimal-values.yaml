@@ -1,0 +1,4 @@
+# The smallest install: the defaults, with the certificate in an existing Secret (no cert-manager in
+# the schema check). e2e/run.sh makes the Secret with openssl and installs this.
+tls:
+  existingSecret: iw4l-master-e2e-tls

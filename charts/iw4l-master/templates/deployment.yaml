@@ -1,0 +1,99 @@
+{{- $fullname := include "iw4l-master.fullname" . }}
+{{- $secret := include "iw4l-master.tlsSecret" . }}
+{{- $port := int .Values.server.port }}
+{{- $probe := dict "exec" (dict "command" (list "/usr/local/bin/iw4l-master" "status" "--connect" (printf "127.0.0.1:%d" $port) "--server-name" .Values.server.serverName "--ca-cert" (include "iw4l-master.probeCa" .))) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "iw4l-master.labels" . | nindent 4 }}
+    {{- with .Values.deploymentLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.deploymentAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # Rooms live in the process's memory: a second replica would be a separate lobby.
+  replicas: 1
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "iw4l-master.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "iw4l-master.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      # The master never calls the Kubernetes API.
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: iw4l-master
+          image: {{ include "iw4l-master.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The master reads the certificate and key only at start.
+          args:
+            - serve
+            - --bind
+            - {{ printf "0.0.0.0:%d" $port | quote }}
+            - --cert
+            - /etc/iw4l/tls/tls.crt
+            - --key
+            - /etc/iw4l/tls/tls.key
+          ports:
+            - name: quic
+              containerPort: {{ $port }}
+              protocol: UDP
+          {{- range $name := list "startup" "readiness" "liveness" }}
+          {{- $p := index $.Values.probes $name }}
+          {{- if $p.enabled }}
+          {{ $name }}Probe:
+            {{- toYaml (merge (omit $p "enabled") $probe) | nindent 12 }}
+          {{- end }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/iw4l/tls
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ $secret }}
+            defaultMode: 0440

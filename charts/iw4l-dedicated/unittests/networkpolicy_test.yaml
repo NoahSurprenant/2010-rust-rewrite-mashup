@@ -1,0 +1,52 @@
+suite: networkpolicy
+templates:
+  - templates/networkpolicy.yaml
+release:
+  name: iw4l-dedicated
+set:
+  gameData.existingClaim: mw2
+  master:
+    address: iw4l-master.iw4l-master.svc.cluster.local:4433
+    keySha256: abababababababababababababababababababababababababababababababab
+tests:
+  - it: lets nothing in
+    asserts:
+      - equal: { path: spec.policyTypes, value: [Ingress, Egress] }
+      - equal: { path: spec.ingress, value: [] }
+
+  - it: lets out DNS, the master's UDP port and public HTTPS
+    asserts:
+      - equal: { path: 'spec.egress[0].ports', value: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }] }
+      - equal: { path: 'spec.egress[1]', value: { ports: [{ protocol: UDP, port: 4433 }] } }
+      - equal: { path: 'spec.egress[2].ports', value: [{ protocol: TCP, port: 443 }] }
+      - equal: { path: 'spec.egress[2].to[0].ipBlock.cidr', value: 0.0.0.0/0 }
+      - contains: { path: 'spec.egress[2].to[0].ipBlock.except', content: 10.0.0.0/8 }
+
+  - it: takes the master's port from its address, and names its pods
+    set:
+      master.address: "[2001:db8::1]:4434"
+      networkPolicy.master.to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: iw4l-master } } }]
+    asserts:
+      - equal:
+          path: spec.egress[1]
+          value: { ports: [{ protocol: UDP, port: 4434 }], to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: iw4l-master } } }] }
+
+  - it: refuses an address without a port
+    set:
+      master.address: master.example.com
+    asserts:
+      - failedTemplate:
+          errorPattern: "master/address.*does not match pattern"
+
+  - it: adds rules and can be turned off
+    set:
+      networkPolicy.extraIngress: [{ from: [{ podSelector: {} }] }]
+      networkPolicy.extraEgress: [{ to: [{ ipBlock: { cidr: 203.0.113.0/24 } }] }]
+    asserts:
+      - equal: { path: spec.ingress, value: [{ from: [{ podSelector: {} }] }] }
+      - equal: { path: 'spec.egress[3]', value: { to: [{ ipBlock: { cidr: 203.0.113.0/24 } }] } }
+  - it: is off when disabled
+    set:
+      networkPolicy.enabled: false
+    asserts:
+      - hasDocuments: { count: 0 }

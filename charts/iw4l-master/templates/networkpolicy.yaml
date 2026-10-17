@@ -1,0 +1,35 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+# UDP in on the QUIC port; nothing out but the replies to it. The probes run inside the pod, over
+# loopback, which no policy sees.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "iw4l-master.fullname" . }}
+  labels:
+    {{- include "iw4l-master.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "iw4l-master.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - protocol: UDP
+          port: {{ .Values.server.port }}
+      {{- with $np.from }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with $np.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with $np.extraEgress }}
+  egress:
+    {{- toYaml . | nindent 4 }}
+  {{- else }}
+  egress: []
+  {{- end }}
+{{- end }}

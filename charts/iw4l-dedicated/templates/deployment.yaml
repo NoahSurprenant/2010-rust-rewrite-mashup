@@ -1,0 +1,170 @@
+{{- if not (include "iw4l-dedicated.hasGameData" .) }}
+{{- fail "gameData: set existingClaim, nfs.server and nfs.path, or volume - the server needs MW2's game data, which is never in the image" }}
+{{- end }}
+{{- if not .Values.master.address }}
+{{- fail "master.address: give the master's <host>:<port> - the server hosts its room there" }}
+{{- end }}
+{{- if not .Values.master.keySha256 }}
+{{- fail "master.keySha256: give the master's key pin (the iw4l-master chart's NOTES show how to read it)" }}
+{{- end }}
+{{- $_ := include "iw4l-dedicated.masterPort" . }}
+{{- $fullname := include "iw4l-dedicated.fullname" . }}
+{{- $env := list }}
+{{- $env = append $env (dict "name" "IW4L_MASTER_ADDR" "value" .Values.master.address) }}
+{{- $env = append $env (dict "name" "IW4L_MASTER_SERVER_NAME" "value" .Values.master.serverName) }}
+{{- $env = append $env (dict "name" "IW4L_MASTER_KEY_SHA256" "value" .Values.master.keySha256) }}
+{{- with .Values.room.name }}
+{{- $env = append $env (dict "name" "IW4L_MASTER_HOST_NAME" "value" .) }}
+{{- end }}
+{{- if .Values.room.maxPlayers }}
+{{- $env = append $env (dict "name" "IW4L_MASTER_MAX_PLAYERS" "value" (toString (int .Values.room.maxPlayers))) }}
+{{- end }}
+{{- with .Values.room.password.existingSecret }}
+{{- $env = append $env (dict "name" "IW4L_MASTER_PASSWORD" "valueFrom" (dict "secretKeyRef" (dict "name" . "key" $.Values.room.password.key))) }}
+{{- end }}
+{{- $env = append $env (dict "name" "IW4L_MASTER_STATUS_FILE" "value" "/tmp/master.status") }}
+{{- with .Values.minecraft.world }}
+{{- $env = append $env (dict "name" "IW4L_MINECRAFT_WORLD" "value" .) }}
+{{- end }}
+{{- $probe := dict "exec" (dict "command" (list "grep" "-q" "^state=hosting$" "/tmp/master.status")) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "iw4l-dedicated.labels" . | nindent 4 }}
+    {{- with .Values.deploymentLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.deploymentAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # One world, one room: never more than one.
+  replicas: {{ .Values.replicas }}
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "iw4l-dedicated.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "iw4l-dedicated.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      # The server never calls the Kubernetes API.
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: iw4l-dedicated
+          image: {{ include "iw4l-dedicated.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["dedicated", {{ .Values.zone | quote }}]
+          env:
+            {{- toYaml $env | nindent 12 }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- range $name := list "startup" "readiness" "liveness" }}
+          {{- $p := index $.Values.probes $name }}
+          {{- if $p.enabled }}
+          {{ $name }}Probe:
+            {{- toYaml (merge (omit $p "enabled") $probe) | nindent 12 }}
+          {{- end }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            # The working directory: worlds, settings.cfg, logs, and the Minecraft files.
+            - name: data
+              mountPath: /data
+            # MW2 (IW4L_GAMES=/games, as the image sets it).
+            - name: game-data
+              mountPath: /games/mw2
+              readOnly: true
+              {{- with .Values.gameData.subPath }}
+              subPath: {{ . }}
+              {{- end }}
+            {{- if include "iw4l-dedicated.hasCache" . }}
+            # The Minecraft files and the asset cache.
+            - name: cache
+              mountPath: /data/iw4l-artifacts
+              {{- with .Values.cache.subPath }}
+              subPath: {{ . }}
+              {{- end }}
+            {{- end }}
+            # The room's state file, which the probes read.
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "iw4l-dedicated.dataClaim" . }}
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.persistence.emptyDirSizeLimit }}
+          {{- end }}
+        - name: game-data
+          {{- if .Values.gameData.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.gameData.existingClaim }}
+            readOnly: true
+          {{- else if and .Values.gameData.nfs.server .Values.gameData.nfs.path }}
+          nfs:
+            server: {{ .Values.gameData.nfs.server }}
+            path: {{ .Values.gameData.nfs.path }}
+            readOnly: true
+          {{- else }}
+          {{- toYaml .Values.gameData.volume | nindent 10 }}
+          {{- end }}
+        {{- if include "iw4l-dedicated.hasCache" . }}
+        - name: cache
+          {{- if .Values.cache.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.cache.existingClaim }}
+          {{- else }}
+          {{- toYaml .Values.cache.volume | nindent 10 }}
+          {{- end }}
+        {{- end }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}

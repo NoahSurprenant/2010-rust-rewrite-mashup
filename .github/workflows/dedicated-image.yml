@@ -15,6 +15,8 @@ on:
       - .github/workflows/ci.yml
       - .github/workflows/master-image.yml
       - .github/workflows/release.yml
+      - .github/workflows/helm-charts.yml
+      - charts/**
   pull_request:
     paths:
       - packaging/iw4l-dedicated/**
