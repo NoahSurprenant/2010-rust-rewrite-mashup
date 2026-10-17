@@ -1238,6 +1238,10 @@ fn decode_map_material_images(
     fx_material_keys: Vec<asset_core::MaterialKey>,
     glass_names: Vec<String>,
 ) -> Vec<String> {
+    if !crate::session_load::decodes_images() {
+        stage.done();
+        return vec!["map images: not decoded, nothing draws".into()];
+    }
     let mut report = Vec::new();
     match decode_material_color_maps(path, catalog, &stage, crate::session_load::load_pool()) {
         Ok(stats) => {

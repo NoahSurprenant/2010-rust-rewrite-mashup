@@ -59,6 +59,18 @@ fn keeps_texels_for_next_load() -> bool {
     KEEP_TEXELS_FOR_NEXT_LOAD.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+static DECODE_IMAGES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Off for a process that draws nothing (a dedicated server): loads leave
+/// the textures of the map and of the common set undecoded.
+pub fn decode_images(decode: bool) {
+    DECODE_IMAGES.store(decode, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn decodes_images() -> bool {
+    DECODE_IMAGES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 static PROCESS_CPUS: std::sync::OnceLock<Vec<usize>> = std::sync::OnceLock::new();
 
 pub fn publish_process_cpus(cpus: Vec<usize>) {

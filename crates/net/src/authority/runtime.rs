@@ -625,6 +625,7 @@ fn gather_authority_input(
     mut pending: ResMut<PendingAuthorityInput>,
     mut pending_acks: ResMut<PendingAcks>,
     trace: Option<ResMut<AuthorityPhaseTrace>>,
+    dedicated: Option<Res<frame::DedicatedServer>>,
 ) {
     push_phase(trace, "Gather");
     backlog
@@ -642,6 +643,10 @@ fn gather_authority_input(
     );
     let mut actions = Vec::new();
     for (client, action) in action_inbox.gather() {
+        if dedicated.is_some() && local.as_ref().is_some_and(|local| local.0 == client) {
+            action_inbox.retire(client, sim::action_request_id(&action));
+            continue;
+        }
         let request_id = sim::action_request_id(&action);
         match ledger.admit(client, &action) {
             crate::ActionAdmission::Fresh => actions.push((client, action)),
@@ -679,7 +684,7 @@ fn gather_authority_input(
         backlog.0.push((client, fault.to_string()));
     }
     let (mut cmds, mut acks) = (gathered.cmds, gathered.acks);
-    if !gate.local_cmds_enabled
+    if (!gate.local_cmds_enabled || dedicated.is_some())
         && let Some(local) = local.as_ref()
     {
         cmds.retain(|(id, _)| *id != local.0);

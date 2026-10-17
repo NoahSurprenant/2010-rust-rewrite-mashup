@@ -345,6 +345,32 @@ impl MasterLaunchIntent {
     }
 
     pub fn from_env_for_map(map: &str, have: ContentFlags, requires: ContentFlags) -> Result<Self> {
+        Self::from_env(map, have, requires, None)
+    }
+
+    /// A dedicated server always hosts: it needs a master, and names its room
+    /// `default_name` unless `IW4L_MASTER_HOST_NAME` does.
+    pub fn dedicated_from_env(
+        map: &str,
+        have: ContentFlags,
+        requires: ContentFlags,
+        default_name: &str,
+    ) -> Result<Self> {
+        if std::env::var_os("IW4L_MASTER_ADDR").is_none() {
+            return Err("a dedicated server needs a master: set IW4L_MASTER_ADDR".into());
+        }
+        if std::env::var_os("IW4L_MASTER_JOIN").is_some() {
+            return Err("a dedicated server hosts: unset IW4L_MASTER_JOIN".into());
+        }
+        Self::from_env(map, have, requires, Some(default_name))
+    }
+
+    fn from_env(
+        map: &str,
+        have: ContentFlags,
+        requires: ContentFlags,
+        default_host: Option<&str>,
+    ) -> Result<Self> {
         let Ok(address) = std::env::var("IW4L_MASTER_ADDR") else {
             return Ok(Self(MasterLaunchMode::Disabled));
         };
@@ -356,7 +382,9 @@ impl MasterLaunchIntent {
             ca_cert: std::env::var_os("IW4L_MASTER_CA_CERT").map(PathBuf::from),
             key_pin: key_pin_from_env()?,
         };
-        let host = std::env::var("IW4L_MASTER_HOST_NAME").ok();
+        let host = std::env::var("IW4L_MASTER_HOST_NAME")
+            .ok()
+            .or_else(|| default_host.map(str::to_owned));
         let join = std::env::var("IW4L_MASTER_JOIN").ok();
         match (host, join) {
             (Some(name), None) if !name.trim().is_empty() => {
@@ -792,6 +820,7 @@ pub fn arm_master_bridge(
     bridge: Option<Res<MasterBridge>>,
     udp_hub: Option<Res<UdpAuthorityHub>>,
     udp_link: Option<Res<UdpClientLink>>,
+    dedicated: Option<Res<frame::DedicatedServer>>,
     mut commands: Commands,
 ) {
     if let Some(bridge) = bridge {
@@ -840,7 +869,14 @@ pub fn arm_master_bridge(
             if *role != frame::RuntimeRole::Listen || udp_hub.is_some() {
                 return;
             }
-            let relay = spawn_host(config.clone(), settings.player_name.clone());
+            // The browser shows a room by its host's player name: a dedicated
+            // server has no player, so it goes by the room's.
+            let host_name = if dedicated.is_some() {
+                config.name.clone()
+            } else {
+                settings.player_name.clone()
+            };
+            let relay = spawn_host(config.clone(), host_name);
             diag::info!(
                 Net,
                 "master public lobby arming for {}",
@@ -1794,7 +1830,11 @@ async fn session_main(
             } else {
                 RelayDatagram::ClientToHost(&payload)
             };
-            match master_protocol::encode_relay_stream(envelope) {
+            // A message too large for the control stream is dropped: written,
+            // it would end the session and every member's place in the room.
+            // The member it was for falls behind and is retired once its
+            // reliable stream overflows.
+            match master_protocol::encode_relay_control(envelope) {
                 Ok(bytes) => {
                     if let Err(error) =
                         enqueue_control(&control_tx, ControlFrame::Relay(bytes), role)
@@ -1804,12 +1844,10 @@ async fn session_main(
                     }
                 }
                 Err(error) => {
-                    control_error = Some(TransportFault::new(
-                        "control_encode",
-                        role,
-                        error.to_string(),
-                    ));
-                    break;
+                    diag::warn!(
+                        Net,
+                        "master {role} control message for {member_id:?} dropped: {error}"
+                    );
                 }
             }
         }

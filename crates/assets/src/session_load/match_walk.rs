@@ -525,7 +525,9 @@ pub(super) async fn walk_prepared_match(
         }
         merge_image_batch(&mut global, label, batch, job, &mut report);
     }
-    if let Ok(path) = &zone_ff {
+    if let Ok(path) = &zone_ff
+        && super::decodes_images()
+    {
         let stage = progress.begin_scoped(StageId::Images, "merged", None);
         let decoded =
             asset_material::decode_material_color_maps(path, &mut global, &stage, load_pool());

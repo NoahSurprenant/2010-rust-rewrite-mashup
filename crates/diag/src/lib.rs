@@ -12,12 +12,22 @@ use std::{
     fs::{File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 static SINK: OnceLock<Mutex<DiagState>> = OnceLock::new();
 static START: OnceLock<Instant> = OnceLock::new();
+static STDOUT_MIRROR: AtomicBool = AtomicBool::new(false);
+
+/// Every line the log file takes is also written to stdout, for a process
+/// whose log is its output (a dedicated server under a supervisor).
+pub fn mirror_to_stdout() {
+    STDOUT_MIRROR.store(true, Ordering::Relaxed);
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Channel {
@@ -275,7 +285,8 @@ fn emit_raw(
         format!("{}  {}  {msg}", ch.as_str(), lvl.as_str())
     };
 
-    if lvl <= state.stderr_threshold {
+    let mirror = STDOUT_MIRROR.load(Ordering::Relaxed);
+    if lvl <= state.stderr_threshold && !mirror {
         eprintln!("{text}");
     }
     if lvl <= state.file_threshold
@@ -283,6 +294,9 @@ fn emit_raw(
     {
         let _ = writeln!(file, "{text}");
         let _ = file.flush();
+    }
+    if mirror && (lvl <= state.file_threshold || lvl <= state.stderr_threshold) {
+        let _ = writeln!(std::io::stdout(), "{text}");
     }
     if let Some(file) = state.traces.as_mut() {
         let t = now_ms(state.started);

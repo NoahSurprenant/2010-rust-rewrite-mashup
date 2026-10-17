@@ -234,8 +234,9 @@ pub(crate) fn register(app: &mut App) {
 
 /// The world at `seed`; with `world`, its chunks load from and save to that
 /// directory, and with `origin` that block sits at map origin rather than
-/// the spawn the stream finds.
-fn load(seed: i64, world: Option<std::path::PathBuf>, origin: Option<[f64; 3]>) -> Result<Loaded, String> {
+/// the spawn the stream finds; a world that never `draws` only generates,
+/// edits and saves.
+fn load(seed: i64, world: Option<std::path::PathBuf>, origin: Option<[f64; 3]>, draws: bool) -> Result<Loaded, String> {
     let root = assets::minecraft_map::root().ok_or_else(assets::minecraft_setup::status)?;
     let paths = DataPaths::under(&root);
     let registries = Arc::new(Registries::load(&paths)?);
@@ -244,7 +245,7 @@ fn load(seed: i64, world: Option<std::path::PathBuf>, origin: Option<[f64; 3]>) 
     if let Some(dir) = &world {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    let stream = TerrainStream::for_dimension(
+    let mut stream = TerrainStream::for_dimension(
         registries.clone(),
         seed,
         view_distance(),
@@ -252,6 +253,9 @@ fn load(seed: i64, world: Option<std::path::PathBuf>, origin: Option<[f64; 3]>) 
         world.as_deref(),
     )
     .map_err(|e| e.to_string())?;
+    if !draws {
+        stream.without_drawing();
+    }
     let origin = origin.unwrap_or({
         let (x, y, z) = stream.player_spawn;
         [x, y, z]
@@ -265,7 +269,7 @@ fn load(seed: i64, world: Option<std::path::PathBuf>, origin: Option<[f64; 3]>) 
     let cloud_mask = CloudMask::from_pack(&packs).ok();
     let crack_texture = Arc::new(crate::minecraft_mining::crack_strip(&packs).map_err(|e| e.to_string())?);
     let entities = Some(crate::minecraft_entities::Entities::new(&stream, seed));
-    let sounds = Some(crate::minecraft_sounds::Sounds::load(&packs));
+    let sounds = draws.then(|| crate::minecraft_sounds::Sounds::load(&packs));
     Ok(Loaded {
         stream,
         scene,
@@ -546,6 +550,7 @@ pub(crate) struct MinecraftNet<'w, 's> {
     ids: Option<ResMut<'w, net::ActionRequestIds>>,
     bridge: Option<Res<'w, net::MasterBridge>>,
     identity: Option<Res<'w, frame::LaunchIdentity>>,
+    dedicated: Option<Res<'w, frame::DedicatedServer>>,
 }
 
 /// A console block box as world blocks: corners relative to `base`.
@@ -627,7 +632,8 @@ fn update(
         keep_world(runtime);
     }
     let is_client = *net.role == frame::RuntimeRole::Client;
-    let hosting = net.bridge.is_some();
+    let dedicated = net.dedicated.is_some();
+    let hosting = net.bridge.is_some() || dedicated;
     // A client's world arrives with the host's seed, mid-match: the loading
     // screen never waits on it.
     ui.loading_world = runtime.loading.is_some() && !is_client;
@@ -670,11 +676,14 @@ fn update(
         let _ = std::thread::Builder::new()
             .name("minecraft-world-load".into())
             .spawn(move || {
-                let _ = send.send(load(seed, dir, origin));
+                let _ = send.send(load(seed, dir, origin, !dedicated));
             });
         runtime.loading = Some(receive);
     }
-    ui.net_role = runtime.net.label(hosting);
+    ui.net_role = match runtime.net {
+        NetRole::Host(_) if dedicated => "dedicated",
+        _ => runtime.net.label(hosting),
+    };
 
     // A client takes the host's messages; the first is the world to make.
     if let NetRole::Client(client) = &mut runtime.net {
@@ -688,7 +697,7 @@ fn update(
                         let _ = std::thread::Builder::new()
                             .name("minecraft-world-load".into())
                             .spawn(move || {
-                                let _ = send.send(load(seed, None, Some(origin)));
+                                let _ = send.send(load(seed, None, Some(origin), true));
                             });
                         runtime.loading = Some(receive);
                     }
@@ -814,11 +823,31 @@ fn update(
         puppet.active = false;
         return;
     };
-    let Some(ps) = presented.player(local.0) else {
-        ui.active = false;
-        ui.in_world = false;
-        puppet.active = false;
-        return;
+    // A dedicated server has no player: the world keeps its spawn loaded, or
+    // the ground of its first client, seen from a spectator that stands there.
+    let spectator;
+    let ps = match presented.player(local.0) {
+        Some(ps) if !dedicated => ps,
+        _ if dedicated => {
+            let first = match &*net_role {
+                NetRole::Host(host) => host.remotes.keys().find_map(|&id| {
+                    let authority = authority.as_ref()?;
+                    authority.0.player(sim::ClientId(id)).filter(|ps| ps.pm_type == 0).map(|ps| ps.origin)
+                }),
+                _ => None,
+            };
+            let mut viewer = sim::blank_player_state();
+            viewer.pm_type = playerstate_iw4::PM_TYPE_SPECTATOR;
+            viewer.origin = first.unwrap_or([0.0; 3]);
+            spectator = viewer;
+            &spectator
+        }
+        _ => {
+            ui.active = false;
+            ui.in_world = false;
+            puppet.active = false;
+            return;
+        }
     };
 
     // Every spawn lands on the Minecraft spawn once its ground exists.
@@ -1553,25 +1582,28 @@ fn update(
         yaw_degrees: (-cull_forward.x).atan2(cull_forward.z).to_degrees(),
         pitch_degrees: (-cull_forward.y).asin().to_degrees(),
     };
-    let update = world
-        .stream
-        .frame(&world.scene, &camera, FADE_MILLIS, &world.atlas, &world.packs);
-    view.uploads.extend(update.uploads);
-    view.removed.extend(update.removed);
-    view.visible = update.visible;
     let Some(light) = light.as_mut() else {
         return;
     };
-    for (chunk, column) in update.lights {
-        light.set_chunk_column(chunk, column);
+    if !dedicated {
+        let update = world
+            .stream
+            .frame(&world.scene, &camera, FADE_MILLIS, &world.atlas, &world.packs);
+        view.uploads.extend(update.uploads);
+        view.removed.extend(update.removed);
+        view.visible = update.visible;
+        for (chunk, column) in update.lights {
+            light.set_chunk_column(chunk, column);
+        }
     }
 
     if let Some(sounds) = sounds.as_mut() {
         sound_queue.0.append(&mut sounds.queued);
     }
     // The minimap's picture, and its corners on the map.
-    ui.minimap = minimap
-        .update(time.delta_secs_f64(), feet, &world.scene, &world.packs, &world.atlas, &mut images)
+    ui.minimap = (!dedicated)
+        .then(|| minimap.update(time.delta_secs_f64(), feet, &world.scene, &world.packs, &world.atlas, &mut images))
+        .flatten()
         .map(|(image, [bx, bz])| {
             let corner = |x: i32, z: i32| {
                 let p = sim::voxel::to_map(origin, [f64::from(x), feet[1], f64::from(z)]);
@@ -1582,7 +1614,9 @@ fn update(
     // The Overworld clock and the environment attributes of MinecraftOSS.
     let dt = time.delta_secs_f64();
     let partial = mining.tick(&world.scene, dt);
-    view.particles = mining.particle_mesh(&world.atlas, forward, partial, light);
+    if !dedicated {
+        view.particles = mining.particle_mesh(&world.atlas, forward, partial, light);
+    }
 
     // The mobs: a server tick when due, the blocks it changed, its hits on
     // the player, the mobs' boxes for bullets and their meshes.
@@ -1756,7 +1790,9 @@ fn update(
             client.send(net.inbox.as_deref_mut(), net.ids.as_deref_mut(), local.0, &Intent::Select { slot: selected as u8 });
         }
         entities.selected = selected;
-        inventory_ui.publish(&mut ui, &entities.inventory, selected, &world.packs, &mut images);
+        if !dedicated {
+            inventory_ui.publish(&mut ui, &entities.inventory, selected, &world.packs, &mut images);
+        }
 
         if let Some(sounds) = sounds.as_mut() {
             for (event, position, volume, pitch) in std::mem::take(&mut entities.sounds) {
@@ -1795,32 +1831,34 @@ fn update(
 
         sim::voxel::set_mob_boxes(entities.boxes());
         entities.tick_scene(&world.scene, mob_ticks);
-        let sky_darken = (15.0 - world.environment.sky_light_level()).clamp(0.0, 15.0) as u8;
-        let meshes = entities.meshes(
-            &world.scene,
-            &world.packs,
-            &world.atlas,
-            light,
-            forward,
-            glam::DVec3::from_array(eye),
-            sky_darken,
-        );
-        let raw = |mesh: &minecraft_terrain::mesh::ChunkMesh| {
-            (bytemuck::cast_slice::<_, u8>(&mesh.vertices).to_vec(), mesh.indices.clone())
-        };
-        view.entity_meshes = [
-            raw(&meshes.models),
-            raw(&meshes.culled),
-            raw(&meshes.translucent),
-            raw(&meshes.shadows),
-        ];
-        let mesh = meshes.items;
-        let (bytes, indices) = &mut view.particles;
-        let base = (bytes.len() / std::mem::size_of::<minecraft_terrain::mesh::SectionVertex>()) as u32;
-        let vertices: Vec<minecraft_terrain::mesh::SectionVertex> =
-            mesh.vertices.iter().map(minecraft_terrain::mesh::SectionVertex::from_vertex).collect();
-        bytes.extend_from_slice(bytemuck::cast_slice(&vertices));
-        indices.extend(mesh.indices.iter().map(|i| i + base));
+        if !dedicated {
+            let sky_darken = (15.0 - world.environment.sky_light_level()).clamp(0.0, 15.0) as u8;
+            let meshes = entities.meshes(
+                &world.scene,
+                &world.packs,
+                &world.atlas,
+                light,
+                forward,
+                glam::DVec3::from_array(eye),
+                sky_darken,
+            );
+            let raw = |mesh: &minecraft_terrain::mesh::ChunkMesh| {
+                (bytemuck::cast_slice::<_, u8>(&mesh.vertices).to_vec(), mesh.indices.clone())
+            };
+            view.entity_meshes = [
+                raw(&meshes.models),
+                raw(&meshes.culled),
+                raw(&meshes.translucent),
+                raw(&meshes.shadows),
+            ];
+            let mesh = meshes.items;
+            let (bytes, indices) = &mut view.particles;
+            let base = (bytes.len() / std::mem::size_of::<minecraft_terrain::mesh::SectionVertex>()) as u32;
+            let vertices: Vec<minecraft_terrain::mesh::SectionVertex> =
+                mesh.vertices.iter().map(minecraft_terrain::mesh::SectionVertex::from_vertex).collect();
+            bytes.extend_from_slice(bytemuck::cast_slice(&vertices));
+            indices.extend(mesh.indices.iter().map(|i| i + base));
+        }
     }
     // The host logs what changed and sends each client what it lacks; the
     // world it keeps is saved now and then.
@@ -1866,6 +1904,10 @@ fn update(
         let line = format!("minecraft-block: label={label} at={},{},{} block={block}", at[0], at[1], at[2]);
         diag::info!(Console, "{line}");
         println!("{line}");
+    }
+    if dedicated {
+        day.advance(dt);
+        return;
     }
     view.cracks = mining.crack_mesh();
     day.advance(dt);

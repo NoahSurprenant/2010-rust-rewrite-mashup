@@ -124,6 +124,42 @@ pub fn default_plugins_with_quiet_log(mut window: WindowPlugin) -> bevy::app::Pl
     }
 }
 
+/// Bevy for a dedicated server: no window, no display and no GPU. With no
+/// wgpu backend there is no render sub-app, which every render system
+/// already tolerates; the asset types it registers stay for the game's
+/// plugins to find.
+pub fn headless_default_plugins() -> bevy::app::PluginGroupBuilder {
+    DefaultPlugins
+        .set(WindowPlugin {
+            primary_window: None,
+            exit_condition: bevy::window::ExitCondition::DontExit,
+            close_when_requested: false,
+            ..default()
+        })
+        .set(LogPlugin {
+            filter: "warn,iw4l=info".into(),
+            level: bevy::log::Level::WARN,
+            ..default()
+        })
+        .set(BevyRenderPlugin {
+            render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
+                backends: None,
+                ..default()
+            })),
+            ..default()
+        })
+        .disable::<bevy::winit::WinitPlugin>()
+        .disable::<PipelinedRenderingPlugin>()
+        .disable::<bevy::gilrs::GilrsPlugin>()
+        .add(bevy::render::sync_world::SyncWorldPlugin)
+        .add(bevy::app::ScheduleRunnerPlugin::run_loop(
+            std::time::Duration::from_secs_f64(1.0 / DEDICATED_FRAME_HZ),
+        ))
+}
+
+/// The authority steps at its own fixed rate inside these frames.
+const DEDICATED_FRAME_HZ: f64 = 60.0;
+
 const PIPELINED_RENDERING_ENV: &str = "IW4L_PIPELINED_RENDERING";
 
 /// Overlap rendering with the next main frame. Extraction remains the ownership

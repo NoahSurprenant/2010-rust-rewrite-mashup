@@ -131,7 +131,10 @@ pub(crate) fn route_debug_minecraft_commands(
                 );
             }
             "mc" => {
-                let Some(ui) = ui.as_mut().filter(|ui| ui.active) else {
+                let Some(ui) = ui
+                    .as_mut()
+                    .filter(|ui| ui.active || (ui.net_role == "dedicated" && ui.seed.is_some()))
+                else {
                     console.echo("mc: no Minecraft world in play", capacity);
                     continue;
                 };

@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 
 use minecraft_terrain::multiplayer::{
     Click, EditLog, HostMessage, Intent, InventoryState, SavedWorld, SlotRef, WireItem, WireStack,
+    edits_that_fit,
 };
 use minecraft_terrain::scene::BlockPos;
 use minecraftoss_player::inventory::Inventory;
@@ -335,8 +336,9 @@ pub(crate) fn send_to(
     if let Some(at) = remote.placed_at.take() {
         push(reliable, client, &HostMessage::Placed { at });
     }
-    if !remote.corrections.is_empty() && has_room(reliable.queue(client)) {
-        let corrections = std::mem::take(&mut remote.corrections);
+    while !remote.corrections.is_empty() && has_room(reliable.queue(client)) {
+        let fit = edits_that_fit(&remote.corrections);
+        let corrections: Vec<_> = remote.corrections.drain(..fit).collect();
         push(reliable, client, &HostMessage::Edits(corrections));
     }
     while remote.cursor < host.log.len() && has_room(reliable.queue(client)) {

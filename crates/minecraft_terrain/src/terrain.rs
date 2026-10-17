@@ -927,6 +927,9 @@ pub struct TerrainStream {
     scheduled_last_frame: usize,
     clock: Instant,
     stats: Stats,
+    /// Chunks are lit and their sections tracked for `frame` to build; a
+    /// stream that never draws (a dedicated server) only generates.
+    draws: bool,
 }
 
 /// Which dimension a streamed world generates.
@@ -1090,11 +1093,18 @@ impl TerrainStream {
             scheduled_last_frame: 0,
             clock: Instant::now(),
             stats: Stats::default(),
+            draws: true,
         })
     }
 
     pub fn view_distance(&self) -> i32 {
         self.server.view_distance()
+    }
+
+    /// Generation, edits and saving only: no light, no sections, and `frame`
+    /// is never called.
+    pub fn without_drawing(&mut self) {
+        self.draws = false;
     }
 
     /// A new render distance from the options screen: the server tracks
@@ -1202,6 +1212,10 @@ impl TerrainStream {
                 ChunkEvent::Load(chunk) => {
                     let _span = span("chunk load (client)");
                     loaded.push(chunk.clone());
+                    if !self.draws {
+                        scene.insert_chunk(chunk);
+                        continue;
+                    }
                     let pos = (chunk.pos.x, chunk.pos.z);
                     let empty = {
                         let _span = span("  empty_sections");
@@ -1228,6 +1242,9 @@ impl TerrainStream {
                         continue;
                     }
                     scene.remove_chunk(pos);
+                    if !self.draws {
+                        continue;
+                    }
                     self.removed.extend(self.sections.chunk_unloaded(pos));
                     *self.light_epochs.entry(pos).or_default() += 1;
                     self.lights_pending.remove(&pos);
@@ -1268,6 +1285,9 @@ impl TerrainStream {
     /// (`LevelRenderer.setBlockDirty`), and nearby chunks relight; sections
     /// whose light changed rebuild when that finishes.
     pub fn mark_edited(&mut self, scene: &HandcraftedScene, positions: &[BlockPos]) {
+        if !self.draws {
+            return;
+        }
         let mut sections = BTreeSet::new();
         let mut chunks = BTreeSet::new();
         let mut touched: BTreeMap<crate::sections::SectionPos, bool> = BTreeMap::new();
