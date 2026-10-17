@@ -44,6 +44,8 @@ pub enum Expect {
     Slot(usize, &'static str),
     /// How many grid slots hold this stack (`-` for empty).
     Grid(&'static str, usize),
+    /// Whether the crosshair is on a crafting table in reach.
+    TableInView(bool),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -62,6 +64,7 @@ pub const STEPS: &[Step] = &[
         label: "arena",
         expect: &[
             Expect::Screen(Screen::None),
+            Expect::TableInView(true),
             Expect::Slot(PLANKS, "minecraft:oak_planks*16"),
         ],
     },
@@ -286,6 +289,11 @@ fn failure(state: &Event, expect: &Expect) -> Option<String> {
                 format!("{got} in {}", field("grid")),
             )
         }
+        Expect::TableInView(in_view) => (
+            (field("table_in_view") != "-") == *in_view,
+            format!("table_in_view={in_view}"),
+            field("table_in_view"),
+        ),
     };
     (!held).then(|| format!("want {want}, got {got}"))
 }
@@ -325,7 +333,7 @@ mod tests {
                     result: &str,
                     slots: String| {
             state(&format!(
-                "label={label} stance={stance} menu=false screen={screen} grid={grid} result={result} cursor=- slots={slots}"
+                "label={label} stance={stance} menu=false table_in_view=1,2,3 screen={screen} grid={grid} result={result} cursor=- slots={slots}"
             ))
         };
         vec![
@@ -557,5 +565,16 @@ mod tests {
             .find(|c| c.label == "chest_recipe")
             .unwrap();
         assert_eq!(check.failures, ["want result=minecraft:chest*1, got -"]);
+    }
+
+    #[test]
+    fn an_arena_away_from_the_player_fails() {
+        let mut states = passing_states();
+        states[0].fields.insert("table_in_view".into(), "-".into());
+        let check = judge(&states)
+            .into_iter()
+            .find(|c| c.label == "arena")
+            .unwrap();
+        assert_eq!(check.failures, ["want table_in_view=true, got -"]);
     }
 }

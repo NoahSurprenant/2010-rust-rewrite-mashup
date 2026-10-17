@@ -53,7 +53,7 @@ pub struct MinecraftUi {
     /// A Minecraft world is in play and the player is alive.
     pub active: bool,
     /// The player stands in the Minecraft world: alive, moved onto its spawn
-    /// and standing on its ground.
+    /// and settled on its ground there (it stays so until it dies).
     pub in_world: bool,
     /// The match's Minecraft world is still being generated; the loading
     /// screen holds until it is in, so its setup never lands mid-match.
