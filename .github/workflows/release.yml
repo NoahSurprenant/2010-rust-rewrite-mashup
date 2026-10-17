@@ -51,21 +51,30 @@ jobs:
       - name: Toolchain
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang-18 lld-18 llvm-18
-          echo /usr/lib/llvm-18/bin >> "$GITHUB_PATH"
+          # The MSVC STL headers xwin fetches refuse clang older than 19.
+          sudo apt-get install -y -qq clang-20 lld-20 llvm-20
+          echo /usr/lib/llvm-20/bin >> "$GITHUB_PATH"
           rustup target add "$TARGET"
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-xwin
-      # The MSVC CRT and Windows SDK cargo-xwin downloads.
-      - uses: actions/cache@v4
+      # The MSVC CRT and Windows SDK cargo-xwin downloads: over ten minutes
+      # uncached, so it is saved even when the build fails.
+      - uses: actions/cache/restore@v4
+        id: xwin
         with:
           path: ~/.cache/cargo-xwin
           key: cargo-xwin-v1
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-play
+          cache-on-failure: true
       - run: cargo xwin build --profile play --locked --target "$TARGET" -p launcher --bin iw4l
+      - if: always() && steps.xwin.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/cargo-xwin
+          key: cargo-xwin-v1
       # crates/launcher/build.rs links with /STACK:8388608; a recursive zone
       # walk overflows the 1 MiB default (xtask/src/windows.rs checks the same).
       - name: Stack reserve
@@ -189,7 +198,7 @@ jobs:
           retention-days: 7
 
   release:
-    name: Publish build-${{ github.run_number }}
+    name: Publish release
     needs: package
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
