@@ -994,10 +994,19 @@ fn update(
         }
         let spawn_ready = world.scene.generated_chunk(spawn_chunk).is_some();
         for (index, (&id, remote)) in host.remotes.iter_mut().enumerate() {
-            let Some((alive, weapons)) = authority.player(sim::ClientId(id)).map(|ps| (ps.pm_type == 0, ps.weapons)) else {
+            let Some(weapons) = authority.player(sim::ClientId(id)).map(|ps| ps.weapons) else {
                 remote.placed = false;
                 continue;
             };
+            // Each life is placed once: MW2's own spawn puts every player on
+            // the world spawn, whatever came before.
+            let meta = authority.client_meta(sim::ClientId(id));
+            let alive = meta.is_some_and(|meta| meta.lifecycle == sim::ClientLifecycle::Alive);
+            let life = meta.map(|meta| meta.life_sequence);
+            if remote.life != life {
+                remote.life = life;
+                remote.placed = false;
+            }
             if !alive {
                 remote.placed = false;
             } else if !remote.placed

@@ -81,6 +81,8 @@ pub(crate) struct Remote {
     sent_items: Option<Vec<WireItem>>,
     /// Alive and moved onto the world's spawn.
     pub placed: bool,
+    /// The life it was placed in.
+    pub life: Option<sim::LifeSequence>,
     /// Where it was moved, not yet told.
     pub placed_at: Option<[f32; 3]>,
     /// Chunks generated around it for the host's collision, and those of
@@ -277,6 +279,7 @@ impl Remote {
             sent_items: None,
             placed: false,
             placed_at: None,
+            life: None,
             collision: None,
             held: HashMap::new(),
             held_still: false,
