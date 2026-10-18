@@ -18,10 +18,10 @@ pub mod svc_sound;
 mod time_scale;
 pub mod transport;
 
-pub use authority::admins::{ADMINS_ENV, DebugAdmins, refuse_debug, refusal_text};
 pub use authority::actions::{
     ActionAdmission, ActionRequestIds, ClientActionLedger, MAX_REMEMBERED_ACTIONS_PER_CLIENT,
 };
+pub use authority::admins::{ADMINS_ENV, DebugAdmins, refusal_text, refuse_debug};
 pub use authority::inbox::{
     AUTHORITY_HZ, AUTHORITY_MS, ActionEnqueueError, AuthorityClock, ClientActionInbox,
     ClientCommandInbox, GatheredCommands, MAX_PENDING_ACTIONS_PER_CLIENT, MAX_REDUNDANT_CMDS,
@@ -78,14 +78,14 @@ pub use client::proxy::{
 };
 pub use client::realtime::ClientRealtime;
 pub use client::runtime::{
-    ClientClock, ClientCmdTemplate, ClientPhaseTrace, ClientPredictionState, ClientReliableAck,
-    ClockTick, LastAdoptedSnapshot, LocationCursor, PendingClientSends, PendingPelletFx,
-    PendingPresentedEntityEvents, ReceivedTicks, ReliableControlEvent, RemoteProxyState,
-    WeaponSelect, advance_cg_frame_clock, advance_cls_realtime, arm_listen_prediction,
-    cycle_weapon_select, follow_held_weapon_select, listen_prediction_needs_content,
-    predict_local_move, publish_presented, receive_ticks, reconcile_prediction,
-    register_client_runtime, register_listen_prediction_arm, sample_client_input,
-    send_pending_commands,
+    ActionRefused, ClientClock, ClientCmdTemplate, ClientPhaseTrace, ClientPredictionState,
+    ClientReliableAck, ClockTick, LastAdoptedSnapshot, LocationCursor, PendingClientSends,
+    PendingPelletFx, PendingPresentedEntityEvents, ReceivedTicks, ReliableControlEvent,
+    RemoteProxyState, WeaponSelect, advance_cg_frame_clock, advance_cls_realtime,
+    arm_listen_prediction, cycle_weapon_select, follow_held_weapon_select,
+    listen_prediction_needs_content, predict_local_move, publish_presented, receive_ticks,
+    reconcile_prediction, register_client_runtime, register_listen_prediction_arm,
+    sample_client_input, send_pending_commands,
 };
 pub use gaps::{NetGap, NetGapCause, NetIdentityGaps, ScriptNotify};
 pub use plugin::NetPlugin;

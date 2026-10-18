@@ -577,6 +577,14 @@ pub fn reconcile_prediction(
 #[derive(bevy::prelude::Message, Clone, Copy, Debug)]
 pub struct ReliableControlEvent(pub sim::SimEvent);
 
+/// The host refused one of this game's actions (a debug command from a
+/// player not on its admin list, a give it could not make): whatever waits
+/// on its effect stops waiting.
+#[derive(bevy::prelude::Message, Clone, Copy, Debug)]
+pub struct ActionRefused {
+    pub request_id: sim::ActionRequestId,
+}
+
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct SvcFrameWriters<'w> {
     sound: MessageWriter<'w, crate::SvcLocalSound>,
@@ -593,6 +601,7 @@ pub struct ReliableInbound<'w> {
     ack: ResMut<'w, ClientReliableAck>,
     events: MessageWriter<'w, ReliableControlEvent>,
     svc: SvcFrameWriters<'w>,
+    refused: MessageWriter<'w, ActionRefused>,
     scores: ResMut<'w, crate::Scoreboard>,
     signon: ResMut<'w, crate::SignonState>,
     minecraft: ResMut<'w, crate::MinecraftDownlink>,
@@ -684,6 +693,9 @@ impl ReliableInbound<'_> {
                         }
                         crate::ActionVerdict::Refused => {
                             diag::info!(Net, "the host refused action request {request_id}");
+                            self.refused.write(ActionRefused {
+                                request_id: *request_id,
+                            });
                         }
                         crate::ActionVerdict::Applied => {}
                     }
@@ -1927,6 +1939,7 @@ pub fn register_client_runtime(app: &mut App) {
         .init_resource::<ClientReliableAck>()
         .init_resource::<GameplaySendPacer>()
         .add_message::<ReliableControlEvent>()
+        .add_message::<ActionRefused>()
         .add_message::<frame::MatchInstalled>()
         .add_message::<frame::MatchTornDown>()
         .init_resource::<RemoteProxyState>()
