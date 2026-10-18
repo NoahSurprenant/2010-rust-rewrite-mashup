@@ -46,7 +46,7 @@ pub(crate) fn spawn_showpos_hud(commands: &mut Commands, font: Handle<Font>) {
 }
 
 pub(crate) fn register_debug_move_commands(registry: &mut ConsoleRegistry) {
-    registry.register(crate::CommandSpec::new("skate").usage("skate [on|off|status] - local Skate gameplay (J toggles)"));
+    registry.register(crate::CommandSpec::new("skate").usage(crate::debug_skate::USAGE));
     if registry.resolve("showpos").is_none() {
         registry.register(
             crate::CommandSpec::new("showpos")
@@ -104,7 +104,6 @@ pub(crate) fn register_debug_move_commands(registry: &mut ConsoleRegistry) {
 }
 
 pub(crate) fn route_debug_move_commands(
-    mut skate: ResMut<frame::SkateMode>,
     mut events: MessageReader<ConsoleCommand>,
     mut console: ResMut<ConsoleState>,
     settings: Res<ConsoleSettings>,
@@ -127,17 +126,6 @@ pub(crate) fn route_debug_move_commands(
 
     for cmd in events.read() {
         match cmd.name.as_str() {
-            "skate" => {
-                match cmd.args.first().map(String::as_str) {
-                    Some("status") => {},
-                    Some("on") => { skate.toggle_requested = !skate.active && !skate.entering; },
-                    Some("off") => { skate.toggle_requested = skate.active || skate.entering; },
-                    None => { skate.toggle_requested = true; },
-                    _ => { echo("usage: skate [on|off|status]".into(), &mut console, &mut line); continue; }
-                }
-                echo(format!("skate active={} ready={} controller={:?} tick={} {}",skate.active,skate.preloaded,skate.controller,skate.tick,skate.status),&mut console,&mut line);
-            }
-
             "showpos" | "debug_pos" => match cmd.args.first().map(String::as_str) {
                 None => {
                     debug_pos.0 = true;

@@ -57,6 +57,10 @@ impl Plugin for NetPlugin {
                 .init_resource::<crate::ActionRequestIds>()
                 .init_resource::<crate::ReliableEventHub>()
                 .init_resource::<crate::MinecraftDownlink>()
+                .init_resource::<crate::SkaterDownlink>()
+                .init_resource::<crate::SkateOutbox>()
+                .init_resource::<crate::SkaterTracks>()
+                .init_resource::<frame::RemoteSkaters>()
                 .insert_resource(Time::<Fixed>::from_hz(
                     crate::authority::inbox::AUTHORITY_HZ,
                 ));

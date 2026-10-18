@@ -36,6 +36,6 @@ pub use ui::{
 };
 
 pub mod skate;
-pub use skate::SkateMode;
+pub use skate::{RemoteSkaters, SkateMode, SkaterPose, VirtualPad};
 pub mod minecraft_ui;
 pub use minecraft_ui::{InventoryPuppet, McClick, McSlot, McStack, MinecraftUi};

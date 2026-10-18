@@ -308,6 +308,7 @@ fn occupy_remote_scene_ents(
 
 fn sync_remote_bodies(
     skate: Res<frame::SkateMode>,
+    remote_skaters: Res<frame::RemoteSkaters>,
     puppet: Option<Res<frame::InventoryPuppet>>,
     mut commands: Commands,
     local: Res<LocalPresentClient>,
@@ -407,6 +408,11 @@ fn sync_remote_bodies(
             || runtime.pose_e_type == ET_PLAYER_CORPSE as u8;
         if skate.active && !skate.bones.is_empty() && client.0 == skate.client && !is_corpse {
             pose = Transform::from_matrix(skate.root);
+        } else if !is_corpse
+            && let Some(skater) = crate::skate::remote_pose(&remote_skaters, client.0)
+        {
+            // Another player on its board, where its own game put it.
+            pose = Transform::from_matrix(skater.root);
         }
         if let Some(puppet) = puppet.as_ref().filter(|p| p.active && client.0 == p.client) {
             pose = Transform::from_matrix(puppet.root);
@@ -429,7 +435,8 @@ fn sync_remote_bodies(
 }
 
 struct PendingBodySkin<'a> {
-    skate: Option<&'a frame::SkateMode>,
+    /// A skater's pose (bone names, bones), to add its board.
+    skate: Option<(&'a [String], &'a [Mat4])>,
     is_bot: bool,
     persist_key: u32,
     transform: Transform,
@@ -457,6 +464,7 @@ enum RemoteSkinAction<'a> {
 
 struct RemotePoseFrame<'a> {
     skate: &'a frame::SkateMode,
+    remote_skaters: &'a frame::RemoteSkaters,
     puppet: Option<&'a frame::InventoryPuppet>,
     script: &'a asset_anim::ParsedPlayerAnimScript,
     tree: &'a asset_anim::CompiledAnimTreeDefinition,
@@ -506,7 +514,7 @@ fn remote_body_scene_slot(
 }
 
 fn pose_remote_bodies(
-    skate: Res<frame::SkateMode>,
+    (skate, remote_skaters): (Res<frame::SkateMode>, Res<frame::RemoteSkaters>),
     puppet: Option<Res<frame::InventoryPuppet>>,
     time: Res<Time>,
     gaps: Res<RenderPresentationGaps>,
@@ -630,6 +638,7 @@ fn pose_remote_bodies(
     let last_cache_hits = pose_hashes.take_last_cache_hits();
     let mut pose_frame = RemotePoseFrame {
         skate: &skate,
+        remote_skaters: &remote_skaters,
         puppet: puppet.as_deref(),
         script,
         tree,
@@ -856,12 +865,25 @@ impl<'a> RemotePoseFrame<'a> {
             validate_remote_tracks(dobj, clips.as_ref(), body, &model_set.body_name)?;
 
             // A corpse keeps its client's key; only the living body skates.
-            let skating = self.skate.active
+            let local_skating = self.skate.active
                 && !self.skate.bones.is_empty()
                 && persist_key == self.skate.client
                 && !is_corpse;
-            let world = if skating {
-                crate::skate::rig::pose(dobj, self.skate)
+            // Another player on its board: its pose as its own game posed it.
+            let remote_skater = (!local_skating && !is_corpse)
+                .then(|| crate::skate::remote_pose(self.remote_skaters, persist_key))
+                .flatten();
+            let skater: Option<(&[String], &[Mat4])> = if local_skating {
+                Some((&self.skate.names, &self.skate.bones))
+            } else {
+                remote_skater.map(|s| (self.remote_skaters.names.as_slice(), s.bones.as_slice()))
+            };
+            let skating = skater.is_some();
+            if remote_skater.is_some() {
+                self.remote_skaters.note_drawn(persist_key);
+            }
+            let world = if let Some((names, bones)) = skater {
+                crate::skate::rig::pose(dobj, names, bones)
             } else {
                 pose_remote_dobj(
                     dobj,
@@ -910,7 +932,7 @@ impl<'a> RemotePoseFrame<'a> {
                 RemoteSkinAction::Blend(mut job) => {
                     job.is_bot = remote.is_bot;
                     if skating {
-                        job.skate = Some(self.skate);
+                        job.skate = skater;
                         job.gun = None;
                         job.attachments.clear();
                     }
@@ -1244,8 +1266,8 @@ fn assemble_meshes(job: PendingBodySkin<'_>) -> Result<AssembledMeshes, String> 
             true,
         )?;
     }
-    if let Some(skate) = job.skate {
-        crate::skate::rig::board(skate, &mut geom)?;
+    if let Some((names, bones)) = job.skate {
+        crate::skate::rig::board(names, bones, &mut geom)?;
     }
     let (radii, radius_parents) = radii(
         job.body,

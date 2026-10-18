@@ -246,6 +246,13 @@ pub enum ClientPacket {
         header: PacketHeader,
         snapshot_seq: u32,
     },
+
+    /// The sender skating: its newest `crate::skate::SkaterState`, as bytes.
+    Skate {
+        header: PacketHeader,
+        claimed_client: u32,
+        state: Vec<u8>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -273,6 +280,7 @@ pub enum ServerPacket {
 const TAG_CLIENT_CONNECT: u8 = 1;
 const TAG_CLIENT_COMMANDS: u8 = 2;
 const TAG_CLIENT_SNAP_ACK: u8 = 3;
+const TAG_CLIENT_SKATE: u8 = 4;
 const TAG_SERVER_ACCEPT: u8 = 10;
 const TAG_SERVER_REJECT: u8 = 11;
 const TAG_SERVER_SNAPSHOT: u8 = 12;
@@ -487,6 +495,17 @@ impl ClientPacket {
                 put_header(out, header);
                 out.put_u32(*snapshot_seq);
             }
+            Self::Skate {
+                header,
+                claimed_client,
+                state,
+            } => {
+                out.put_u8(TAG_CLIENT_SKATE);
+                put_header(out, header);
+                out.put_u32(*claimed_client);
+                out.put_u16(state.len() as u16);
+                out.put_bytes(state);
+            }
         }
     }
 
@@ -527,6 +546,21 @@ impl ClientPacket {
                 header: get_header(input)?,
                 snapshot_seq: input.get_u32()?,
             }),
+            TAG_CLIENT_SKATE => {
+                let header = get_header(input)?;
+                let claimed_client = input.get_u32()?;
+                let len = input.get_u16()? as usize;
+                if len > crate::skate::MAX_SKATE_STATE_BYTES {
+                    return Err(WireError::Malformed("skater state too long"));
+                }
+                let mut state = vec![0u8; len];
+                input.get_bytes(&mut state)?;
+                Ok(Self::Skate {
+                    header,
+                    claimed_client,
+                    state,
+                })
+            }
             _ => Err(WireError::Malformed("unknown ClientPacket tag")),
         }
     }

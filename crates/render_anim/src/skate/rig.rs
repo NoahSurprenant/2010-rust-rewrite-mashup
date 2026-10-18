@@ -57,7 +57,7 @@ fn convert(m: Mat4) -> Mat4 {
 /// Align each soldier bind segment to the reference skater, then apply the
 /// game's solved pose. Unmapped fingers, equipment and helper bones inherit
 /// the nearest mapped ancestor, preserving their original local offsets.
-pub fn pose(dobj: &xmodel_runtime::DObj, mode: &frame::SkateMode) -> Vec<Mat4> {
+pub fn pose(dobj: &xmodel_runtime::DObj, names: &[String], bones: &[Mat4]) -> Vec<Mat4> {
     let Some(reference) = reference() else {
         return dobj.bones.iter().map(|b| b.bind_world).collect();
     };
@@ -93,8 +93,8 @@ pub fn pose(dobj: &xmodel_runtime::DObj, mode: &frame::SkateMode) -> Vec<Mat4> {
         }
         let mapped = mapping(&bone.name).and_then(|(name, child)| {
             let bind = source(name)?;
-            let index = mode.names.iter().position(|n| n == name)?;
-            let posed = convert(*mode.bones.get(index)?);
+            let index = names.iter().position(|n| n == name)?;
+            let posed = convert(*bones.get(index)?);
             let from = bone.bind_world.w_axis.truncate();
             let to = bind.w_axis.truncate();
             let facing = Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2);
@@ -152,7 +152,7 @@ fn p_from(dobj: &xmodel_runtime::DObj, index: Option<usize>) -> Option<Vec3> {
     Some(dobj.bones.get(index?)?.bind_world.w_axis.truncate())
 }
 
-pub fn board(mode: &frame::SkateMode, geom: &mut CpuBodyGeom) -> Result<(), String> {
+pub fn board(names: &[String], bones: &[Mat4], geom: &mut CpuBodyGeom) -> Result<(), String> {
     let model = assets::bot_model::local_skate_board().ok_or("missing board model")?;
     let reference = reference().ok_or("missing board bind pose")?;
     let rb = Mat4::from_cols(Vec4::X, -Vec4::Z, Vec4::Y, Vec4::W);
@@ -160,8 +160,7 @@ pub fn board(mode: &frame::SkateMode, geom: &mut CpuBodyGeom) -> Result<(), Stri
         .joints
         .iter()
         .map(|j| {
-            let i = mode
-                .names
+            let i = names
                 .iter()
                 .position(|n| n == &j.target)
                 .ok_or("missing Skate joint")?;
@@ -169,7 +168,8 @@ pub fn board(mode: &frame::SkateMode, geom: &mut CpuBodyGeom) -> Result<(), Stri
                 .iter()
                 .find(|b| b.name == j.target)
                 .ok_or("missing reference joint")?;
-            Ok(mode.bones[i] * rb * Mat4::from_cols_array(&reference.inverse_bind))
+            let bone = bones.get(i).ok_or("missing Skate bone")?;
+            Ok(*bone * rb * Mat4::from_cols_array(&reference.inverse_bind))
         })
         .collect::<Result<_, String>>()?;
     for surface in &model.surfaces {

@@ -161,3 +161,55 @@ jobs:
             iw4l-artifacts/approved-tests/*/*/iw4l-artifacts/logs/*.log
             iw4l-artifacts/approved-tests/*/master/master_*.txt
           if-no-files-found: warn
+
+  # The approved skate_multiplayer scenario: players skate on the Minecraft
+  # map, first in a listen host's room (the client skates while the host
+  # watches, then the other way round), then on a dedicated server, each
+  # through an iw4l-master the run starts on the loopback. The skaters need
+  # the owner's converted Skate 3 data as well as MW2, read-only from the
+  # same mount (/skate-assets/skate-data/assets); the dedicated server runs
+  # without it. The skate codec's and console's unit tests run here too, on
+  # the build the scenario uses.
+  skate-multiplayer:
+    name: skate_multiplayer (listen host and dedicated server through a local master, in-cluster)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: iw4l-k8s
+    timeout-minutes: 120
+    env:
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: play
+      - uses: actions/cache@v4
+        with:
+          path: iw4l-artifacts/minecraft-26.3
+          key: minecraft-26.3
+      - name: Games root
+        run: |
+          mkdir -p "$RUNNER_TEMP/games"
+          ln -sfn /skate-assets/mw2 "$RUNNER_TEMP/games/mw2"
+          echo "IW4L_GAMES=$RUNNER_TEMP/games" >> "$GITHUB_ENV"
+          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/config" >> "$GITHUB_ENV"
+          echo "IW4L_SKATE_ASSETS=/skate-assets/skate-data/assets" >> "$GITHUB_ENV"
+      - run: cargo build --profile play -p launcher --bin iw4l
+      - run: cargo build --profile play -p approved_tests -p iw4l-master
+      - name: skate unit tests (net::skate, console skate)
+        run: |
+          cargo test --profile play -p net --lib skate
+          cargo test --profile play -p console --lib debug_skate
+      - name: skate_multiplayer
+        run: scripts/headless-display.sh target/play/approved_tests skate_multiplayer
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: skate_multiplayer
+          path: |
+            iw4l-artifacts/approved-tests/*/run.json
+            iw4l-artifacts/approved-tests/*/*/child_stdout_*.txt
+            iw4l-artifacts/approved-tests/*/*/child_stderr_*.txt
+            iw4l-artifacts/approved-tests/*/*/iw4l-artifacts/logs/*.log
+            iw4l-artifacts/approved-tests/*/master/master_*.txt
+          if-no-files-found: warn

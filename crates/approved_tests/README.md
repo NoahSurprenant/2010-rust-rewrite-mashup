@@ -21,6 +21,7 @@ workspace.
 | `crafting_table` | the Minecraft map at a fixed seed: builds a small arena, opens a crafting table with E, crafts a chest on its 3x3 grid, closes with Escape (the grid empties back, no MW2 menu), opens with E holding a gun, right click with a gun aims, right click with an item opens, crouched right click with a plank places against it and with an empty hand opens it, a key rebound to Use opens it, and the screen closes when the table breaks or the player moves away |
 | `minecraft_multiplayer` | two games on the Minecraft map through an `iw4l-master` the run starts on the loopback (with a certificate minted for the run): the client generates the host's seed, sees a block the host sets and one it clears; the host sees a block the client sets, planks the client places by hand (given by the host on its `mc give`) and breaks by hand; the client picks the dropped plank up, and stands on a platform 320 blocks from the host (the host keeps ground under it); then both start again on the same settings and the host's world comes back (seed, blocks, the host's and the client's inventories, kept by name). It records each game's and the pair's peak memory |
 | `dedicated_server` | a dedicated server (`iw4l dedicated minecraft:overworld`, no window, no player of its own) hosts a room on an `iw4l-master` the run starts on the loopback: it is in no roster, and a client joins it, sets a block and fills its inventory, and leaves; the room stays listed and the server keeps running with nobody in it for 75 s (past the master session's 60 s silence deadline) while the server sets a 2048-block glass roof, more edit history than one master control message holds; the client joins again and finds its block, the roof and its inventory; the server is stopped with SIGTERM (exit 0, world saved) and started again, and the seed, the block and the client's inventory come back. It records the server's memory and CPU with no client and with one |
+| `skate_multiplayer` | Skate 3 skating with other players on the Minecraft map, through an `iw4l-master` the run starts on the loopback (needs `IW4L_SKATE_ASSETS`, the converted Skate 3 data). In a listen host's room the client gets on its board on a stone runway and pushes off: the host has the client's player moving down the runway, on its board, its states taken, and draws the client's skater (35 bones) in place of its MW2 body; the client gets off and the host stops drawing it. Then the host skates and the client receives its pose in its snapshots. On a dedicated server (no player, no Skate 3 data) a client skates and the server moves its player down the runway. It records each skater's bytes a second and both rooms' memory |
 
 The `master_pin` unit tests (`src/master_pin.rs`, approved 2026-10-17) check the
 master key pin: the right pin is accepted, a wrong one refused, a mistyped one
@@ -60,9 +61,10 @@ make approved ARGS='--cache shared'            # reuse the repo cache (not cold)
 make approved SCENARIO=crafting_table           # the crafting table scenario
 make approved SCENARIO=minecraft_multiplayer    # a host and a client through a local master
 make approved SCENARIO=dedicated_server         # a dedicated server, and a client that comes and goes
+make approved SCENARIO=skate_multiplayer        # skaters with a listen host and a dedicated server
 ```
 
-The runner builds nothing; `make approved` builds `target/play/iw4l` (and `target/play/iw4l-master`, which `minecraft_multiplayer` and `dedicated_server` run) first.
+The runner builds nothing; `make approved` builds `target/play/iw4l` (and `target/play/iw4l-master`, which `minecraft_multiplayer`, `dedicated_server` and `skate_multiplayer` run) first.
 Each run owns one directory, `iw4l-artifacts/approved-tests/<run-id>/`. The
 game is started with that directory as its working directory, so everything
 IW4L writes (`iw4l-artifacts/cache`, logs, perf run, dumps, screenshots) lands
