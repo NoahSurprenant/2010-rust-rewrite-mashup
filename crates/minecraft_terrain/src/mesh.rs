@@ -175,6 +175,15 @@ impl Atlas {
     pub fn entity_region(&self, id: &ResourceId) -> [f32; 4] {
         self.region_exact(id)
     }
+    /// The region an item model's face samples: an entity texture's exact
+    /// pixels, as a special item's boxes address them, or a sprite's region.
+    pub fn item_region(&self, id: &ResourceId) -> [f32; 4] {
+        if id.path.starts_with("entity/") {
+            self.entity_region(id)
+        } else {
+            self.region(id)
+        }
+    }
     pub fn contains(&self, id: &ResourceId) -> bool {
         self.slots.contains_key(id)
     }
@@ -315,7 +324,7 @@ pub fn build_item_model(packs: &PackStack, item: &ResourceId) -> Result<Option<B
     for element in &model.elements {
         for face in &element.faces {
             let corners = element_corners(element, &face.direction)?;
-            let [u0, v0, u1, v1] = atlas.region(&face.texture);
+            let [u0, v0, u1, v1] = atlas.item_region(&face.texture);
             let [a, b, c, d] = face.uv;
             let uv = [
                 [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
@@ -561,6 +570,10 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
         textures.insert(ResourceId::parse("minecraft:particle/note")?, ());
         textures.insert(ResourceId::parse("minecraft:particle/glow")?, ());
         textures.insert(ResourceId::parse("minecraft:misc/shadow")?, ());
+        // Chests, shulker boxes, heads, banners and shields, held or dropped.
+        for id in crate::special_item::special_textures(packs)? {
+            textures.insert(id, ());
+        }
     }
     let atlas = make_atlas(packs, textures.into_keys().collect())?;
     let tint = BiomeTint::from_pack(packs)?;
@@ -835,7 +848,7 @@ impl ItemVisuals {
                             continue;
                         }
                         let corners = element_corners(element, &face.direction)?;
-                        let [u0, v0, u1, v1] = atlas.region(&face.texture);
+                        let [u0, v0, u1, v1] = atlas.item_region(&face.texture);
                         let [a, b, c, d] = face.uv;
                         let uv = [
                             [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
@@ -958,6 +971,40 @@ impl ItemVisuals {
         Ok(())
     }
 
+    /// Items under whole poses (the one in the player's hand), each lit at
+    /// its point and tinted as its item definition says.
+    pub fn append_posed_items(
+        &mut self,
+        mesh: &mut ChunkMesh,
+        items: &[(Mat4, Vec3, String)],
+        packs: &PackStack,
+        atlas: &Atlas,
+        sky_light: &SkyLight,
+    ) -> Result<()> {
+        for (pose, light, id) in items {
+            let Some(tints) = self.model(id, packs)?.map(|visual| visual.tints.clone()) else {
+                continue;
+            };
+            self.append_model(mesh, id, *light, *pose, 1.0, Some(&tints), packs, atlas, sky_light)?;
+        }
+        Ok(())
+    }
+
+    /// How many of an item's model faces the atlas can draw: none when the
+    /// item has no model or its textures are missing from the atlas.
+    pub fn drawn_faces(&mut self, id: &str, packs: &PackStack, atlas: &Atlas) -> usize {
+        match self.model(id, packs) {
+            Ok(Some(visual)) => visual
+                .model
+                .elements
+                .iter()
+                .flat_map(|element| &element.faces)
+                .filter(|face| atlas.contains(&face.texture))
+                .count(),
+            _ => 0,
+        }
+    }
+
     /// One item model placed with a pose, lit at `pos`, untinted.
     #[allow(clippy::too_many_arguments)]
     fn append_block_model(&mut self, mesh: &mut ChunkMesh, id: &str, pos: Vec3, pose: Mat4, brightness: f32, packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
@@ -982,7 +1029,7 @@ impl ItemVisuals {
                         continue;
                     }
                     let corners = element_corners(element, &face.direction)?;
-                    let [u0, v0, u1, v1] = atlas.region(&face.texture);
+                    let [u0, v0, u1, v1] = atlas.item_region(&face.texture);
                     let [a, b, c, d] = face.uv;
                     let uv = [
                         [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
@@ -2699,6 +2746,101 @@ mod tests {
         }
         assert!(mesh.vertices[4].color[0] < 0.95);
         assert!(mesh.vertices.iter().all(|vertex| vertex.sky_light == 13.0));
+    }
+
+    /// A pack of special items and an atlas holding their textures.
+    fn special_items() -> (crate::test_dir::TestDir, PackStack, Atlas) {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let packs = crate::special_item::test_pack::special_pack(temp.path());
+        let textures = crate::special_item::special_textures(&packs)
+            .unwrap()
+            .into_iter()
+            .collect();
+        let atlas = make_atlas(&packs, textures).unwrap();
+        (temp, packs, atlas)
+    }
+
+    #[test]
+    fn a_dropped_special_item_is_drawn_as_its_boxes() {
+        let (_temp, packs, atlas) = special_items();
+        let mut visuals = ItemVisuals::default();
+        let mut items = WorldItems::default();
+        items.spawn(
+            minecraftoss_player::inventory::ItemStack::new("minecraft:chest", 1),
+            glam::DVec3::new(0.5, 1.0, 0.5),
+        );
+        let sky_light = SkyLight::build(&HandcraftedScene::new());
+        let mesh = visuals
+            .mesh(&items, &packs, &atlas, &sky_light, 1.0)
+            .unwrap();
+        // Body, lid and latch, six faces each.
+        assert_eq!(mesh.faces, 18);
+        assert_eq!(visuals.drawn_faces("minecraft:chest", &packs, &atlas), 18);
+        // At the ground display's quarter scale the 14-pixel-tall chest
+        // stands 3.5 pixels high.
+        let ys = mesh.vertices.iter().map(|v| v.position[1]);
+        let (low, high) = ys.fold((f32::MAX, f32::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
+        assert!((high - low - 14.0 / 64.0).abs() < 0.01, "{low}..{high}");
+    }
+
+    #[test]
+    fn a_special_item_in_hand_is_drawn_with_its_first_person_display() {
+        let (_temp, packs, atlas) = special_items();
+        let mut visuals = ItemVisuals::default();
+        let sky_light = SkyLight::build(&HandcraftedScene::new());
+        for (id, faces) in [
+            ("minecraft:chest", 18),
+            ("minecraft:shulker_box", 12),
+            ("minecraft:skeleton_skull", 6),
+            ("minecraft:shield", 12),
+        ] {
+            let pose =
+                crate::model::item_first_person_transform(&packs, &ResourceId::parse(id).unwrap())
+                    .unwrap();
+            let mut mesh = ChunkMesh::default();
+            visuals
+                .append_posed_items(
+                    &mut mesh,
+                    &[(pose, Vec3::ZERO, id.to_owned())],
+                    &packs,
+                    &atlas,
+                    &sky_light,
+                )
+                .unwrap();
+            assert_eq!(mesh.faces, faces, "{id}");
+        }
+    }
+
+    #[test]
+    fn a_special_banner_a_mob_holds_is_drawn_in_its_dye_colour() {
+        let (_temp, packs, atlas) = special_items();
+        let mut visuals = ItemVisuals::default();
+        let sky_light = SkyLight::build(&HandcraftedScene::new());
+        let mut mesh = ChunkMesh::default();
+        let held = HeldItem {
+            pose: Mat4::IDENTITY,
+            light: Vec3::ZERO,
+            id: "minecraft:red_banner".into(),
+            display: HeldDisplay::RightHand,
+            first_tint: None,
+        };
+        visuals.append_held_items(&mut mesh, &[held], &packs, &atlas, &sky_light).unwrap();
+        assert_eq!(mesh.faces, 18);
+        // The pole and bar keep their wood; the flag's faces are red.
+        let red = mesh.vertices.iter().filter(|v| v.color[0] > 2.0 * v.color[1] && v.color[0] > 2.0 * v.color[2]).count();
+        assert_eq!(red, 6 * 4);
+    }
+
+    #[test]
+    fn a_special_item_whose_texture_the_atlas_lacks_draws_no_face() {
+        let (_temp, packs, _) = special_items();
+        let atlas = make_atlas(&packs, vec![]).unwrap();
+        let mut visuals = ItemVisuals::default();
+        assert_eq!(visuals.drawn_faces("minecraft:chest", &packs, &atlas), 0);
+        assert_eq!(
+            visuals.drawn_faces("minecraft:no_such_item", &packs, &atlas),
+            0
+        );
     }
     #[test]
     #[ignore = "local performance diagnostic with the pinned resource pack"]

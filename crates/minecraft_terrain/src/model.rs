@@ -131,7 +131,7 @@ pub fn resolve_item_model(pack: &PackStack, item: &ResourceId) -> Result<Option<
         return Ok(None);
     };
     let Some(reference) = crate::interface::item_model_reference(&definition["model"]) else {
-        return Ok(None);
+        return special_item_model(pack, &definition["model"]);
     };
     let model_id = ResourceId::parse(reference)?;
     let inherited = load_parented(pack, &model_id, &mut HashSet::new())?;
@@ -142,6 +142,33 @@ pub fn resolve_item_model(pack: &PackStack, item: &ResourceId) -> Result<Option<
     let block = Block::new(&item.key());
     resolve_choices(pack, &block, &[&choice]).map(Some)
 }
+/// A `minecraft:special` item model as the boxes its block entity's
+/// renderer draws (`special_item::special_boxes`).
+fn special_item_model(pack: &PackStack, model: &Value) -> Result<Option<ResolvedModel>> {
+    let Some(special) = crate::special_item::special_model(model) else {
+        return Ok(None);
+    };
+    let Some(boxes) = crate::special_item::special_boxes(pack, special)? else {
+        return Ok(None);
+    };
+    let textures = boxes
+        .textures
+        .into_iter()
+        .map(|(name, texture)| (name, Value::String(texture)))
+        .collect();
+    let elements = resolve_elements(&boxes.elements, &textures, "minecraft", 0)?;
+    Ok(Some(ResolvedModel { elements }))
+}
+/// The model whose `display` places an item: its baked model, or a special
+/// model's `base`.
+fn item_display_model(definition: &Value) -> Option<&str> {
+    let model = &definition["model"];
+    crate::interface::item_model_reference(model).or_else(|| {
+        crate::special_item::special_model(model)?
+            .get("base")?
+            .as_str()
+    })
+}
 /// ItemTransform.apply for the right hand, using the selected item's inherited
 /// display transform from the resource pack.
 pub fn item_first_person_transform(pack: &PackStack, item: &ResourceId) -> Result<Mat4> {
@@ -151,7 +178,7 @@ pub fn item_display_transform(pack: &PackStack, item: &ResourceId, context: &str
     let Some(definition) = pack.item_definition(item)? else {
         return Ok(Mat4::IDENTITY);
     };
-    let Some(reference) = crate::interface::item_model_reference(&definition["model"]) else {
+    let Some(reference) = item_display_model(&definition) else {
         return Ok(Mat4::IDENTITY);
     };
     let model = load_parented(pack, &ResourceId::parse(reference)?, &mut HashSet::new())?;
@@ -540,60 +567,77 @@ fn resolve_choices(pack: &PackStack, block: &Block, choices: &[&Value]) -> Resul
             }
             continue;
         };
-        for raw in raw_elements {
-            let from = coords(
-                raw.get("from")
-                    .ok_or_else(|| anyhow!("model element from missing"))?,
-            )?;
-            let to = coords(
-                raw.get("to")
-                    .ok_or_else(|| anyhow!("model element to missing"))?,
-            )?;
-            let faces = raw
-                .get("faces")
-                .and_then(Value::as_object)
-                .ok_or_else(|| anyhow!("model faces missing"))?;
-            let mut resolved = Vec::new();
-            for (direction, data) in faces {
-                let texture = data
-                    .get("texture")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| anyhow!("model face texture missing"))?;
-                let (texture, force_translucent) =
-                    resolve_texture_material(texture, &textures, &model_id.namespace)?;
-                let uv = data
-                    .get("uv")
-                    .map(uv_coords)
-                    .transpose()?
-                    .unwrap_or(implicit_uv(direction, from, to)?);
-                resolved.push(Face {
-                    direction: direction.clone(),
-                    texture,
-                    uv,
-                    cull: data.get("cullface").is_some(),
-                    cullface: data.get("cullface").and_then(Value::as_str).filter(|c| *c != direction.as_str()).map(str::to_owned),
-                    tint: data.get("tintindex").is_some(),
-                    tint_index: data
-                        .get("tintindex")
-                        .and_then(Value::as_u64)
-                        .map(|index| index as usize),
-                    force_translucent,
-                });
-            }
-            elements.push(Element {
-                from,
-                to,
-                faces: resolved,
-                rotation_y: rotation_y as u16,
-                rotation: ElementRotation::parse(raw)?,
-                shade_direction_override: raw
-                    .get("shade_direction_override")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-            });
-        }
+        elements.extend(resolve_elements(
+            raw_elements,
+            &textures,
+            &model_id.namespace,
+            rotation_y as u16,
+        )?);
     }
     Ok(ResolvedModel { elements })
+}
+/// A model file's `elements`, their `#name` textures looked up in
+/// `textures`, each turned `rotation_y` degrees as its blockstate says.
+fn resolve_elements(
+    raw_elements: &[Value],
+    textures: &serde_json::Map<String, Value>,
+    namespace: &str,
+    rotation_y: u16,
+) -> Result<Vec<Element>> {
+    let mut elements = Vec::new();
+    for raw in raw_elements {
+        let from = coords(
+            raw.get("from")
+                .ok_or_else(|| anyhow!("model element from missing"))?,
+        )?;
+        let to = coords(
+            raw.get("to")
+                .ok_or_else(|| anyhow!("model element to missing"))?,
+        )?;
+        let faces = raw
+            .get("faces")
+            .and_then(Value::as_object)
+            .ok_or_else(|| anyhow!("model faces missing"))?;
+        let mut resolved = Vec::new();
+        for (direction, data) in faces {
+            let texture = data
+                .get("texture")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("model face texture missing"))?;
+            let (texture, force_translucent) =
+                resolve_texture_material(texture, textures, namespace)?;
+            let uv = data
+                .get("uv")
+                .map(uv_coords)
+                .transpose()?
+                .unwrap_or(implicit_uv(direction, from, to)?);
+            resolved.push(Face {
+                direction: direction.clone(),
+                texture,
+                uv,
+                cull: data.get("cullface").is_some(),
+                cullface: data.get("cullface").and_then(Value::as_str).filter(|c| *c != direction.as_str()).map(str::to_owned),
+                tint: data.get("tintindex").is_some(),
+                tint_index: data
+                    .get("tintindex")
+                    .and_then(Value::as_u64)
+                    .map(|index| index as usize),
+                force_translucent,
+            });
+        }
+        elements.push(Element {
+            from,
+            to,
+            faces: resolved,
+            rotation_y,
+            rotation: ElementRotation::parse(raw)?,
+            shade_direction_override: raw
+                .get("shade_direction_override")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        });
+    }
+    Ok(elements)
 }
 fn coords(v: &Value) -> Result<[f32; 3]> {
     let a = v

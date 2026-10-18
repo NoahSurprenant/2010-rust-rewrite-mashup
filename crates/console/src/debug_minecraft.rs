@@ -282,7 +282,7 @@ fn state_line(label: &str, ui: &MinecraftUi, pm_flags: u32, menu: bool, origin: 
     let list =
         |stacks: &[Option<McStack>]| stacks.iter().map(stack_text).collect::<Vec<_>>().join(",");
     format!(
-        "minecraft-state: label={label} stance={stance} menu={menu} origin={:.0},{:.0},{:.0} view={:.0},{:.0} table_in_view={in_view} screen={screen} grid={} result={} cursor={} slots={} seed={} role={} feet={} no_icon={}",
+        "minecraft-state: label={label} stance={stance} menu={menu} origin={:.0},{:.0},{:.0} view={:.0},{:.0} table_in_view={in_view} screen={screen} grid={} result={} cursor={} slots={} seed={} role={} feet={} no_icon={} hand={} ground={} no_model={}",
         origin[0],
         origin[1],
         origin[2],
@@ -298,7 +298,21 @@ fn state_line(label: &str, ui: &MinecraftUi, pm_flags: u32, menu: bool, origin: 
         ui.feet
             .map_or_else(|| "-".to_owned(), |[x, y, z]| format!("{x},{y},{z}")),
         no_icon(ui),
+        ui.hand
+            .as_ref()
+            .map_or_else(|| "-".to_owned(), |(id, faces)| format!("{id}:{faces}")),
+        id_list(&ui.ground_items),
+        id_list(&ui.no_model),
     )
+}
+
+/// Item ids, comma-separated, or `-`.
+fn id_list(ids: &[String]) -> String {
+    if ids.is_empty() {
+        "-".to_owned()
+    } else {
+        ids.join(",")
+    }
 }
 
 /// The Minecraft items on the screen (slots, grid, result, cursor) the
