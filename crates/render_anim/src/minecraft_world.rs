@@ -910,6 +910,7 @@ fn update(
     for chunk in loaded {
         // Edits that came before their chunk: an air block clears terrain only
         // once there is terrain to clear.
+        let mut early = Vec::new();
         if let Some(edits) = deferred.remove(&(chunk.pos.x, chunk.pos.z)) {
             let positions: Vec<_> = edits.iter().map(|(pos, _)| *pos).collect();
             for (pos, block) in edits {
@@ -917,16 +918,21 @@ fn update(
             }
             world.stream.record_edits(&world.scene, &positions);
             world.stream.mark_edited(&world.scene, &positions);
+            early = positions;
         }
         let (min_y, height) = (chunk.min_y(), chunk.height());
         let ids = chunk_collision(&chunk, world, shapes, shape_ids);
-        // The mobs' level holds it once, however many players stand near.
+        // The mobs' level holds it once, however many players stand near,
+        // with the edits that came before it.
         let holders = voxel_holders.entry((chunk.pos.x, chunk.pos.z)).or_default();
         *holders += 1;
         if *holders == 1
             && let Some(entities) = entities.as_mut()
         {
             entities.load_chunk(&chunk);
+            for pos in early {
+                entities.placed(&world.scene, pos);
+            }
         }
         sim::voxel::set_chunk(
             chunk.pos.x,
@@ -2073,13 +2079,34 @@ fn update(
                     .collect()
             })
             .unwrap_or_default();
+        // And the hotbar slots (from 1) that hold a bullet gun, not a
+        // launcher or a grenade.
+        let sim_world = authority
+            .as_ref()
+            .map(|authority| &authority.0)
+            .or(net.prediction.as_ref().map(|prediction| prediction.0.world()));
+        let guns: Vec<String> = entities
+            .as_ref()
+            .map(|entities| {
+                entities.inventory.slots[..frame::minecraft_ui::MC_HOTBAR]
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(slot, stack)| {
+                        let weapon = stack.as_ref()?.id.strip_prefix("iw4:weapon/")?.parse::<u32>().ok()?;
+                        let facts = sim_world?.weapon_combat_row(weapon)?;
+                        (facts.weap_type == 0).then(|| (slot + 1).to_string())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let line = format!(
-            "minecraft-mobs: label={label} role={} health={} eye={:.2},{:.2},{:.2} count={} mobs={} items={}",
+            "minecraft-mobs: label={label} role={} health={} eye={:.2},{:.2},{:.2} guns={} count={} mobs={} items={}",
             ui.net_role,
             ps.health,
             eye[0] - base[0],
             eye[1] - base[1],
             eye[2] - base[2],
+            if guns.is_empty() { "-".to_owned() } else { guns.join(",") },
             mobs.len(),
             if list.is_empty() { "-".to_owned() } else { list.join(";") },
             if items.is_empty() { "-".to_owned() } else { items.join(",") }

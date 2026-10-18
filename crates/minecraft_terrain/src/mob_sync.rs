@@ -951,6 +951,14 @@ pub fn encode_frame<'a>(tick: u32, states: impl IntoIterator<Item = &'a MobState
     w.0
 }
 
+/// How many states an encoded frame carries (none for bytes that are no
+/// frame): fewer than given when the rest did not fit.
+pub fn frame_len(bytes: &[u8]) -> usize {
+    bytes
+        .get(5..7)
+        .map_or(0, |b| usize::from(u16::from_le_bytes([b[0], b[1]])))
+}
+
 /// A snapshot's mob states: the host tick and the states.
 pub fn decode_frame(bytes: &[u8]) -> Result<(u32, Vec<MobState>), DecodeError> {
     let mut r = Reader(bytes);
@@ -2040,6 +2048,8 @@ mod tests {
         assert!(frame.len() <= MOB_FRAME_BYTES, "{}", frame.len());
         let (_, decoded) = decode_frame(&frame).unwrap();
         assert!(decoded.len() > 100, "{}", decoded.len());
+        assert_eq!(frame_len(&frame), decoded.len());
+        assert_eq!(frame_len(&[1]), 0);
         for (a, b) in decoded.iter().zip(&states) {
             assert_eq!(a.id, b.id);
             assert_eq!(a.position, b.position);

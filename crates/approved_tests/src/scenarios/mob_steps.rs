@@ -64,6 +64,17 @@ pub fn eye(event: &Event) -> Option<[f64; 3]> {
     triple(event.get("eye")?)
 }
 
+/// The hotbar slots (from 1) holding a bullet gun in a `minecraft-mobs:`
+/// line.
+pub fn guns(event: &Event) -> Vec<u32> {
+    event
+        .get("guns")
+        .unwrap_or("-")
+        .split(',')
+        .filter_map(|s| s.parse().ok())
+        .collect()
+}
+
 /// The player's MW2 health in a `minecraft-mobs:` line.
 pub fn health(event: &Event) -> Option<f64> {
     event.get("health")?.parse().ok()
@@ -234,10 +245,17 @@ pub fn shoot(
 ) -> Result<Shot, String> {
     let start = Instant::now();
     let mut bursts = 0;
+    // A bullet gun, not the launcher or a grenade, which would take the
+    // client with the mob.
+    let held = census(pair, true, "c_guns", Some("-"))?;
+    let slot = guns(&held)
+        .first()
+        .copied()
+        .ok_or("the client holds no bullet gun")?;
     pair.client
         .as_mut()
         .ok_or("no client")?
-        .send("key 1; wait 1s")?;
+        .send(&format!("key {slot}; wait 1.5s"))?;
     loop {
         let seen = census(pair, true, "c_aim", Some(kind))?;
         if let (Some(eye), Some(mob)) = (eye(&seen), mobs(&seen).into_iter().find(|m| m.id == id)) {
@@ -277,7 +295,7 @@ mod tests {
     #[test]
     fn a_census_line_reads_back() {
         let e = event(
-            "label=c role=client health=85 eye=320.50,62.62,0.50 count=2 \
+            "label=c role=client health=85 eye=320.50,62.62,0.50 guns=2,5 count=2 \
              mobs=husk:41:323.20,61.00,0.40:20.0:alive;pig:7:-3.00,70.50,2.00:0.0:dead \
              items=minecraft:porkchop*2,minecraft:stone*1",
         );
@@ -302,6 +320,7 @@ mod tests {
         );
         assert_eq!(eye(&e), Some([320.5, 62.62, 0.5]));
         assert_eq!(health(&e), Some(85.0));
+        assert_eq!(guns(&e), [2, 5]);
         assert_eq!(items(&e), ["minecraft:porkchop*2", "minecraft:stone*1"]);
         let none = event("label=c mobs=- items=-");
         assert!(mobs(&none).is_empty());

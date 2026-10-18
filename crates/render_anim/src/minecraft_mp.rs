@@ -27,7 +27,7 @@ use minecraft_terrain::multiplayer::{
     edits_that_fit,
 };
 use minecraft_terrain::scene::BlockPos;
-use minecraft_terrain::mob_sync::{GONE_PER_MESSAGE, HostMob, MobSpawn, spawns_that_fit};
+use minecraft_terrain::mob_sync::{GONE_PER_MESSAGE, HostMob, MobSpawn, MobState, spawns_that_fit};
 use minecraftoss_player::inventory::Inventory;
 
 /// Reliable rows a client may still owe acks for before more Minecraft rows
@@ -44,6 +44,8 @@ const ITEMS_SECONDS: f64 = 0.25;
 const ITEMS_RANGE: f64 = 48.0;
 /// How often the host reports the mob bytes it sends each client.
 const MOB_REPORT_SECONDS: f64 = 10.0;
+/// Host ticks after which a mob that has not changed is sent again.
+const MOB_RESEND_TICKS: u32 = 5;
 /// The default world a host keeps.
 pub(crate) const DEFAULT_WORLD: &str = "world";
 
@@ -100,6 +102,8 @@ pub(crate) struct Remote {
     pub held_still: bool,
     /// The mobs it was shown, as it was shown them.
     mobs_sent: HashMap<u64, MobSpawn>,
+    /// The state each was last sent, and the tick it was sent at.
+    mob_states: HashMap<u64, (MobState, u32)>,
     /// Mob bytes sent it since the last report: snapshot states and rows.
     mob_frame_bytes: u64,
     mob_row_bytes: u64,
@@ -305,6 +309,7 @@ impl Remote {
             held: HashMap::new(),
             held_still: false,
             mobs_sent: HashMap::new(),
+            mob_states: HashMap::new(),
             mob_frame_bytes: 0,
             mob_row_bytes: 0,
             mob_clock: 0.0,
@@ -458,6 +463,7 @@ fn send_mobs(
         remote.mob_row_bytes += push(reliable, client, &HostMessage::MobsGone(ids.to_vec())) as u64;
         for id in ids {
             remote.mobs_sent.remove(id);
+            remote.mob_states.remove(id);
         }
     }
     let spawns: Vec<MobSpawn> = near
@@ -472,17 +478,30 @@ fn send_mobs(
         remote.mob_row_bytes += push(reliable, client, &HostMessage::Mobs(rest[..n].to_vec())) as u64;
         for spawn in &rest[..n] {
             remote.mobs_sent.insert(spawn.id, spawn.clone());
+            remote.mob_states.remove(&spawn.id);
         }
         rest = &rest[n..];
     }
     if view.fresh
         && let Some(frames) = frames
     {
-        let states = near
+        // A mob that stands as it stood goes again only now and then: a lost
+        // snapshot leaves it stale that long at most.
+        let states: Vec<&MobState> = near
             .iter()
             .map(|&i| &view.mobs[i].state)
-            .filter(|state| remote.mobs_sent.contains_key(&state.id));
-        let bytes = minecraft_terrain::mob_sync::encode_frame(view.tick, states);
+            .filter(|state| remote.mobs_sent.contains_key(&state.id))
+            .filter(|state| {
+                remote.mob_states.get(&state.id).is_none_or(|(last, at)| {
+                    last != *state || view.tick.wrapping_sub(*at) >= MOB_RESEND_TICKS
+                })
+            })
+            .collect();
+        let bytes = minecraft_terrain::mob_sync::encode_frame(view.tick, states.iter().copied());
+        let sent = minecraft_terrain::mob_sync::frame_len(&bytes);
+        for state in &states[..sent] {
+            remote.mob_states.insert(state.id, (**state, view.tick));
+        }
         remote.mob_frame_bytes += bytes.len() as u64;
         frames.set(client, bytes);
     }
