@@ -11,7 +11,8 @@
 //! click holding an item, places a plank against it crouched (and opens it
 //! crouched with an empty hand), opens it with
 //! a key rebound to Use, and sees the screen close when the table is broken
-//! and when the player is moved away.
+//! and when the player is moved away. Last, the multiplayer options page
+//! shows the player key and its button copies the whole key.
 
 use crate::runner::Event;
 
@@ -195,6 +196,15 @@ pub const STEPS: &[Step] = &[
         label: "walking_away_closes",
         expect: &[Expect::Screen(Screen::None)],
     },
+    // The multiplayer options page shows the player key; its button copies
+    // the whole key (`player-key: copied`), and `whoami` names what the page
+    // shows (`shown=`).
+    Step {
+        commands: "menu open options_multi; wait 1s; menu; menu nav down; wait 0.5s; menu; \
+                   menu accept; wait 1s; whoami; menu back; wait 1s",
+        label: "options_closed",
+        expect: &[Expect::Menu(false), Expect::Screen(Screen::None)],
+    },
     Step {
         commands: "finish_run",
         label: "",
@@ -239,6 +249,43 @@ pub fn judge(states: &[Event]) -> Vec<Check> {
             }
         })
         .collect()
+}
+
+/// The player key on the options page: copied whole by its button, and
+/// shown short, the same key `whoami` prints.
+pub fn judge_player_key(lines: &[Event]) -> Check {
+    let failures = (|| -> Result<(), String> {
+        let copied = lines
+            .iter()
+            .find(|e| e.name == "copied")
+            .ok_or("the options page's key button copied nothing (no `player-key: copied` line)")?;
+        let key = copied.get("fingerprint").unwrap_or("");
+        if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("copied `{key}`, not a whole fingerprint"));
+        }
+        let whoami = lines
+            .iter()
+            .find(|e| e.get("shown").is_some())
+            .ok_or("no `whoami` line")?;
+        if whoami.get("fingerprint") != Some(key) {
+            return Err(format!(
+                "copied {key}, whoami says {}",
+                whoami.get("fingerprint").unwrap_or("-")
+            ));
+        }
+        let shown = whoami.get("shown").unwrap_or("-");
+        if shown != &key[..16] {
+            return Err(format!("the page shows `{shown}`, want `{}`", &key[..16]));
+        }
+        Ok(())
+    })()
+    .err()
+    .into_iter()
+    .collect();
+    Check {
+        label: "player_key_copied_from_options",
+        failures,
+    }
 }
 
 fn list(state: &Event, key: &str) -> Vec<String> {
@@ -490,7 +537,46 @@ mod tests {
                 "-",
                 slots("minecraft:oak_planks*7", ""),
             ),
+            line(
+                "options_closed",
+                "stand",
+                "none",
+                &empty4,
+                "-",
+                slots("minecraft:oak_planks*7", ""),
+            ),
         ]
+    }
+
+    fn key_lines(copied: &str, whoami: &str, shown: &str) -> Vec<Event> {
+        [
+            format!("player-key: copied fingerprint={copied}"),
+            format!(
+                "player-key: fingerprint={whoami} short={} file=\"k\" shown={shown}",
+                &whoami[..16]
+            ),
+        ]
+        .iter()
+        .map(|line| crate::runner::parse(line, "player-key:", 0).unwrap())
+        .collect()
+    }
+
+    #[test]
+    fn a_key_copied_from_the_options_page_and_shown_short_passes() {
+        let key = "ab".repeat(32);
+        let check = judge_player_key(&key_lines(&key, &key, &key[..16]));
+        assert!(check.failures.is_empty(), "{:?}", check.failures);
+    }
+
+    #[test]
+    fn a_key_never_copied_or_shown_wrong_fails() {
+        let key = "ab".repeat(32);
+        let other = "cd".repeat(32);
+        let fails = |lines: &[Event]| !judge_player_key(lines).failures.is_empty();
+        assert!(fails(&key_lines(&key, &key, &key[..16])[1..]));
+        assert!(fails(&key_lines(&key, &other, &other[..16])));
+        assert!(fails(&key_lines(&key, &key, "-")));
+        assert!(fails(&key_lines(&key[..16], &key, &key[..16])));
     }
 
     #[test]

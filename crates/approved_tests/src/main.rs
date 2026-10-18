@@ -467,7 +467,8 @@ fn run_crafting_table(root: &Path, args: &Args) -> Result<bool, String> {
     });
 
     keep_minecraft_files(root, &run_dir);
-    let checks = crafting_table::judge(&outcome.minecraft);
+    let mut checks = crafting_table::judge(&outcome.minecraft);
+    checks.push(crafting_table::judge_player_key(&outcome.player_keys));
     for check in &checks {
         match check.failures.as_slice() {
             [] => println!("  pass  {}", check.label),
