@@ -446,11 +446,11 @@ mod tests {
         assert!(visible > 48 * 48 / 4, "{visible} pixels drawn");
         let reddish = icon
             .pixels()
-            .filter(|p| p[3] > 0 && p[0] > 2 * p[1] && p[0] > 60)
+            .filter(|p| p[3] > 0 && u16::from(p[0]) > 2 * u16::from(p[1]) && p[0] > 60)
             .count();
         let greenish = icon
             .pixels()
-            .filter(|p| p[3] > 0 && p[1] > 2 * p[0] && p[1] > 60)
+            .filter(|p| p[3] > 0 && u16::from(p[1]) > 2 * u16::from(p[0]) && p[1] > 60)
             .count();
         // The lid's top faces up, the body's front towards the viewer.
         assert!(reddish > 40, "top {reddish}");
@@ -464,8 +464,8 @@ mod tests {
                 .collect();
             ys.iter().sum::<u32>() as f32 / ys.len() as f32
         };
-        let top = mean_y(&|p| p[3] > 0 && p[0] > 2 * p[1] && p[0] > 60);
-        let front = mean_y(&|p| p[3] > 0 && p[1] > 2 * p[0] && p[1] > 60);
+        let top = mean_y(&|p| p[3] > 0 && u16::from(p[0]) > 2 * u16::from(p[1]) && p[0] > 60);
+        let front = mean_y(&|p| p[3] > 0 && u16::from(p[1]) > 2 * u16::from(p[0]) && p[1] > 60);
         assert!(top < front, "top at {top}, front at {front}");
     }
 
