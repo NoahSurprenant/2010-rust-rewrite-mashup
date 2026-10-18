@@ -253,13 +253,15 @@ fn to_runway(
     Ok(event)
 }
 
-/// A skater gets on and pushes for `PUSH_SECS`; its line before, and once
-/// pushing.
+/// A skater gets on and pushes for `PUSH_SECS`: its line once on the board
+/// (`on`), the other game's line just then (`watch`, where its bytes start
+/// counting), and the skater's line after pushing.
 fn skate_on(
     pair: &mut Pair,
     client: bool,
     facts: &mut Facts,
     on: &str,
+    watch: &str,
     pushing: &str,
 ) -> Result<Event, String> {
     let player = if client {
@@ -276,6 +278,8 @@ fn skate_on(
             event.get("sim").unwrap_or("-")
         ));
     }
+    let watched = state(pair, !client, watch)?;
+    facts.keep(watch, watched);
     let at = Instant::now();
     pair.until("pushing", Duration::from_secs(PUSH_SECS + 5), |_| {
         at.elapsed() >= Duration::from_secs(PUSH_SECS)
@@ -327,7 +331,7 @@ pub fn listen_session(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> 
     facts.keep("h_before", before);
 
     // The client skates; the host watches.
-    skate_on(pair, true, facts, "c_on", "c_pushing")?;
+    skate_on(pair, true, facts, "c_on", "h_watch", "c_pushing")?;
     let start = facts
         .lines
         .get("h_before")
@@ -355,7 +359,7 @@ pub fn listen_session(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> 
         .ok_or("h_ready names no client")?;
     facts.notes.insert("host_id", host_id.to_string());
     to_runway(pair, false, facts, SKATER_START, "h_runway2")?;
-    skate_on(pair, false, facts, "h_on", "h_pushing")?;
+    skate_on(pair, false, facts, "h_on", "c_watch", "h_pushing")?;
     let watched = poll(pair, true, "c_watched", sync, |e| {
         remote(e, host_id).is_some_and(|r| r.bones == 35 && r.received > 10)
     })?;
@@ -393,7 +397,7 @@ pub fn dedicated_session(pair: &mut Pair, facts: &mut Facts, room: &str) -> Resu
         .and_then(|e| peer(e, client_id))
         .map(|p| p.origin)
         .ok_or("s_before lists no client")?;
-    skate_on(pair, true, facts, "d_on", "d_pushing")?;
+    skate_on(pair, true, facts, "d_on", "s_watch", "d_pushing")?;
     let seen = poll(pair, false, "s_seen", sync, |e| {
         peer(e, client_id).is_some_and(|p| p.skating && along(start, p.origin) > MOVED_UNITS)
     })?;
@@ -581,11 +585,38 @@ pub fn bandwidth(facts: &Facts) -> BTreeMap<&'static str, f64> {
             out.insert(key, r);
         }
     }
+    // The host's and the dedicated server's bytes in from the skating
+    // client, and the client's skater bytes in its snapshots while the host
+    // skates.
+    let peer_in = |client: Option<u32>| move |e: &Event| Some(peer(e, client?)?.bytes_in as f64);
+    let client = note(facts, "client_id").ok().and_then(|v| v.parse().ok());
+    let d_client = note(facts, "d_client_id").ok().and_then(|v| v.parse().ok());
     let received = |e: &Event| e.get("received_bytes").and_then(|v| v.parse().ok());
-    if let (Some(a), Some(b)) = (facts.lines.get("c_runway"), facts.lines.get("c_watched"))
-        && let Some(r) = rate(a, b, &received)
-    {
-        out.insert("client_downlink_bytes_per_s_average", r);
+    for (key, a, b, value) in [
+        (
+            "host_in_from_client_bytes_per_s",
+            "h_watch",
+            "h_seen",
+            &peer_in(client) as &dyn Fn(&Event) -> Option<f64>,
+        ),
+        (
+            "dedicated_in_from_client_bytes_per_s",
+            "s_watch",
+            "s_seen",
+            &peer_in(d_client),
+        ),
+        (
+            "client_skater_downlink_bytes_per_s",
+            "c_watch",
+            "c_watched",
+            &received,
+        ),
+    ] {
+        if let (Some(a), Some(b)) = (facts.lines.get(a), facts.lines.get(b))
+            && let Some(r) = rate(a, b, value)
+        {
+            out.insert(key, r);
+        }
     }
     out
 }
@@ -772,6 +803,12 @@ mod tests {
         f.lines
             .insert("c_pushed".into(), at("sent_bytes=9000", 12_000));
         assert_eq!(bandwidth(&f)["client_uplink_bytes_per_s"], 4000.0);
+        f.notes.insert("client_id", "1".into());
+        f.lines
+            .insert("h_watch".into(), at("peers=1:0,0,0:1:2:0:800:0", 20_000));
+        f.lines
+            .insert("h_seen".into(), at("peers=1:0,0,0:1:90:0:30800:0", 24_000));
+        assert_eq!(bandwidth(&f)["host_in_from_client_bytes_per_s"], 7500.0);
     }
 
     #[test]

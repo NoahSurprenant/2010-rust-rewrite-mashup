@@ -816,7 +816,7 @@ pub fn skate_authority(
     mut relay: bevy::prelude::ResMut<SkaterRelay>,
     mut outbox: bevy::prelude::ResMut<SkateOutbox>,
     local: Option<bevy::prelude::Res<crate::LocalPresentClient>>,
-    role: bevy::prelude::Res<frame::RuntimeRole>,
+    dedicated: Option<bevy::prelude::Res<frame::DedicatedServer>>,
     mut world: bevy::prelude::ResMut<crate::AuthorityWorld>,
     time: bevy::prelude::Res<bevy::prelude::Time<bevy::prelude::Real>>,
 ) {
@@ -826,9 +826,8 @@ pub fn skate_authority(
     if let Some(mut hub) = hub {
         inbound.extend(hub.take_skate_inbound());
     }
-    let local = local
-        .filter(|_| *role != frame::RuntimeRole::Dedicated)
-        .map(|l| l.0.0);
+    // A dedicated server has no player of its own.
+    let local = local.filter(|_| dedicated.is_none()).map(|l| l.0.0);
     for (client, bytes) in inbound {
         if Some(client) == local {
             continue;

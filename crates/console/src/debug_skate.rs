@@ -15,6 +15,7 @@ pub(crate) struct SkateNet<'w> {
     downlink: Res<'w, net::SkaterDownlink>,
     authority: Option<Res<'w, net::AuthorityWorld>>,
     role: Res<'w, frame::RuntimeRole>,
+    dedicated: Option<Res<'w, frame::DedicatedServer>>,
 }
 
 pub(crate) fn route_skate_commands(
@@ -119,8 +120,10 @@ fn state_line(
     local: sim::ClientId,
     net: &SkateNet,
 ) -> String {
+    // A dedicated server runs the listen runtime with no player of its own.
+    let dedicated = net.dedicated.is_some() || *net.role == frame::RuntimeRole::Dedicated;
     let role = match *net.role {
-        frame::RuntimeRole::Dedicated => "dedicated",
+        _ if dedicated => "dedicated",
         frame::RuntimeRole::Client => "client",
         _ => "listen",
     };
@@ -151,7 +154,7 @@ fn state_line(
     let mut peers = Vec::new();
     if let (Some(world), Some(relay)) = (net.authority.as_deref(), net.relay.as_deref()) {
         world.0.visit_players(|id, ps| {
-            if *net.role == frame::RuntimeRole::Dedicated && id.0 == 0 {
+            if dedicated && id.0 == 0 {
                 return;
             }
             let skater = relay.skaters.get(&id.0);
