@@ -549,6 +549,15 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
                 (),
             );
         }
+        for index in 0..8 {
+            textures.insert(ResourceId::parse(&format!("minecraft:particle/effect_{index}"))?, ());
+            textures.insert(ResourceId::parse(&format!("minecraft:particle/instant_effect_{index}"))?, ());
+        }
+        for index in 0..16 {
+            textures.insert(ResourceId::parse(&format!("minecraft:particle/explosion_{index}"))?, ());
+        }
+        textures.insert(ResourceId::parse("minecraft:entity/projectiles/arrow")?, ());
+        textures.insert(ResourceId::parse("minecraft:entity/projectiles/tipped_arrow")?, ());
         textures.insert(ResourceId::parse("minecraft:particle/note")?, ());
         textures.insert(ResourceId::parse("minecraft:particle/glow")?, ());
         textures.insert(ResourceId::parse("minecraft:misc/shadow")?, ());

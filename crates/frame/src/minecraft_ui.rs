@@ -103,6 +103,12 @@ pub struct MinecraftUi {
     /// Labels the console asks the mobs near the player under, each with
     /// the one kind it asks about, if any (`mc mobs`).
     pub mob_probes: Vec<(String, Option<String>)>,
+    /// Labels the console asks the world sounds this game heard under
+    /// (`mc sounds`).
+    pub sound_probes: Vec<String>,
+    /// Labels the console asks a host where its mobs spawn and despawn
+    /// around a player under (`mc mobrange`).
+    pub range_probes: Vec<String>,
     /// The block at the player's feet, relative to the world's spawn block.
     pub feet: Option<[i32; 3]>,
     /// The world's seed, once it is known.

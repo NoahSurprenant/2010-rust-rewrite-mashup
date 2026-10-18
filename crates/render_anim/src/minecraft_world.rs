@@ -141,6 +141,11 @@ struct Runtime {
     /// How many streams hold each chunk of the block world (the player's,
     /// and on a host each client's collision stream).
     voxel_holders: HashMap<(i32, i32), u32>,
+    /// How many streams hold each chunk of the mobs' level (the player's,
+    /// and on a host each client's mob stream).
+    level_holders: HashMap<(i32, i32), u32>,
+    /// The movement speed share each player's effects last set, by client.
+    speed_applied: HashMap<u32, f32>,
 }
 
 /// Frames standing still on the spawn before the player counts as in the world.
@@ -359,6 +364,9 @@ const REMOTE_REACH: f64 = 6.5;
 const FILL_MAX: i64 = 4096;
 /// Chunks a host generates around each client for its collision.
 const CLIENT_COLLISION_DISTANCE: i32 = 3;
+/// Chunks a host's mobs live in around each client: the simulation
+/// distance, as around the host.
+const CLIENT_MOB_DISTANCE: i32 = crate::minecraft_entities::SIMULATION_DISTANCE;
 
 /// Whether a block at `pos` would stand in the box of a player at `feet`.
 fn inside_player([fx, fy, fz]: [f64; 3], pos: (i32, i32, i32)) -> bool {
@@ -490,6 +498,26 @@ fn chunk_collision(
         }
     }
     ids
+}
+
+/// One more stream holds a chunk; true for the first.
+fn hold(holders: &mut HashMap<(i32, i32), u32>, pos: (i32, i32)) -> bool {
+    let count = holders.entry(pos).or_default();
+    *count += 1;
+    *count == 1
+}
+
+/// One stream lets a chunk of the mobs' level go; true for the last.
+fn release_level(holders: &mut HashMap<(i32, i32), u32>, pos: (i32, i32)) -> bool {
+    let Some(count) = holders.get_mut(&pos) else {
+        return false;
+    };
+    *count = count.saturating_sub(1);
+    if *count > 0 {
+        return false;
+    }
+    holders.remove(&pos);
+    true
 }
 
 /// One stream lets a chunk of the block world go; the last one to removes
@@ -820,6 +848,8 @@ fn update(
         net: net_role,
         deferred,
         voxel_holders,
+        level_holders,
+        speed_applied,
         loading: _,
     } = &mut *runtime;
     let Some(world) = world.as_mut() else {
@@ -924,11 +954,10 @@ fn update(
         }
         let (min_y, height) = (chunk.min_y(), chunk.height());
         let ids = chunk_collision(&chunk, world, shapes, shape_ids);
+        *voxel_holders.entry((chunk.pos.x, chunk.pos.z)).or_default() += 1;
         // The mobs' level holds it once, however many players stand near,
         // with the edits that came before it.
-        let holders = voxel_holders.entry((chunk.pos.x, chunk.pos.z)).or_default();
-        *holders += 1;
-        if *holders == 1
+        if hold(level_holders, (chunk.pos.x, chunk.pos.z))
             && let Some(entities) = entities.as_mut()
         {
             entities.load_chunk(&chunk);
@@ -956,7 +985,9 @@ fn update(
         {
             world.scene.insert_chunk(chunk.clone());
         }
-        if released && let Some(entities) = entities.as_mut() {
+        if release_level(level_holders, (pos.x, pos.z))
+            && let Some(entities) = entities.as_mut()
+        {
             entities.unload_chunk(pos);
         }
     }
@@ -1057,9 +1088,13 @@ fn update(
                 for pos in remote.held.keys() {
                     if release_chunk(voxel_holders, *pos) {
                         world.scene.remove_chunk(*pos);
-                        if let Some(entities) = entities.as_mut() {
-                            entities.unload_chunk(minecraftoss_core::ChunkPos::new(pos.0, pos.1));
-                        }
+                    }
+                }
+                for pos in &remote.level_held {
+                    if release_level(level_holders, *pos)
+                        && let Some(entities) = entities.as_mut()
+                    {
+                        entities.unload_chunk(minecraftoss_core::ChunkPos::new(pos.0, pos.1));
                     }
                 }
                 host.keep_inventory(&remote.name, &remote.inventory, remote.selected);
@@ -1121,6 +1156,14 @@ fn update(
                 .collect();
             inventory_ui.sync_weapons(&mut remote.inventory, &owned);
         }
+        // A dedicated server's own stream follows its first client, out to
+        // the mobs' distance: that client needs no mob stream of its own.
+        let followed = host
+            .remotes
+            .keys()
+            .copied()
+            .find(|&id| authority.player(sim::ClientId(id)).is_some_and(|ps| ps.pm_type == 0))
+            .filter(|_| dedicated && world.stream.view_distance() >= CLIENT_MOB_DISTANCE);
         // The ground under each client, wherever it goes: chunks generated
         // around it, the log's changes laid over them.
         for (&id, remote) in host.remotes.iter_mut() {
@@ -1131,18 +1174,62 @@ fn update(
             else {
                 continue;
             };
+            let at = (feet[0].floor() as i32, feet[1].floor() as i32, feet[2].floor() as i32);
+            // The mobs' level around it, out to the simulation distance: mobs
+            // spawn, walk and despawn around this client as around the host
+            // (24 to 128 blocks), with the log's changes in their ground.
+            if followed == Some(id) {
+                remote.mob_stream = None;
+                for pos in std::mem::take(&mut remote.level_held) {
+                    if release_level(level_holders, pos)
+                        && let Some(entities) = entities.as_mut()
+                    {
+                        entities.unload_chunk(minecraftoss_core::ChunkPos::new(pos.0, pos.1));
+                    }
+                }
+            } else {
+                let stream = remote.mob_stream.get_or_insert_with(|| {
+                    minecraft_terrain::terrain::CollisionStream::new(world.stream.world_gen(), CLIENT_MOB_DISTANCE)
+                });
+                let (loaded, forgotten) = stream.tick(at);
+                for chunk in loaded {
+                    let pos = (chunk.pos.x, chunk.pos.z);
+                    if !remote.level_held.insert(pos) || !hold(level_holders, pos) {
+                        continue;
+                    }
+                    if let Some(entities) = entities.as_mut() {
+                        entities.load_chunk(&chunk);
+                        let edited: std::collections::BTreeSet<(i32, i32, i32)> = host
+                            .log
+                            .entries()
+                            .iter()
+                            .map(|(at, _)| *at)
+                            .filter(|at| (at.0 >> 4, at.2 >> 4) == pos)
+                            .collect();
+                        for at in edited {
+                            entities.placed(&world.scene, at);
+                        }
+                    }
+                }
+                for pos in forgotten {
+                    if remote.level_held.remove(&pos)
+                        && release_level(level_holders, pos)
+                        && let Some(entities) = entities.as_mut()
+                    {
+                        entities.unload_chunk(minecraftoss_core::ChunkPos::new(pos.0, pos.1));
+                    }
+                }
+            }
             let collision = remote.collision.get_or_insert_with(|| {
                 minecraft_terrain::terrain::CollisionStream::new(world.stream.world_gen(), CLIENT_COLLISION_DISTANCE)
             });
-            let (loaded, forgotten) = collision.tick((feet[0].floor() as i32, feet[1].floor() as i32, feet[2].floor() as i32));
+            let (loaded, forgotten) = collision.tick(at);
             for chunk in loaded {
                 let pos = (chunk.pos.x, chunk.pos.z);
                 if remote.held.insert(pos, chunk.clone()).is_some() {
                     continue;
                 }
-                let count = voxel_holders.entry(pos).or_default();
-                *count += 1;
-                if *count > 1 {
+                if !hold(voxel_holders, pos) {
                     continue;
                 }
                 // The host's scene takes it too, so its edits, mining and placing
@@ -1156,28 +1243,10 @@ fn update(
                 let (min_y, height) = (chunk.min_y(), chunk.height());
                 let ids = chunk_collision(&chunk, world, shapes, shape_ids);
                 sim::voxel::set_chunk(pos.0, pos.1, sim::voxel::VoxelChunk { min_y, height, shapes: ids });
-                // The mobs' level takes it too, with the log's changes in it:
-                // they spawn and walk around this client as around the host.
-                if let Some(entities) = entities.as_mut() {
-                    entities.load_chunk(&chunk);
-                    let edited: std::collections::BTreeSet<(i32, i32, i32)> = host
-                        .log
-                        .entries()
-                        .iter()
-                        .map(|(at, _)| *at)
-                        .filter(|at| (at.0 >> 4, at.2 >> 4) == pos)
-                        .collect();
-                    for at in edited {
-                        entities.placed(&world.scene, at);
-                    }
-                }
             }
             for pos in forgotten {
                 if remote.held.remove(&pos).is_some() && release_chunk(voxel_holders, pos) {
                     world.scene.remove_chunk(pos);
-                    if let Some(entities) = entities.as_mut() {
-                        entities.unload_chunk(minecraftoss_core::ChunkPos::new(pos.0, pos.1));
-                    }
                 }
             }
             // Until there is ground where it stands, the host holds it still
@@ -1743,6 +1812,28 @@ fn update(
                     let _ = remote.inventory.add_item(stack, remote.selected);
                 }
             }
+            // Speed and slowness move each player as they move a vanilla
+            // one; a spawn starts its speed over.
+            if let Some(authority) = authority.as_mut() {
+                let own = (!dedicated).then_some((local.0.0, 0));
+                let players: Vec<(u32, u64)> =
+                    own.into_iter().chain(host.remotes.keys().map(|&id| (id, crate::minecraft_entities::remote_key(id)))).collect();
+                for (id, key) in players {
+                    let alive = authority
+                        .0
+                        .client_meta(sim::ClientId(id))
+                        .is_some_and(|meta| meta.lifecycle == sim::ClientLifecycle::Alive);
+                    if !alive {
+                        speed_applied.remove(&id);
+                        continue;
+                    }
+                    let want = entities.speed_of(key);
+                    let had = speed_applied.get(&id).copied().unwrap_or(1.0);
+                    if (want - had).abs() > 1.0e-4 && authority.0.scale_move_speed(sim::ClientId(id), want / had) {
+                        speed_applied.insert(id, want);
+                    }
+                }
+            }
         }
         // The console's boxes: `mc fill` from the feet, `mc set` from the
         // world's spawn block. A client asks its host for them.
@@ -1801,6 +1892,12 @@ fn update(
             let blocks = &world.registries.blocks;
             let mut positions = Vec::with_capacity(changes.len());
             for (pos, block) in changes {
+                // The level also ticks where only a client's mobs live: the
+                // scene takes such a change once the chunk comes.
+                let chunk = (pos.0 >> 4, pos.2 >> 4);
+                if world.scene.generated_chunk(chunk).is_none() {
+                    deferred.entry(chunk).or_default().push((pos, block.clone()));
+                }
                 let state = block.as_ref().and_then(|b| world.stream.states.state_of(b));
                 let shape = state.map_or(0, |state| {
                     *shapes.entry(state).or_insert_with(|| {
@@ -1917,8 +2014,10 @@ fn update(
             inventory_ui.publish(&mut ui, &entities.inventory, selected, &world.packs, &mut images);
         }
 
+        // A dedicated server plays none.
+        let mob_sounds = std::mem::take(&mut entities.sounds);
         if let Some(sounds) = sounds.as_mut() {
-            for (event, position, volume, pitch) in std::mem::take(&mut entities.sounds) {
+            for (event, position, volume, pitch) in mob_sounds {
                 sounds.play(&world.packs, &event, Some(at(position.to_array())), volume, pitch);
             }
         }
@@ -2012,6 +2111,9 @@ fn update(
                 mobs: &entities.host_mobs,
                 tick: entities.mob_tick,
                 fresh: entities.mobs_fresh,
+                events: &entities.events,
+                projectiles: &entities.projectiles,
+                effects: &entities.player_effects,
             });
             let mut remotes = std::mem::take(&mut host.remotes);
             for (&id, remote) in remotes.iter_mut() {
@@ -2052,8 +2154,10 @@ fn update(
         let base = [origin[0].floor(), origin[1].floor(), origin[2].floor()];
         let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
         let mut mobs = entities.as_ref().map(|entities| entities.census()).unwrap_or_default();
-        mobs.retain(|mob| kind.as_deref().is_none_or(|kind| kind == mob.1));
         let distance = |at: &[f64; 3]| (0..3).map(|i| (at[i] - feet[i]).powi(2)).sum::<f64>();
+        // Of every kind, the living ones more than 48 blocks away.
+        let far = mobs.iter().filter(|mob| !mob.4 && distance(&mob.2) > 48.0 * 48.0).count();
+        mobs.retain(|mob| kind.as_deref().is_none_or(|kind| kind == mob.1));
         mobs.sort_by(|a, b| distance(&a.2).total_cmp(&distance(&b.2)));
         let list: Vec<String> = mobs
             .iter()
@@ -2101,8 +2205,24 @@ fn update(
                     .collect()
             })
             .unwrap_or_default();
+        // The player's status effects (effect:level:ticks left), and the
+        // arrows and potions this game has drawn so far.
+        let effects: Vec<String> = entities
+            .as_ref()
+            .map(|entities| {
+                entities
+                    .effects()
+                    .iter()
+                    .map(|e| format!("{}:{}:{}", e.effect.id().trim_start_matches("minecraft:"), e.amplifier, e.duration))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let seen: Vec<String> = entities
+            .as_ref()
+            .map(|entities| entities.projectiles_seen().iter().map(|(kind, n)| format!("{kind}:{n}")).collect())
+            .unwrap_or_default();
         let line = format!(
-            "minecraft-mobs: label={label} role={} health={} eye={:.2},{:.2},{:.2} guns={} count={} mobs={} items={}",
+            "minecraft-mobs: label={label} role={} health={} eye={:.2},{:.2},{:.2} guns={} count={} far={far} mobs={} items={} effects={} flown={}",
             ui.net_role,
             ps.health,
             eye[0] - base[0],
@@ -2111,7 +2231,72 @@ fn update(
             if guns.is_empty() { "-".to_owned() } else { guns.join(",") },
             mobs.len(),
             if list.is_empty() { "-".to_owned() } else { list.join(";") },
-            if items.is_empty() { "-".to_owned() } else { items.join(",") }
+            if items.is_empty() { "-".to_owned() } else { items.join(",") },
+            if effects.is_empty() { "-".to_owned() } else { effects.join(",") },
+            if seen.is_empty() { "-".to_owned() } else { seen.join(",") }
+        );
+        diag::info!(Console, "{line}");
+        println!("{line}");
+    }
+    // The console's sound log: the world sounds this game took, the latest
+    // last, each with how far from the player it was.
+    for label in std::mem::take(&mut ui.sound_probes) {
+        let here = glam::DVec3::from_array(feet);
+        let (heard, total) = entities.as_ref().map_or((Vec::new(), 0), |entities| {
+            let (heard, total) = entities.heard();
+            let heard: Vec<String> =
+                heard.map(|(event, at)| format!("{}@{:.1}", event.trim_start_matches("minecraft:"), at.distance(here))).collect();
+            (heard, total)
+        });
+        let line = format!(
+            "minecraft-sounds: label={label} role={} total={total} events={}",
+            ui.net_role,
+            if heard.is_empty() { "-".to_owned() } else { heard.join(",") }
+        );
+        diag::info!(Console, "{line}");
+        println!("{line}");
+    }
+    // The console's spawn range: on a host, where natural spawning put mobs
+    // and where mobs despawned around its first client (or its own player),
+    // and how far the mobs it tracks stand from that player now.
+    for label in std::mem::take(&mut ui.range_probes) {
+        let Some(entities) = entities.as_ref() else { continue };
+        let key = match &*net_role {
+            NetRole::Host(host) => host.remotes.keys().next().map_or(0, |&id| crate::minecraft_entities::remote_key(id)),
+            _ => 0,
+        };
+        let players = entities.tick_players();
+        let target = players.iter().find(|(k, _)| *k == key).map(|(_, at)| *at);
+        let (mut near, mut band, mut beyond, mut stray) = (0, 0, 0, 0);
+        for (at, goes) in entities.tracked_census() {
+            if let Some(target) = target {
+                let d = target.distance(at);
+                if d <= 48.0 {
+                    near += 1;
+                } else if d <= 128.0 {
+                    band += 1;
+                } else {
+                    beyond += 1;
+                }
+            }
+            // `Mob.checkDespawn` takes one beyond 128 blocks of every player
+            // at once; give it a few blocks for the tick it took to walk there.
+            let nearest = players.iter().map(|(_, p)| p.distance(at)).fold(f64::INFINITY, f64::min);
+            stray += usize::from(goes && nearest > 132.0);
+        }
+        let stats = entities.range_stats(key);
+        let blocks = |v: f64| if v.is_finite() { format!("{v:.1}") } else { "-".to_owned() };
+        let line = format!(
+            "minecraft-mobrange: label={label} role={} player={key} spawned={} spawn_min={} spawn_max={} spawn_beyond48={} despawned={} despawn_min={} despawn_max={} near48={near} band48_128={band} beyond128={beyond} stray={stray} level_chunks={}",
+            ui.net_role,
+            stats.spawned,
+            blocks(stats.spawn_min),
+            blocks(stats.spawn_max),
+            stats.spawn_beyond_48,
+            stats.despawned,
+            blocks(stats.despawn_min),
+            blocks(stats.despawn_max),
+            entities.level_chunks,
         );
         diag::info!(Console, "{line}");
         println!("{line}");
@@ -2293,6 +2478,8 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
     runtime.net = crate::minecraft_mp::NetRole::None;
     runtime.deferred.clear();
     runtime.voxel_holders.clear();
+    runtime.level_holders.clear();
+    runtime.speed_applied.clear();
     if runtime.world.take().is_some() || runtime.loading.take().is_some() || view.active {
         sim::voxel::deactivate();
         view.active = false;

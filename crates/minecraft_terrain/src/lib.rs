@@ -47,5 +47,7 @@ pub mod armor_render;
 pub mod horse_render;
 pub mod poof_particles;
 pub mod portal_particles;
+pub mod effect_particles;
+pub mod arrow_render;
 pub mod item_icon;
 pub mod item_icons;

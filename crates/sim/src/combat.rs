@@ -1515,6 +1515,10 @@ fn fire_weapon_melee(
     };
     let mut best_frac = 1.0f32;
     let mut best_hit: Option<crate::bullet_collision::BulletTraceSegment> = None;
+    // The nearest Minecraft mob a trace meets before any block: its key and
+    // distance.
+    let mut best_mob: Option<(u64, f32)> = None;
+    let mobs = world.publishes_snapshot() && crate::voxel::active();
     let n = melee_trace_count(width, height);
     for (index, offset) in MELEE_TRACE_OFFSETS.iter().take(n).enumerate() {
         let end = melee_trace_end(origin, forward, right, up, range, width, height, *offset);
@@ -1552,6 +1556,17 @@ fn fire_weapon_melee(
                 "MOD_MELEE",
             );
         }
+        if mobs {
+            let stop = segments
+                .iter()
+                .find(|s| matches!(s.collider, None | Some(ColliderId::World { .. })))
+                .map_or(end, |s| s.end);
+            if let Some((key, dist, _)) = crate::voxel::mob_on_segment(origin, stop)
+                && best_mob.is_none_or(|(_, d)| dist < d)
+            {
+                best_mob = Some((key, dist));
+            }
+        }
         let Some(segment) = segments.iter().find(|s| s.collider.is_some()) else {
             continue;
         };
@@ -1574,6 +1589,15 @@ fn fire_weapon_melee(
         }
         best_frac = frac;
         best_hit = Some(*segment);
+    }
+    // A mob nearer than anything else takes the blow, as a bullet's: the
+    // world's owner lands it with the melee damage, from the attacker's eye.
+    if let Some((key, dist)) = best_mob
+        && best_hit.is_none_or(|_| dist < best_frac * range)
+    {
+        let amount = facts.melee_damage + (world.combat_rng_mut().next_u32() % 5) as i32;
+        crate::voxel::push_mob_shot(key, amount as f32, origin, attacker.0);
+        return;
     }
     let Some(segment) = best_hit else {
         return;

@@ -172,6 +172,7 @@ pub use svc_script_audio::SvcScriptAudio;
 
 pub use skate::{SkateOutbox, SkaterDownlink, SkaterRelay, SkaterState, SkaterTracks};
 
-/// 95: skating in multiplayer (`ClientPacket::Skate`, the snapshot's skater
-/// section).
-pub const PROTOCOL_VERSION: u32 = 95;
+/// 96: the snapshot's Minecraft mob section carries the level's sounds,
+/// splashes and blasts, arrows and potions in flight, and the player's
+/// status effects.
+pub const PROTOCOL_VERSION: u32 = 96;

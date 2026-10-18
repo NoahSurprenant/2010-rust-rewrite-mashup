@@ -6,8 +6,11 @@
 //! that room, sets a block and fills its inventory; far from the spawn, in
 //! a walled arena, a husk summoned beside it must reach it with the
 //! server's id, hurt it and die to its gun as the server sees (with no
-//! player of the server's own about), and a dozen pigs there stand for the
-//! server's measure with mobs. It leaves; the room
+//! player of the server's own about); it must hear the husk, knife a husk
+//! and punch a penned pig to death as the server sees, draw a witch's potion
+//! and get its effect, and the server's mobs must spawn and live out past 48
+//! blocks around it (24 to 128, despawning beyond 128); then a dozen pigs
+//! there stand for the server's measure with mobs. It leaves; the room
 //! stays listed and the server keeps running with nobody in it, past the
 //! master session's silence deadline, and meanwhile the server changes
 //! 2048 blocks, more history than one control message holds. The client
@@ -264,6 +267,7 @@ pub fn mob_visit(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     )?;
     facts.keep("s_husk_shot", shot.host);
     facts.notes.insert("husk_killed", shot.killed.to_string());
+    mob_steps::beyond_the_gun(pair, FAR, &mut facts.lines, &mut facts.notes)?;
     let pigs: Vec<String> = PIGS
         .iter()
         .map(|[x, z]| format!("mc summon pig {x} 0 {z}"))
@@ -586,6 +590,14 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
             label,
             failures: rule(facts).err().into_iter().collect(),
         })
+        .chain(
+            mob_steps::judge_beyond_the_gun(&facts.lines, &facts.notes)
+                .into_iter()
+                .map(|(label, verdict)| Check {
+                    label,
+                    failures: verdict.err().into_iter().collect(),
+                }),
+        )
         .collect()
 }
 
@@ -603,6 +615,7 @@ mod tests {
 
     fn passing() -> Facts {
         let mut f = Facts::default();
+        mob_steps::passing_beyond_the_gun(&mut f.lines, &mut f.notes);
         let mut slots = vec!["-"; 41];
         slots[..5].copy_from_slice(&["iw4:weapon/1*1"; 5]);
         slots[5] = PLANKS;

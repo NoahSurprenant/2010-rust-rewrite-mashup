@@ -98,6 +98,10 @@ pub(crate) struct Remote {
     /// them it holds in the block world.
     pub collision: Option<minecraft_terrain::terrain::CollisionStream>,
     pub held: HashMap<(i32, i32), std::sync::Arc<minecraftoss_core::Chunk>>,
+    /// Chunks generated around it for the mobs' level, out to the
+    /// simulation distance, and those of them it holds there.
+    pub mob_stream: Option<minecraft_terrain::terrain::CollisionStream>,
+    pub level_held: std::collections::HashSet<(i32, i32)>,
     /// The host holds it still: there is no ground where it stands yet.
     pub held_still: bool,
     /// The mobs it was shown, as it was shown them.
@@ -108,14 +112,20 @@ pub(crate) struct Remote {
     mob_frame_bytes: u64,
     mob_row_bytes: u64,
     mob_clock: f64,
+    /// The events going out to it.
+    events: minecraft_terrain::mob_sync::EventWindow,
 }
 
 /// The host's mobs this frame, for its clients: each mob as it is told,
-/// the tick they are of, and whether that tick is new.
+/// the tick they are of, and whether that tick is new; the events of the
+/// last few ticks, what flies, and the players' effects.
 pub(crate) struct MobView<'a> {
     pub mobs: &'a [HostMob],
     pub tick: u32,
     pub fresh: bool,
+    pub events: &'a minecraft_terrain::mob_sync::EventLog,
+    pub projectiles: &'a [minecraft_terrain::mob_sync::Projectile],
+    pub effects: &'a minecraft_terrain::mob_sync::PlayerEffects,
 }
 
 pub(crate) struct Host {
@@ -307,12 +317,15 @@ impl Remote {
             life: None,
             collision: None,
             held: HashMap::new(),
+            mob_stream: None,
+            level_held: std::collections::HashSet::new(),
             held_still: false,
             mobs_sent: HashMap::new(),
             mob_states: HashMap::new(),
             mob_frame_bytes: 0,
             mob_row_bytes: 0,
             mob_clock: 0.0,
+            events: minecraft_terrain::mob_sync::EventWindow::default(),
         }
     }
 }
@@ -508,7 +521,15 @@ fn send_mobs(
                 })
             })
             .collect();
-        let bytes = minecraft_terrain::mob_sync::encode_frame(view.tick, states.iter().copied());
+        let extras = minecraft_terrain::mob_sync::FrameExtras {
+            events: remote.events.next(view.events, feet),
+            projectiles: minecraft_terrain::mob_sync::projectiles_near(view.projectiles, feet),
+            effects: view
+                .effects
+                .of(crate::minecraft_entities::remote_key(client.0)),
+        };
+        let bytes =
+            minecraft_terrain::mob_sync::encode_frame(view.tick, states.iter().copied(), &extras);
         let sent = minecraft_terrain::mob_sync::frame_len(&bytes);
         for state in &states[..sent] {
             remote.mob_states.insert(state.id, (**state, view.tick));

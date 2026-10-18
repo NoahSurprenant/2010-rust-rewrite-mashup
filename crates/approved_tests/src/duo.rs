@@ -107,8 +107,9 @@ pub struct Player {
     lines: mpsc::Receiver<(u128, String)>,
     log: std::fs::File,
     started: Instant,
-    /// Every `minecraft-state:`, `minecraft-block:`, `minecraft-mobs:` and
-    /// `skate-state:` line, by label.
+    /// Every `minecraft-state:`, `minecraft-block:`, `minecraft-mobs:`,
+    /// `minecraft-sounds:`, `minecraft-mobrange:` and `skate-state:` line, by
+    /// label.
     pub seen: BTreeMap<String, Event>,
     /// A dedicated server's `dedicated-players:` lines, in order.
     pub rosters: Vec<Event>,
@@ -249,6 +250,8 @@ impl Player {
                 "minecraft-state:",
                 "minecraft-block:",
                 "minecraft-mobs:",
+                "minecraft-sounds:",
+                "minecraft-mobrange:",
                 "skate-state:",
             ] {
                 if let Some(event) = parse(&line, prefix, at_ms) {

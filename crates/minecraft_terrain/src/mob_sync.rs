@@ -12,13 +12,19 @@
 //!   shown: position, rotations, ground contact, hurts, swings, health and
 //!   the few animation values its renderer reads (a creeper's swell, a
 //!   wolf's shake). A lost snapshot costs nothing: the next one carries the
-//!   whole state again.
+//!   whole state again;
+//! - with the same snapshots, what happened near it once ([`WorldEvent`]:
+//!   the mobs' sounds, potions breaking, blasts), each numbered and sent
+//!   with a few snapshots in a row so that one lost snapshot loses none,
+//!   the arrows and potions in flight near it ([`Projectile`]), and its own
+//!   status effects ([`PlayerEffect`]).
 //!
 //! The client keeps an entity world of its own that never ticks, built from
 //! the spawns with the host's ids and set from each state, and runs it
 //! through the same client trackers and renderers the host draws its mobs
 //! with.
 use glam::DVec3;
+use minecraftoss_entities::effects::{EffectInstance, EffectWork, MobEffect, MobEffects};
 use minecraftoss_entities::health::DamageState;
 use minecraftoss_entities::look::LookControl;
 use minecraftoss_entities::movement::Body;
@@ -38,7 +44,22 @@ pub const MOB_FRAME_BYTES: usize = 4 * 1024;
 pub const SPAWN_BYTES_PER_MESSAGE: usize = 3 * 1024;
 /// Mob ids in one "gone" row.
 pub const GONE_PER_MESSAGE: usize = 256;
-const FRAME_VERSION: u8 = 1;
+/// How far from a client, horizontally in blocks, it is shown arrows and
+/// potions (`clientTrackingRange`: 4 chunks).
+pub const PROJECTILE_RANGE: f64 = 64.0;
+/// How far from a client a potion breaking or a blast reaches it.
+pub const BURST_RANGE: f64 = 64.0;
+/// Snapshots in a row each event goes out with.
+pub const EVENT_SENDS: u8 = 3;
+/// Host ticks the host keeps an event for clients it has not sent it yet.
+pub const EVENT_KEEP_TICKS: u32 = 40;
+/// The most events and projectiles one snapshot carries.
+pub const MAX_EVENTS_PER_FRAME: usize = 20;
+pub const MAX_PROJECTILES_PER_FRAME: usize = 24;
+/// Bytes of a snapshot's mob section kept for the events, projectiles and
+/// effects (room for the most of each); the states take the rest.
+const EXTRAS_BYTES: usize = 2048;
+const FRAME_VERSION: u8 = 2;
 /// Where a client's copy puts a mob to take it out of its world.
 const GONE_Y: f64 = -1.0e9;
 
@@ -237,6 +258,115 @@ pub struct MobState {
 pub struct HostMob {
     pub spawn: MobSpawn,
     pub state: MobState,
+}
+
+/// Something that happens once in the host's level, for the clients near it
+/// to hear or see.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorldEvent {
+    /// A sound a mob made, or a player's hit on one: its event, where, its
+    /// volume and pitch.
+    Sound {
+        event: String,
+        position: [f64; 3],
+        volume: f32,
+        pitch: f32,
+    },
+    /// A splash potion broke (`LevelEvent` 2002, or 2007 for an instant
+    /// one) in its colour.
+    Splash {
+        position: [f64; 3],
+        color: u32,
+        instant: bool,
+    },
+    /// A creeper's blast (`ClientboundExplodePacket`).
+    Explosion { position: [f64; 3], radius: f32 },
+}
+
+impl WorldEvent {
+    pub fn position(&self) -> [f64; 3] {
+        match self {
+            Self::Sound { position, .. }
+            | Self::Splash { position, .. }
+            | Self::Explosion { position, .. } => *position,
+        }
+    }
+
+    /// How far from it a player is told of it: a sound's range
+    /// (`SoundEvent.getRange`: 16 blocks, more for a louder one), or
+    /// `BURST_RANGE`.
+    pub fn range(&self) -> f64 {
+        match self {
+            Self::Sound { volume, .. } => 16.0 * f64::from(volume.max(1.0)),
+            _ => BURST_RANGE,
+        }
+    }
+
+    /// Whether a player at `feet` is told of it.
+    pub fn reaches(&self, feet: [f64; 3]) -> bool {
+        let at = self.position();
+        (0..3).map(|i| (at[i] - feet[i]).powi(2)).sum::<f64>() <= self.range().powi(2)
+    }
+}
+
+/// An event with the number the host gave it (one count for all clients).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventRow {
+    pub seq: u32,
+    pub event: WorldEvent,
+}
+
+/// What flies.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ProjectileKind {
+    /// An arrow; a tipped one carries an effect.
+    Arrow { tipped: bool },
+    /// A thrown splash potion in its colour.
+    Potion { color: u32 },
+}
+
+impl ProjectileKind {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Arrow { .. } => "arrow",
+            Self::Potion { .. } => "potion",
+        }
+    }
+}
+
+/// An arrow or potion in flight (or an arrow stuck in a block) as of a host
+/// tick, with its yaw and pitch (`Projectile.updateRotation`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Projectile {
+    pub id: u64,
+    pub kind: ProjectileKind,
+    pub position: [f64; 3],
+    pub y_rot: f32,
+    pub x_rot: f32,
+}
+
+/// A status effect on a player: the effect, its level and the ticks left.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerEffect {
+    pub effect: MobEffect,
+    pub amplifier: u8,
+    pub duration: i32,
+}
+
+/// What a snapshot carries for a client besides the mob states.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FrameExtras {
+    pub events: Vec<EventRow>,
+    pub projectiles: Vec<Projectile>,
+    pub effects: Vec<PlayerEffect>,
+}
+
+/// A snapshot's mob section: the host tick, the mob states and the rest.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MobFrame {
+    pub tick: u32,
+    pub states: Vec<MobState>,
+    pub extras: FrameExtras,
 }
 
 fn kind_of_zombie(kind: minecraftoss_entities::zombie::ZombieKind) -> u8 {
@@ -733,6 +863,313 @@ pub fn interest(mobs: &[HostMob], feet: [f64; 3]) -> Vec<usize> {
     near.into_iter().map(|(_, i)| i).collect()
 }
 
+/// `Projectile.updateRotation` from a velocity: yaw and pitch in degrees.
+fn rotation_of(velocity: DVec3) -> Option<(f32, f32)> {
+    let horizontal = velocity.x.hypot(velocity.z);
+    (velocity.length_squared() > 1.0e-7).then(|| {
+        (
+            velocity.x.atan2(velocity.z).to_degrees() as f32,
+            velocity.y.atan2(horizontal).to_degrees() as f32,
+        )
+    })
+}
+
+/// The arrows and potions of the host's entity world. An arrow stuck in a
+/// block has no velocity left: it keeps the rotation it flew with, which
+/// `rotations` remembers by id.
+pub fn host_projectiles(
+    world: &EntityWorld,
+    rotations: &mut std::collections::HashMap<u64, (f32, f32)>,
+) -> Vec<Projectile> {
+    let mut out = Vec::new();
+    for e in world.arrows().iter().filter(|e| e.arrow.alive) {
+        let (y_rot, x_rot) = match rotation_of(e.arrow.velocity) {
+            Some(rotation) => *rotations
+                .entry(e.id)
+                .and_modify(|r| *r = rotation)
+                .or_insert(rotation),
+            None => rotations.get(&e.id).copied().unwrap_or_default(),
+        };
+        out.push(Projectile {
+            id: e.id,
+            kind: ProjectileKind::Arrow {
+                tipped: e.effect.is_some(),
+            },
+            position: e.arrow.position.to_array(),
+            y_rot,
+            x_rot,
+        });
+    }
+    for e in world.potions().iter().filter(|e| e.potion.alive) {
+        out.push(Projectile {
+            id: e.id,
+            kind: ProjectileKind::Potion {
+                color: e.potion.potion.color(),
+            },
+            position: e.potion.position.to_array(),
+            y_rot: e.potion.yaw,
+            x_rot: e.potion.pitch,
+        });
+    }
+    rotations.retain(|id, _| out.iter().any(|p| p.id == *id));
+    out
+}
+
+/// The projectiles a client at `feet` is shown: nearest first, within
+/// `PROJECTILE_RANGE` blocks horizontally.
+pub fn projectiles_near(all: &[Projectile], feet: [f64; 3]) -> Vec<Projectile> {
+    let distance =
+        |p: &Projectile| (p.position[0] - feet[0]).powi(2) + (p.position[2] - feet[2]).powi(2);
+    let mut near: Vec<Projectile> = all
+        .iter()
+        .filter(|p| distance(p) <= PROJECTILE_RANGE * PROJECTILE_RANGE)
+        .copied()
+        .collect();
+    near.sort_by(|a, b| distance(a).total_cmp(&distance(b)));
+    near.truncate(MAX_PROJECTILES_PER_FRAME);
+    near
+}
+
+/// The host's recent events, numbered, kept `EVENT_KEEP_TICKS` host ticks.
+#[derive(Default)]
+pub struct EventLog {
+    next: u32,
+    rows: std::collections::VecDeque<(u32, EventRow)>,
+}
+
+impl EventLog {
+    /// An event in host tick `tick`.
+    pub fn push(&mut self, tick: u32, event: WorldEvent) {
+        self.rows.push_back((
+            tick,
+            EventRow {
+                seq: self.next,
+                event,
+            },
+        ));
+        self.next = self.next.wrapping_add(1);
+    }
+
+    /// Forgets the events too old to send as of `tick`.
+    pub fn age(&mut self, tick: u32) {
+        while self
+            .rows
+            .front()
+            .is_some_and(|(at, _)| tick.wrapping_sub(*at) >= EVENT_KEEP_TICKS)
+        {
+            self.rows.pop_front();
+        }
+    }
+}
+
+/// The events going out to one client: each new one that reaches it goes
+/// with the next `EVENT_SENDS` snapshots it is sent, so one lost snapshot
+/// loses none, however few snapshots the host sends a second.
+#[derive(Default)]
+pub struct EventWindow {
+    last: Option<u32>,
+    pending: std::collections::VecDeque<(EventRow, u8)>,
+}
+
+impl EventWindow {
+    /// The events for the next snapshot to a player at `feet`, oldest
+    /// first.
+    pub fn next(&mut self, log: &EventLog, feet: [f64; 3]) -> Vec<EventRow> {
+        for (_, row) in &log.rows {
+            if self
+                .last
+                .is_some_and(|last| row.seq.wrapping_sub(last) as i32 <= 0)
+            {
+                continue;
+            }
+            self.last = Some(row.seq);
+            if row.event.reaches(feet) {
+                self.pending.push_back((row.clone(), 0));
+            }
+        }
+        let out: Vec<EventRow> = self
+            .pending
+            .iter_mut()
+            .take(MAX_EVENTS_PER_FRAME)
+            .map(|(row, sends)| {
+                *sends += 1;
+                row.clone()
+            })
+            .collect();
+        self.pending.retain(|(_, sends)| *sends < EVENT_SENDS);
+        out
+    }
+}
+
+/// A client's arrows and potions in flight, as its snapshots last told:
+/// each where it was the tick before (to draw between) and where it is.
+#[derive(Default)]
+pub struct ClientProjectiles {
+    now: Vec<(Projectile, [f64; 3])>,
+    /// The ids seen of each kind so far.
+    seen: std::collections::BTreeMap<&'static str, std::collections::BTreeSet<u64>>,
+}
+
+impl ClientProjectiles {
+    /// One snapshot's projectiles: those it does not name have landed.
+    pub fn receive(&mut self, projectiles: &[Projectile]) {
+        let now = projectiles
+            .iter()
+            .map(|p| {
+                let previous = self
+                    .now
+                    .iter()
+                    .find(|(q, _)| q.id == p.id)
+                    .map_or(p.position, |(q, _)| q.position);
+                self.seen.entry(p.kind.name()).or_default().insert(p.id);
+                (*p, previous)
+            })
+            .collect();
+        self.now = now;
+    }
+
+    /// Each projectile and where to draw it, `partial` of a tick on from
+    /// where it was.
+    pub fn drawn(&self, partial: f64) -> Vec<(Projectile, DVec3)> {
+        self.now
+            .iter()
+            .map(|(p, previous)| {
+                let (from, to) = (DVec3::from_array(*previous), DVec3::from_array(p.position));
+                (*p, from.lerp(to, partial))
+            })
+            .collect()
+    }
+
+    /// How many of each kind were ever seen.
+    pub fn seen(&self) -> Vec<(&'static str, usize)> {
+        self.seen
+            .iter()
+            .map(|(kind, ids)| (*kind, ids.len()))
+            .collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.now.clear();
+    }
+}
+
+/// The players' status effects on a host: what potions and tipped arrows
+/// gave each player (by its mob world id), ticked with the level as
+/// `LivingEntity.tickEffects` ticks a player's.
+#[derive(Default)]
+pub struct PlayerEffects {
+    players: std::collections::HashMap<u64, MobEffects>,
+}
+
+impl PlayerEffects {
+    /// A splash on `player`: a lasting effect joins its effects; an instant
+    /// one is the magic damage it does at once (in Minecraft health).
+    pub fn splash(
+        &mut self,
+        player: u64,
+        splash: &minecraftoss_entities::world::PlayerSplash,
+    ) -> Option<f32> {
+        match splash.instant {
+            Some(EffectWork::HurtMagic(amount)) => Some(amount),
+            Some(_) => None,
+            None => {
+                self.add(player, splash.effect, splash.amplifier, splash.duration);
+                None
+            }
+        }
+    }
+
+    /// `LivingEntity.addEffect` on a player.
+    pub fn add(&mut self, player: u64, effect: MobEffect, amplifier: i32, duration: i32) {
+        self.players
+            .entry(player)
+            .or_default()
+            .add(EffectInstance::new(effect, duration, amplifier));
+    }
+
+    /// A tipped arrow's effect (`Arrow.doPostHurtEffects`), as the player's
+    /// side knows the kinds.
+    pub fn arrow(
+        &mut self,
+        player: u64,
+        kind: minecraftoss_player::survival::EffectKind,
+        duration: u32,
+    ) {
+        use minecraftoss_player::survival::EffectKind as K;
+        let effect = match kind {
+            K::Poison => MobEffect::Poison,
+            K::Slowness => MobEffect::Slowness,
+            K::Weakness => MobEffect::Weakness,
+            K::Regeneration => MobEffect::Regeneration,
+            K::FireResistance => MobEffect::FireResistance,
+            _ => return,
+        };
+        self.add(player, effect, 0, duration.min(i32::MAX as u32) as i32);
+    }
+
+    /// One tick of every player's effects: the magic damage each takes (in
+    /// Minecraft health), given each one's health (poison stops at 1).
+    pub fn tick(&mut self, health: impl Fn(u64) -> f32) -> Vec<(u64, f32)> {
+        let mut hurts = Vec::new();
+        for (&player, effects) in &mut self.players {
+            for work in effects.tick(false) {
+                if let Some(EffectWork::HurtMagic(amount)) = work.resolve(health(player), 20.0) {
+                    hurts.push((player, amount));
+                }
+            }
+        }
+        self.players.retain(|_, effects| !effects.is_empty());
+        hurts
+    }
+
+    /// A player died: its effects go (`LivingEntity.die` → `removeAllEffects`).
+    pub fn clear(&mut self, player: u64) {
+        self.players.remove(&player);
+    }
+
+    /// The effects a player has.
+    pub fn of(&self, player: u64) -> Vec<PlayerEffect> {
+        self.players.get(&player).map_or_else(Vec::new, |effects| {
+            effects
+                .iter()
+                .map(|e| PlayerEffect {
+                    effect: e.effect,
+                    amplifier: e.amplifier.clamp(0, 255) as u8,
+                    duration: e.duration,
+                })
+                .collect()
+        })
+    }
+
+    /// What witches look at: slowed, poisoned, weakened.
+    pub fn marks(&self, player: u64) -> (bool, bool, bool) {
+        self.players
+            .get(&player)
+            .map_or((false, false, false), |e| {
+                (
+                    e.has(MobEffect::Slowness),
+                    e.has(MobEffect::Poison),
+                    e.has(MobEffect::Weakness),
+                )
+            })
+    }
+
+    /// The player's movement speed as a share of its own (speed and
+    /// slowness).
+    pub fn speed(&self, player: u64) -> f32 {
+        self.players
+            .get(&player)
+            .map_or(1.0, |e| e.movement_speed(1.0) as f32)
+    }
+
+    /// What its effects add to its attack damage (weakness takes off).
+    pub fn attack_damage(&self, player: u64) -> f64 {
+        self.players
+            .get(&player)
+            .map_or(0.0, MobEffects::attack_damage_modifier)
+    }
+}
+
 fn varint(w: &mut Writer, mut v: u64) {
     loop {
         let byte = (v & 0x7f) as u8;
@@ -929,9 +1366,15 @@ fn decode_state(r: &mut Reader<'_>) -> Result<MobState, DecodeError> {
 }
 
 /// The mob states of one host tick as one snapshot carries them, in the
-/// order given, as many as fit `MOB_FRAME_BYTES` (the nearest first, when
-/// given nearest first).
-pub fn encode_frame<'a>(tick: u32, states: impl IntoIterator<Item = &'a MobState>) -> Vec<u8> {
+/// order given, as many as fit `MOB_FRAME_BYTES` with the extras (the
+/// nearest first, when given nearest first). The extras go in the order
+/// given, as many as fit their share.
+pub fn encode_frame<'a>(
+    tick: u32,
+    states: impl IntoIterator<Item = &'a MobState>,
+    extras: &FrameExtras,
+) -> Vec<u8> {
+    let tail = encode_extras(extras);
     let mut w = Writer::default();
     w.u8(FRAME_VERSION);
     w.u32(tick);
@@ -941,14 +1384,201 @@ pub fn encode_frame<'a>(tick: u32, states: impl IntoIterator<Item = &'a MobState
     for state in states {
         let mut one = Writer::default();
         encode_state(&mut one, state);
-        if w.0.len() + one.0.len() > MOB_FRAME_BYTES || count == u16::MAX {
+        if w.0.len() + one.0.len() + tail.len() > MOB_FRAME_BYTES || count == u16::MAX {
             break;
         }
         w.0.extend_from_slice(&one.0);
         count += 1;
     }
     w.0[count_at..count_at + 2].copy_from_slice(&count.to_le_bytes());
+    w.0.extend_from_slice(&tail);
     w.0
+}
+
+/// Up to `limit` items, each encoded by `one`, while the bytes stay within
+/// `budget`: a count byte and the items.
+fn encode_list<T>(
+    out: &mut Writer,
+    items: &[T],
+    limit: usize,
+    budget: usize,
+    one: impl Fn(&mut Writer, &T),
+) {
+    let count_at = out.0.len();
+    out.u8(0);
+    let mut count = 0u8;
+    for item in items.iter().take(limit.min(usize::from(u8::MAX))) {
+        let mut w = Writer::default();
+        one(&mut w, item);
+        if out.0.len() + w.0.len() > budget {
+            break;
+        }
+        out.0.extend_from_slice(&w.0);
+        count += 1;
+    }
+    out.0[count_at] = count;
+}
+
+fn effect_index(effect: MobEffect) -> u8 {
+    MobEffect::ALL
+        .iter()
+        .position(|e| *e == effect)
+        .unwrap_or(0) as u8
+}
+
+fn encode_event(w: &mut Writer, base: u32, row: &EventRow) {
+    varint(w, u64::from(row.seq.wrapping_sub(base)));
+    match &row.event {
+        WorldEvent::Sound {
+            event,
+            position,
+            volume,
+            pitch,
+        } => {
+            w.u8(0);
+            w.str(event);
+            for v in position {
+                w.i32(fixed(*v));
+            }
+            w.f32(*volume);
+            w.f32(*pitch);
+        }
+        WorldEvent::Splash {
+            position,
+            color,
+            instant,
+        } => {
+            w.u8(1);
+            for v in position {
+                w.i32(fixed(*v));
+            }
+            w.u32(*color);
+            w.u8(u8::from(*instant));
+        }
+        WorldEvent::Explosion { position, radius } => {
+            w.u8(2);
+            for v in position {
+                w.i32(fixed(*v));
+            }
+            w.f32(*radius);
+        }
+    }
+}
+
+fn decode_event(r: &mut Reader<'_>, base: u32) -> Result<EventRow, DecodeError> {
+    let seq = base.wrapping_add(read_varint(r)? as u32);
+    let position = |r: &mut Reader<'_>| -> Result<[f64; 3], DecodeError> {
+        Ok([unfixed(r.i32()?), unfixed(r.i32()?), unfixed(r.i32()?)])
+    };
+    let event = match r.u8()? {
+        0 => WorldEvent::Sound {
+            event: r.str()?,
+            position: position(r)?,
+            volume: r.f32()?,
+            pitch: r.f32()?,
+        },
+        1 => WorldEvent::Splash {
+            position: position(r)?,
+            color: r.u32()?,
+            instant: r.bool()?,
+        },
+        2 => WorldEvent::Explosion {
+            position: position(r)?,
+            radius: r.f32()?,
+        },
+        _ => return Err(DecodeError::Malformed("world event")),
+    };
+    Ok(EventRow { seq, event })
+}
+
+fn encode_projectile(w: &mut Writer, p: &Projectile) {
+    varint(w, p.id);
+    match p.kind {
+        ProjectileKind::Arrow { tipped } => w.u8(u8::from(tipped)),
+        ProjectileKind::Potion { color } => {
+            w.u8(2);
+            w.u32(color);
+        }
+    }
+    for v in p.position {
+        w.i32(fixed(v));
+    }
+    w.u8(pack(p.y_rot));
+    w.u8(pack(p.x_rot));
+}
+
+fn decode_projectile(r: &mut Reader<'_>) -> Result<Projectile, DecodeError> {
+    let id = read_varint(r)?;
+    let kind = match r.u8()? {
+        0 => ProjectileKind::Arrow { tipped: false },
+        1 => ProjectileKind::Arrow { tipped: true },
+        2 => ProjectileKind::Potion { color: r.u32()? },
+        _ => return Err(DecodeError::Malformed("projectile")),
+    };
+    Ok(Projectile {
+        id,
+        kind,
+        position: [unfixed(r.i32()?), unfixed(r.i32()?), unfixed(r.i32()?)],
+        y_rot: unpack(r.u8()?),
+        x_rot: unpack(r.u8()?),
+    })
+}
+
+/// The events (numbered from the first one's number), projectiles and
+/// effects, within `EXTRAS_BYTES`.
+fn encode_extras(extras: &FrameExtras) -> Vec<u8> {
+    let mut w = Writer::default();
+    let base = extras.events.first().map_or(0, |row| row.seq);
+    w.u32(base);
+    let budget = EXTRAS_BYTES - 2 - 7 * MobEffect::ALL.len();
+    encode_list(
+        &mut w,
+        &extras.events,
+        MAX_EVENTS_PER_FRAME,
+        budget,
+        |w, row| encode_event(w, base, row),
+    );
+    encode_list(
+        &mut w,
+        &extras.projectiles,
+        MAX_PROJECTILES_PER_FRAME,
+        budget,
+        encode_projectile,
+    );
+    encode_list(
+        &mut w,
+        &extras.effects,
+        MobEffect::ALL.len(),
+        EXTRAS_BYTES,
+        |w, e| {
+            w.u8(effect_index(e.effect));
+            w.u8(e.amplifier);
+            w.i32(e.duration);
+        },
+    );
+    w.0
+}
+
+fn decode_extras(r: &mut Reader<'_>) -> Result<FrameExtras, DecodeError> {
+    let base = r.u32()?;
+    let mut extras = FrameExtras::default();
+    for _ in 0..r.u8()? {
+        extras.events.push(decode_event(r, base)?);
+    }
+    for _ in 0..r.u8()? {
+        extras.projectiles.push(decode_projectile(r)?);
+    }
+    for _ in 0..r.u8()? {
+        let effect = *MobEffect::ALL
+            .get(usize::from(r.u8()?))
+            .ok_or(DecodeError::Malformed("effect"))?;
+        extras.effects.push(PlayerEffect {
+            effect,
+            amplifier: r.u8()?,
+            duration: r.i32()?,
+        });
+    }
+    Ok(extras)
 }
 
 /// How many states an encoded frame carries (none for bytes that are no
@@ -959,8 +1589,8 @@ pub fn frame_len(bytes: &[u8]) -> usize {
         .map_or(0, |b| usize::from(u16::from_le_bytes([b[0], b[1]])))
 }
 
-/// A snapshot's mob states: the host tick and the states.
-pub fn decode_frame(bytes: &[u8]) -> Result<(u32, Vec<MobState>), DecodeError> {
+/// A snapshot's mob section.
+pub fn decode_frame(bytes: &[u8]) -> Result<MobFrame, DecodeError> {
     let mut r = Reader(bytes);
     if r.u8()? != FRAME_VERSION {
         return Err(DecodeError::Malformed("mob frame version"));
@@ -975,8 +1605,13 @@ pub fn decode_frame(bytes: &[u8]) -> Result<(u32, Vec<MobState>), DecodeError> {
     for _ in 0..count {
         states.push(decode_state(&mut r)?);
     }
+    let extras = decode_extras(&mut r)?;
     r.done()?;
-    Ok((tick, states))
+    Ok(MobFrame {
+        tick,
+        states,
+        extras,
+    })
 }
 
 fn encode_armor(w: &mut Writer, armor: &[Option<String>; 4]) {
@@ -1274,6 +1909,8 @@ impl Counter {
 pub struct ClientCopy {
     /// The last host tick applied.
     last_tick: Option<u32>,
+    /// The number of the last event taken.
+    last_event: Option<u32>,
     counters: std::collections::HashMap<u64, (Counter, Counter)>,
     /// What each mob was spawned as.
     spawns: std::collections::HashMap<u64, MobSpawn>,
@@ -1331,11 +1968,29 @@ impl ClientCopy {
         true
     }
 
+    /// The events of an applied snapshot not taken before, in order: each
+    /// comes with a few snapshots in a row.
+    pub fn fresh_events(&mut self, rows: &[EventRow]) -> Vec<WorldEvent> {
+        let mut fresh = Vec::new();
+        for row in rows {
+            if self
+                .last_event
+                .is_some_and(|last| row.seq.wrapping_sub(last) as i32 <= 0)
+            {
+                continue;
+            }
+            self.last_event = Some(row.seq);
+            fresh.push(row.event.clone());
+        }
+        fresh
+    }
+
     /// Forgets every mob (a new world).
     pub fn clear(&mut self, world: &mut EntityWorld) {
         let ids: Vec<u64> = self.spawns.keys().copied().collect();
         self.gone(world, &ids);
         self.last_tick = None;
+        self.last_event = None;
     }
 }
 
@@ -1931,8 +2586,8 @@ mod tests {
             assert_eq!(spawn, mob.spawn);
             copy.spawn(&mut client, &spawn);
         }
-        let frame = encode_frame(7, mobs.iter().map(|m| &m.state));
-        let (tick, states) = decode_frame(&frame).unwrap();
+        let frame = encode_frame(7, mobs.iter().map(|m| &m.state), &FrameExtras::default());
+        let MobFrame { tick, states, .. } = decode_frame(&frame).unwrap();
         assert!(copy.apply(&mut client, tick, &states));
         (host, client, copy)
     }
@@ -2044,9 +2699,9 @@ mod tests {
             ..Default::default()
         };
         let states: Vec<MobState> = (1..=1000).map(state).collect();
-        let frame = encode_frame(1, &states);
+        let frame = encode_frame(1, &states, &FrameExtras::default());
         assert!(frame.len() <= MOB_FRAME_BYTES, "{}", frame.len());
-        let (_, decoded) = decode_frame(&frame).unwrap();
+        let decoded = decode_frame(&frame).unwrap().states;
         assert!(decoded.len() > 100, "{}", decoded.len());
         assert_eq!(frame_len(&frame), decoded.len());
         assert_eq!(frame_len(&[1]), 0);
@@ -2055,8 +2710,8 @@ mod tests {
             assert_eq!(a.position, b.position);
         }
         // A full client view fits with room to spare.
-        let frame = encode_frame(1, &states[..MAX_MOBS_PER_CLIENT]);
-        let (_, decoded) = decode_frame(&frame).unwrap();
+        let frame = encode_frame(1, &states[..MAX_MOBS_PER_CLIENT], &FrameExtras::default());
+        let decoded = decode_frame(&frame).unwrap().states;
         assert_eq!(decoded.len(), MAX_MOBS_PER_CLIENT);
         assert!(frame.len() < 1500, "{}", frame.len());
         // Damaged bytes are refused, not misread.
@@ -2122,5 +2777,218 @@ mod tests {
             decode_ids(&mut Reader(&w.0)).unwrap(),
             vec![1, 300, u64::MAX]
         );
+    }
+
+    fn sound(event: &str, x: f64, volume: f32) -> WorldEvent {
+        WorldEvent::Sound {
+            event: event.into(),
+            position: [x, 64.5, -2.25],
+            volume,
+            pitch: 1.25,
+        }
+    }
+
+    #[test]
+    fn events_projectiles_and_effects_come_through_the_frame() {
+        let extras = FrameExtras {
+            events: vec![
+                EventRow {
+                    seq: u32::MAX,
+                    event: sound("entity.husk.ambient", 3.5, 1.0),
+                },
+                EventRow {
+                    seq: 1,
+                    event: WorldEvent::Splash {
+                        position: [1.0, 65.0, 2.0],
+                        color: 8889187,
+                        instant: false,
+                    },
+                },
+                EventRow {
+                    seq: 2,
+                    event: WorldEvent::Explosion {
+                        position: [-4.0, 63.0, 9.5],
+                        radius: 3.0,
+                    },
+                },
+            ],
+            projectiles: vec![
+                Projectile {
+                    id: 77,
+                    kind: ProjectileKind::Arrow { tipped: true },
+                    position: [0.5, 70.25, -1.0],
+                    y_rot: 45.0,
+                    x_rot: -11.25,
+                },
+                Projectile {
+                    id: 78,
+                    kind: ProjectileKind::Potion { color: 0x80A0C0 },
+                    position: [2.0, 66.0, 3.0],
+                    y_rot: 0.0,
+                    x_rot: 90.0,
+                },
+            ],
+            effects: vec![PlayerEffect {
+                effect: MobEffect::Poison,
+                amplifier: 1,
+                duration: 337,
+            }],
+        };
+        let state = MobState {
+            id: 5,
+            position: [1.0, 64.0, 1.0],
+            ..Default::default()
+        };
+        let frame = decode_frame(&encode_frame(12, [&state], &extras)).unwrap();
+        assert_eq!(frame.tick, 12);
+        assert_eq!(frame.states.len(), 1);
+        assert_eq!(frame.extras, extras);
+        // The extras keep to their share and the states fill the rest.
+        let many = FrameExtras {
+            events: (0..200)
+                .map(|seq| EventRow {
+                    seq,
+                    event: sound("entity.zombie_villager.ambient", 0.0, 1.0),
+                })
+                .collect(),
+            projectiles: vec![extras.projectiles[1]; 100],
+            effects: extras.effects.clone(),
+        };
+        let states: Vec<MobState> = (0..200).map(|id| MobState { id, ..state }).collect();
+        let bytes = encode_frame(13, &states, &many);
+        assert!(bytes.len() <= MOB_FRAME_BYTES, "{}", bytes.len());
+        let frame = decode_frame(&bytes).unwrap();
+        assert!(frame.extras.events.len() <= MAX_EVENTS_PER_FRAME);
+        assert_eq!(
+            frame.extras.events[..],
+            many.events[..frame.extras.events.len()]
+        );
+        assert!(frame.extras.projectiles.len() <= MAX_PROJECTILES_PER_FRAME);
+        assert_eq!(frame.extras.effects, extras.effects);
+        assert!(frame.states.len() > 50, "{}", frame.states.len());
+    }
+
+    #[test]
+    fn an_event_reaches_once_through_a_lost_snapshot() {
+        let mut log = EventLog::default();
+        let mut window = EventWindow::default();
+        let mut copy = ClientCopy::default();
+        let mut world = EntityWorld::default();
+        let feet = [0.0, 64.0, 0.0];
+        let mut heard = Vec::new();
+        for tick in 1..=10u32 {
+            log.age(tick);
+            log.push(tick, sound(&format!("tick{tick}"), 2.0, 1.0));
+            // Too far to hear: a quiet sound 20 blocks off.
+            log.push(tick, sound("far", 20.0, 1.0));
+            // A slow host sends a snapshot every other tick.
+            if tick % 2 == 1 {
+                continue;
+            }
+            let rows = window.next(&log, feet);
+            assert!(rows.len() <= 2 * usize::from(EVENT_SENDS));
+            // The snapshot of tick 4 is lost on the way.
+            if tick == 4 {
+                continue;
+            }
+            assert!(copy.apply(&mut world, tick, &[]));
+            heard.extend(copy.fresh_events(&rows));
+        }
+        let names: Vec<String> = heard
+            .iter()
+            .map(|e| match e {
+                WorldEvent::Sound { event, .. } => event.clone(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        let want: Vec<String> = (1..=10).map(|t| format!("tick{t}")).collect();
+        assert_eq!(names, want);
+        // A loud sound and a blast carry further.
+        assert!(sound("entity.generic.explode", 60.0, 4.0).reaches(feet));
+        assert!(!sound("entity.husk.step", 17.0, 0.15).reaches(feet));
+        let blast = WorldEvent::Explosion {
+            position: [0.0, 64.0, 63.0],
+            radius: 3.0,
+        };
+        assert!(blast.reaches(feet));
+    }
+
+    #[test]
+    fn projectiles_fly_and_land_on_the_client() {
+        use minecraftoss_entities::potion::{Potion, ThrownPotion};
+        let mut host = EntityWorld::default();
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        let thrown = ThrownPotion::shoot(
+            Potion::Poison,
+            9,
+            DVec3::new(0.0, 66.0, 0.0),
+            DVec3::new(0.0, 0.2, 1.0),
+            0.75,
+            8.0,
+            &mut random,
+        );
+        let id = host.spawn_potion(thrown);
+        let mut rotations = std::collections::HashMap::new();
+        let all = host_projectiles(&host, &mut rotations);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, id);
+        assert_eq!(
+            all[0].kind,
+            ProjectileKind::Potion {
+                color: Potion::Poison.color()
+            }
+        );
+        assert!(projectiles_near(&all, [100.0, 64.0, 0.0]).is_empty());
+        let mut client = ClientProjectiles::default();
+        client.receive(&all);
+        let mut moved = all[0];
+        moved.position[2] += 1.0;
+        client.receive(&[moved]);
+        let drawn = client.drawn(0.5);
+        assert!((drawn[0].1.z - (all[0].position[2] + 0.5)).abs() < 1e-9);
+        client.receive(&[]);
+        assert!(client.drawn(0.0).is_empty());
+        assert_eq!(client.seen(), [("potion", 1)]);
+    }
+
+    #[test]
+    fn a_players_effects_work_as_on_a_vanilla_player() {
+        use minecraftoss_entities::world::PlayerSplash;
+        let mut effects = PlayerEffects::default();
+        let poison = PlayerSplash {
+            effect: MobEffect::Poison,
+            amplifier: 0,
+            duration: 60,
+            instant: None,
+            at: DVec3::ZERO,
+        };
+        assert_eq!(effects.splash(3, &poison), None);
+        assert_eq!(effects.marks(3), (false, true, false));
+        assert_eq!(effects.of(3)[0].duration, 60);
+        // Poison bites every 25 ticks, and never below 1 health.
+        let mut bites = 0;
+        for tick in 0..60 {
+            let health = if tick < 30 { 20.0 } else { 1.0 };
+            bites += effects.tick(|_| health).len();
+        }
+        assert_eq!(bites, 1);
+        assert!(effects.of(3).is_empty());
+        let harming = PlayerSplash {
+            effect: MobEffect::InstantDamage,
+            amplifier: 0,
+            duration: 0,
+            instant: Some(EffectWork::HurtMagic(5.0)),
+            at: DVec3::ZERO,
+        };
+        assert_eq!(effects.splash(3, &harming), Some(5.0));
+        effects.add(4, MobEffect::Slowness, 0, 100);
+        effects.add(4, MobEffect::Weakness, 0, 100);
+        assert!((effects.speed(4) - 0.85).abs() < 1e-6);
+        assert_eq!(effects.attack_damage(4), -4.0);
+        assert_eq!(effects.speed(3), 1.0);
+        effects.arrow(5, minecraftoss_player::survival::EffectKind::Slowness, 200);
+        assert_eq!(effects.marks(5), (true, false, false));
+        effects.clear(4);
+        assert!(effects.of(4).is_empty());
     }
 }

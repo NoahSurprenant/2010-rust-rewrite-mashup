@@ -429,6 +429,16 @@ impl FrameWorld<'_> {
         true
     }
 
+    /// Scales the player's movement speed multiplier by `factor`, on top of
+    /// what its scripts set.
+    pub fn scale_move_speed(&mut self, id: ClientId, factor: f32) -> bool {
+        let Some(ps) = self.player_mut(id) else {
+            return false;
+        };
+        ps.move_speed_scale_multiplier *= factor;
+        true
+    }
+
     pub fn set_view_height_target(&mut self, id: ClientId, view_height_target: i32) -> bool {
         let Some(ps) = self.player_mut(id) else {
             return false;

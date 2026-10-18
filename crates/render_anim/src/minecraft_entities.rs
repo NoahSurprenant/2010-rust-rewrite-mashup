@@ -13,7 +13,10 @@ use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
 use minecraft_terrain::server::{PlayerEdit, ServerHandle, ServerSim, TickInput};
 use minecraft_terrain::terrain::TerrainStream;
 use minecraft_terrain::client_mobs::{ClientMobs, server_mobs};
-use minecraft_terrain::mob_sync::{ClientCopy, HostMob, MobSpawn};
+use minecraft_terrain::mob_sync::{
+    ClientCopy, ClientProjectiles, EventLog, HostMob, MobSpawn, PlayerEffect, PlayerEffects, Projectile, ProjectileKind, WorldEvent,
+};
+use minecraft_terrain::effect_particles::EffectParticles;
 use minecraft_terrain::mesh::ItemVisuals;
 use minecraft_terrain::server::{EntitySnapshot, ServerItem};
 use minecraftoss_player::inventory::{Inventory, ItemStack};
@@ -34,6 +37,8 @@ const HEALTH_SCALE: f32 = 20.0 / 100.0;
 const PLAYER: u64 = 0;
 /// `Player.getEyeHeight` standing.
 const EYE_HEIGHT: f32 = 1.62;
+/// Chunks the level ticks, spawns and despawns in around each player.
+pub(crate) const SIMULATION_DISTANCE: i32 = 8;
 
 pub(crate) struct Entities {
     server: ServerHandle,
@@ -90,7 +95,51 @@ pub(crate) struct Entities {
     copy: ClientCopy,
     /// A client's punches on mobs, for the host.
     pub(crate) pending_attacks: Vec<u64>,
+    /// A host's events of the last few ticks, for its clients.
+    pub(crate) events: EventLog,
+    /// A host's arrows and potions as of `mob_tick`.
+    pub(crate) projectiles: Vec<Projectile>,
+    arrow_rotations: HashMap<u64, (f32, f32)>,
+    /// The players' status effects, on a host.
+    pub(crate) player_effects: PlayerEffects,
+    /// This player's effects as its host last told, on a client.
+    client_effects: Vec<PlayerEffect>,
+    /// The arrows and potions this game draws.
+    flying: ClientProjectiles,
+    particles: EffectParticles,
+    /// The world's sounds this game took (event and where, the latest
+    /// last), and how many in all.
+    heard: std::collections::VecDeque<(String, DVec3)>,
+    heard_total: u64,
+    /// Natural spawns and despawns, by the key of the player nearest each.
+    range: HashMap<u64, RangeStats>,
+    /// The living players at the last server tick, by key.
+    tick_players: Vec<(u64, DVec3)>,
+    /// Chunks the host's level holds.
+    pub(crate) level_chunks: usize,
 }
+
+/// Where natural spawning put mobs around one player and where mobs went
+/// from it, in blocks from that player.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RangeStats {
+    pub spawned: u32,
+    pub spawn_min: f64,
+    pub spawn_max: f64,
+    pub spawn_beyond_48: u32,
+    pub despawned: u32,
+    pub despawn_min: f64,
+    pub despawn_max: f64,
+}
+
+impl Default for RangeStats {
+    fn default() -> Self {
+        Self { spawned: 0, spawn_min: f64::INFINITY, spawn_max: 0.0, spawn_beyond_48: 0, despawned: 0, despawn_min: f64::INFINITY, despawn_max: 0.0 }
+    }
+}
+
+/// How many world sounds a game keeps for the console.
+const HEARD_KEPT: usize = 64;
 
 /// One of a host's clients as the mobs see it.
 pub(crate) struct RemotePlayer {
@@ -99,7 +148,7 @@ pub(crate) struct RemotePlayer {
 }
 
 /// A host client's id in the mob world (the host's own player is 0).
-fn remote_key(client: u32) -> u64 {
+pub(crate) fn remote_key(client: u32) -> u64 {
     u64::from(client) + 1
 }
 
@@ -189,6 +238,126 @@ impl Entities {
             mobs_fresh: false,
             copy: ClientCopy::default(),
             pending_attacks: Vec::new(),
+            events: EventLog::default(),
+            projectiles: Vec::new(),
+            arrow_rotations: HashMap::new(),
+            player_effects: PlayerEffects::default(),
+            client_effects: Vec::new(),
+            flying: ClientProjectiles::default(),
+            particles: EffectParticles::default(),
+            heard: std::collections::VecDeque::new(),
+            heard_total: 0,
+            range: HashMap::new(),
+            tick_players: Vec::new(),
+            level_chunks: 0,
+        }
+    }
+
+    /// Something that happened in the level, heard and seen here: a sound,
+    /// a potion's splash (its particles and `entity.splash_potion.break`) or
+    /// a blast (its puffs and `ServerExplosion`'s loud, low sound).
+    fn world_event(&mut self, event: WorldEvent) {
+        match event {
+            WorldEvent::Sound { event, position, volume, pitch } => {
+                let at = DVec3::from_array(position);
+                self.heard_total += 1;
+                self.heard.push_back((event.clone(), at));
+                if self.heard.len() > HEARD_KEPT {
+                    self.heard.pop_front();
+                }
+                self.sounds.push((event, at, volume, pitch));
+            }
+            WorldEvent::Splash { position, color, instant } => {
+                let at = DVec3::from_array(position);
+                self.particles.splash(at, color, instant);
+                let pitch = self.random.next_float() * 0.1 + 0.9;
+                self.sounds.push(("minecraft:entity.splash_potion.break".to_owned(), at, 1.0, pitch));
+            }
+            WorldEvent::Explosion { position, radius } => {
+                let at = DVec3::from_array(position);
+                self.particles.explosion(at, radius);
+                let pitch = (1.0 + (self.random.next_float() - self.random.next_float()) * 0.2) * 0.7;
+                self.sounds.push(("minecraft:entity.generic.explode".to_owned(), at, 4.0, pitch));
+            }
+        }
+    }
+
+    /// The world sounds this game took, the latest last, and how many in all.
+    pub(crate) fn heard(&self) -> (impl Iterator<Item = &(String, DVec3)>, u64) {
+        (self.heard.iter(), self.heard_total)
+    }
+
+    /// The local player's status effects: its own on a host, as told on a
+    /// client.
+    pub(crate) fn effects(&self) -> Vec<PlayerEffect> {
+        if self.remote { self.client_effects.clone() } else { self.player_effects.of(PLAYER) }
+    }
+
+    /// How many arrows and potions of each kind this game has drawn.
+    pub(crate) fn projectiles_seen(&self) -> Vec<(&'static str, usize)> {
+        self.flying.seen()
+    }
+
+    /// Natural spawns and despawns around the player with `key`.
+    pub(crate) fn range_stats(&self, key: u64) -> RangeStats {
+        self.range.get(&key).copied().unwrap_or_default()
+    }
+
+    /// Each tracked mob's feet and whether it goes far from every player
+    /// (`removeWhenFarAway`, not persistent: the monsters and bats).
+    pub(crate) fn tracked_census(&self) -> Vec<(DVec3, bool)> {
+        const STAY: [&str; 8] = [
+            "minecraft:iron_golem",
+            "minecraft:wolf",
+            "minecraft:villager",
+            "minecraft:cow",
+            "minecraft:mooshroom",
+            "minecraft:sheep",
+            "minecraft:pig",
+            "minecraft:chicken",
+        ];
+        self.world.census().into_iter().map(|m| (m.position, !m.persistent && !STAY.contains(&m.kind))).collect()
+    }
+
+    /// The living players of the last server tick: key and feet.
+    pub(crate) fn tick_players(&self) -> &[(u64, DVec3)] {
+        &self.tick_players
+    }
+
+    /// A player's movement speed as a share of its own, by its effects.
+    pub(crate) fn speed_of(&self, key: u64) -> f32 {
+        self.player_effects.speed(key)
+    }
+
+    /// Magic damage (Minecraft health) on the player with `key`: the host's
+    /// own into `hits`, a client's for its host to deal.
+    fn hurt_player(&mut self, key: u64, amount: f32, from: Option<[f64; 3]>, hits: &mut Vec<(i32, Option<[f64; 3]>)>) {
+        let damage = (amount / HEALTH_SCALE).round() as i32;
+        if key == PLAYER {
+            hits.push((damage, from));
+        } else if let Some(client) = key.checked_sub(1).and_then(|c| u32::try_from(c).ok()) {
+            self.remote_hits.push((client, damage, from));
+        }
+    }
+
+    /// Spawns or despawns at these feet count for the player nearest them.
+    fn note_range(&mut self, at: [f64; 3], spawned: bool) {
+        let at = DVec3::from_array(at);
+        let Some((key, distance)) =
+            self.tick_players.iter().map(|(key, feet)| (*key, feet.distance(at))).min_by(|a, b| a.1.total_cmp(&b.1))
+        else {
+            return;
+        };
+        let stats = self.range.entry(key).or_default();
+        if spawned {
+            stats.spawned += 1;
+            stats.spawn_min = stats.spawn_min.min(distance);
+            stats.spawn_max = stats.spawn_max.max(distance);
+            stats.spawn_beyond_48 += u32::from(distance > 48.0);
+        } else {
+            stats.despawned += 1;
+            stats.despawn_min = stats.despawn_min.min(distance);
+            stats.despawn_max = stats.despawn_max.max(distance);
         }
     }
 
@@ -361,7 +530,7 @@ impl Entities {
             player_id: PLAYER,
             position: eye - DVec3::Y * f64::from(EYE_HEIGHT),
             yaw,
-            attack_damage: 1.0,
+            attack_damage: (1.0 + self.player_effects.attack_damage(PLAYER)).max(0.0),
             strength: 1.0,
             sprinting: false,
             can_critical: false,
@@ -432,7 +601,7 @@ impl Entities {
             player_id: remote_key(client),
             position: DVec3::from_array(feet),
             yaw,
-            attack_damage: 1.0,
+            attack_damage: (1.0 + self.player_effects.attack_damage(remote_key(client))).max(0.0),
             strength: 1.0,
             sprinting: false,
             can_critical: false,
@@ -467,11 +636,16 @@ impl Entities {
     /// then take as they take a server tick's.
     pub(crate) fn mob_frame(&mut self, bytes: &[u8]) {
         match minecraft_terrain::mob_sync::decode_frame(bytes) {
-            Ok((tick, states)) => {
-                if self.copy.apply(&mut self.world, tick, &states) {
+            Ok(frame) => {
+                if self.copy.apply(&mut self.world, frame.tick, &frame.states) {
                     for (feet, width, height) in self.client.receive(server_mobs(&self.world)) {
                         self.poof.spawn(feet, width, height);
                     }
+                    for event in self.copy.fresh_events(&frame.extras.events) {
+                        self.world_event(event);
+                    }
+                    self.flying.receive(&frame.extras.projectiles);
+                    self.client_effects = frame.extras.effects;
                 }
             }
             Err(error) => diag::warn!(World, "Minecraft mob states dropped: {error}"),
@@ -501,6 +675,7 @@ impl Entities {
     ) -> (Vec<((i32, i32, i32), Option<Block>)>, Vec<(i32, Option<[f64; 3]>)>) {
         self.clock += dt;
         let ticked = self.clock >= TICK_SECONDS;
+        let mut hits = Vec::new();
         if ticked {
             self.clock = (self.clock - TICK_SECONDS).min(TICK_SECONDS);
             self.ticks += 1;
@@ -546,9 +721,34 @@ impl Entities {
                 pitch: view.pitch,
                 disguised: false,
             };
-            let vitals = |view: &PlayerView| minecraftoss_entities::monster_ai::PlayerVitals {
-                health: view.health * HEALTH_SCALE,
-                ..Default::default()
+            // The players' effects: a death takes them, and poison bites.
+            if !player.alive {
+                self.player_effects.clear(PLAYER);
+            }
+            for remote in self.players.iter().filter(|r| !r.view.alive) {
+                self.player_effects.clear(remote_key(remote.client));
+            }
+            let health_of = |key: u64| {
+                let view = if key == PLAYER {
+                    Some(player)
+                } else {
+                    self.players.iter().find(|r| remote_key(r.client) == key).map(|r| &r.view)
+                };
+                view.map_or(0.0, |view| view.health * HEALTH_SCALE)
+            };
+            for (key, amount) in self.player_effects.tick(health_of) {
+                self.hurt_player(key, amount, None, &mut hits);
+            }
+            let effects = &self.player_effects;
+            let vitals = |key: u64, view: &PlayerView| {
+                let (slowed, poisoned, weakened) = effects.marks(key);
+                minecraftoss_entities::monster_ai::PlayerVitals {
+                    health: view.health * HEALTH_SCALE,
+                    slowed,
+                    poisoned,
+                    weakened,
+                    ..Default::default()
+                }
             };
             // The host's own player, then its clients: the level ticks,
             // spawns and despawns around each, and its mobs hunt each.
@@ -557,24 +757,29 @@ impl Entities {
             let mut tracking = vec![player.feet];
             let mut mob_players = vec![candidate(PLAYER, player)];
             let mut mob_views = vec![(PLAYER, look(player))];
-            let mut mob_vitals = vec![(PLAYER, vitals(player))];
+            let mut mob_vitals = vec![(PLAYER, vitals(PLAYER, player))];
+            self.tick_players.clear();
+            if player.alive {
+                self.tick_players.push((PLAYER, DVec3::from_array(player.feet)));
+            }
             for remote in &self.players {
                 let (key, view) = (remote_key(remote.client), &remote.view);
                 if view.alive {
                     players.push(view.feet);
+                    self.tick_players.push((key, DVec3::from_array(view.feet)));
                 }
                 centers.push(((view.feet[0].floor() as i32) >> 4, (view.feet[2].floor() as i32) >> 4));
                 tracking.push(view.feet);
                 mob_players.push(candidate(key, view));
                 mob_views.push((key, look(view)));
-                mob_vitals.push((key, vitals(view)));
+                mob_vitals.push((key, vitals(key, view)));
             }
             self.server.tick(TickInput {
                 day_ticks,
                 players,
                 difficulty: 2,
                 simulation_centers: centers,
-                simulation_distance: 8,
+                simulation_distance: SIMULATION_DISTANCE,
                 pickup: player
                     .alive
                     .then(|| (player.feet, Box::new(self.inventory.clone()), self.selected)),
@@ -592,7 +797,6 @@ impl Entities {
             });
         }
         let mut changes = Vec::new();
-        let mut hits = Vec::new();
         for output in self.server.poll() {
             self.server_handled = output.handled;
             if let Some(snapshot) = output.entities {
@@ -609,16 +813,45 @@ impl Entities {
                 self.others_picked.push((key, stack));
             }
             changes.extend(output.changes);
-            for sound in &output.mob_sounds {
-                self.sounds.push((sound.event.clone(), sound.position, sound.volume, sound.pitch));
+            // What happened in the level: heard and seen here, and told to
+            // the clients near it.
+            let sounds = output.mob_sounds.iter().map(|s| (&s.event, s.position, s.volume, s.pitch));
+            let results = output.mob_results.iter().flat_map(|r| r.sounds.iter()).map(|s| (&s.event, s.position, s.volume, s.pitch));
+            let mut happened: Vec<WorldEvent> = sounds
+                .chain(results)
+                .map(|(event, position, volume, pitch)| WorldEvent::Sound {
+                    event: event.clone(),
+                    position: position.to_array(),
+                    volume,
+                    pitch,
+                })
+                .collect();
+            happened.extend(output.potion_breaks.iter().map(|b| WorldEvent::Splash {
+                position: b.position.to_array(),
+                color: b.color,
+                instant: b.instant,
+            }));
+            happened.extend(output.explosions.iter().map(|blast| WorldEvent::Explosion {
+                position: blast.position.to_array(),
+                radius: blast.radius,
+            }));
+            for event in happened {
+                self.events.push(self.mob_tick, event.clone());
+                self.world_event(event);
             }
-            for sound in output.mob_results.iter().flat_map(|result| result.sounds.iter()) {
-                self.sounds.push((sound.event.clone(), sound.position, sound.volume, sound.pitch));
+            for (key, splash) in &output.player_splashes {
+                if let Some(amount) = self.player_effects.splash(*key, splash) {
+                    self.hurt_player(*key, amount, Some(splash.at.to_array()), &mut hits);
+                }
             }
-            // `ServerExplosion`'s sound: loud, pitched down.
-            for blast in &output.explosions {
-                let pitch = (1.0 + (self.random.next_float() - self.random.next_float()) * 0.2) * 0.7;
-                self.sounds.push(("minecraft:entity.generic.explode".to_owned(), blast.position, 4.0, pitch));
+            for (_, at) in &output.natural_spawns {
+                self.note_range(*at, true);
+            }
+            for (_, at) in &output.despawns {
+                self.note_range(*at, false);
+            }
+            if output.level_chunks > 0 {
+                self.level_chunks = output.level_chunks;
             }
             for summoned in &output.summoned {
                 match summoned {
@@ -633,18 +866,25 @@ impl Entities {
                 }
                 // What the host's clients are told of them.
                 self.mob_tick = self.mob_tick.wrapping_add(1);
+                self.events.age(self.mob_tick);
                 self.mobs_fresh = true;
                 self.host_mobs = if self.players.is_empty() {
                     Vec::new()
                 } else {
                     minecraft_terrain::mob_sync::host_mobs(&self.world)
                 };
+                self.projectiles = minecraft_terrain::mob_sync::host_projectiles(&self.world, &mut self.arrow_rotations);
+                self.flying.receive(&self.projectiles);
             }
             for hit in output.player_hits {
                 let from = match hit.kind {
                     PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
                     _ => None,
                 };
+                // A tipped arrow's effect lands with it.
+                if let PlayerHitKind::Arrow { effect: Some((kind, duration)), .. } = hit.kind {
+                    self.player_effects.arrow(hit.player_id, kind, duration);
+                }
                 let damage = (hit.damage / HEALTH_SCALE).round() as i32;
                 if hit.player_id == PLAYER {
                     hits.push((damage, from));
@@ -729,6 +969,7 @@ impl Entities {
     pub(crate) fn tick_scene(&mut self, scene: &HandcraftedScene, ticks: u32) {
         for _ in 0..ticks {
             self.poof.tick(scene);
+            self.particles.tick();
         }
     }
 
@@ -792,16 +1033,27 @@ impl Entities {
             forward,
             light,
         );
+        let flying = self.flying.drawn(f64::from(partial));
         witch_render::append_potions(
             &mut out.items,
-            w.potions()
-                .iter()
-                .filter(|p| p.potion.alive)
-                .map(|p| (p, p.previous_position.lerp(p.potion.position, f64::from(partial)))),
+            flying.iter().filter_map(|(p, at)| match p.kind {
+                ProjectileKind::Potion { color } => Some((color, *at)),
+                ProjectileKind::Arrow { .. } => None,
+            }),
             atlas,
             forward,
             light,
         );
+        arrow_render::append_arrows(
+            &mut out.models,
+            flying.iter().filter_map(|(p, at)| match p.kind {
+                ProjectileKind::Arrow { tipped } => Some((*at, p.y_rot, p.x_rot, tipped)),
+                ProjectileKind::Potion { .. } => None,
+            }),
+            atlas,
+            light,
+        );
+        self.particles.append_mesh(&mut out.items, atlas, forward, partial, light);
         if let Ok(items) = self.items.mesh(&self.world_items, packs, atlas, light, partial) {
             let base = out.items.vertices.len() as u32;
             out.items.vertices.extend(items.vertices);

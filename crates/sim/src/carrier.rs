@@ -291,6 +291,10 @@ impl SimWorld {
         self.frame().set_leanf(id, leanf)
     }
 
+    pub fn scale_move_speed(&mut self, id: ClientId, factor: f32) -> bool {
+        self.frame().scale_move_speed(id, factor)
+    }
+
     pub fn set_view_height_target(&mut self, id: ClientId, view_height_target: i32) -> bool {
         self.frame().set_view_height_target(id, view_height_target)
     }

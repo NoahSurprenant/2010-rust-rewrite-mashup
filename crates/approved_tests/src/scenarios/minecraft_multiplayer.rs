@@ -10,6 +10,11 @@
 //! client must reach the client with the host's id and stand where the host
 //! has it, hurt the client, and die to the client's gun as the host sees;
 //! a pig shot dead there must drop its porkchop where the client sees it.
+//! The client must have heard the husk (its sounds, from the host), kill a
+//! husk with MW2's knife and a penned pig with its fists as the host sees,
+//! draw a witch's thrown potion and get its effect; the host's mobs must
+//! spawn and live out past 48 blocks around the client (24 to 128 blocks,
+//! despawning beyond 128) and the client must see some of them out there.
 //! Then both quit, the host and the client start again on the same
 //! settings, and the host's world comes back: the same seed, its blocks,
 //! the host's inventory and the client's (kept by player name).
@@ -265,7 +270,7 @@ fn far_mobs(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     facts.notes.insert("pig_killed", shot.killed.to_string());
     let drop = mob_steps::poll_drop(pair, "minecraft:porkchop", Duration::from_secs(SYNC_SECS))?;
     facts.notes.insert("pig_drop", drop);
-    Ok(())
+    mob_steps::beyond_the_gun(pair, FAR, &mut facts.lines, &mut facts.notes)
 }
 
 /// The second session, both games started again on the same settings.
@@ -544,6 +549,14 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
             label,
             failures: rule(facts).err().into_iter().collect(),
         })
+        .chain(
+            mob_steps::judge_beyond_the_gun(&facts.lines, &facts.notes)
+                .into_iter()
+                .map(|(label, verdict)| Check {
+                    label,
+                    failures: verdict.err().into_iter().collect(),
+                }),
+        )
         .collect()
 }
 
@@ -557,6 +570,7 @@ mod tests {
 
     fn passing() -> Facts {
         let mut f = Facts::default();
+        mob_steps::passing_beyond_the_gun(&mut f.lines, &mut f.notes);
         let mut slots = vec!["-"; 41];
         slots[..5].copy_from_slice(&["iw4:weapon/1*1"; 5]);
         let with = |slot: usize, stack: &'static str| {
