@@ -49,7 +49,7 @@ function Invoke-Chain([string]$dir, [string[]]$arguments, [int]$timeoutSec) {
     $running = @()
     do {
         Start-Sleep -Milliseconds 200
-        $running = @(Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($prefix, 'OrdinalIgnoreCase') })
+        $running = @(Get-Process -Name iw4l, iw4launcher -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($prefix, 'OrdinalIgnoreCase') })
     } while ($running.Count -gt 0 -and $clock.Elapsed.TotalSeconds -lt $timeoutSec)
     $seconds = [math]::Round($clock.Elapsed.TotalSeconds, 1)
     $left = @($running | ForEach-Object { "$($_.Id) $($_.Path)" })
@@ -120,7 +120,7 @@ else {
     Remove-Item Env:IW4L_UPDATE_URL, Env:IW4L_UPDATE, Env:IW4L_LAUNCHER -ErrorAction SilentlyContinue
     $dir = Expand-Release $OldZip 'github'
     $before = Get-Hashes $dir $manifest
-    $run = Invoke-Chain $dir @('--help') 150
+    $run = Invoke-Chain $dir @('--help') 60
     Show-Swap $dir $manifest $before
     Check ($run.Text -match "\[iw4launcher\] updated to channel=github protocol=\d+ git=$($manifest.git) build=$($manifest.build)") "the launcher updated to build $($manifest.build)"
     Check ($run.Text -match '\[iw4launcher\] starting iw4l\.exe --help') 'the launcher started the new iw4l.exe'
