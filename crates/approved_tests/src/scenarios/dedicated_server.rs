@@ -39,6 +39,9 @@ pub const CLASSES: &str = crate::scenarios::crafting_table::CLASSES;
 pub const LOAD_SECS: u64 = 600;
 pub const STEP_SECS: u64 = 60;
 pub const SYNC_SECS: u64 = 30;
+/// A rejoining client's whole edit history: the level's own changes (the
+/// leaves of a mangrove swamp settling) can run to a hundred thousand.
+pub const REJOIN_SECS: u64 = 120;
 /// The room left empty: longer than a master session's 60 s without
 /// authority progress, after which a stalled host is dropped.
 pub const EMPTY_SECS: u64 = 75;
@@ -362,10 +365,10 @@ pub fn revisit(pair: &mut Pair, facts: &mut Facts, room: &str, n: u32) -> Result
         gold,
         GOLD,
         "minecraft:gold_block",
-        Duration::from_secs(SYNC_SECS),
+        Duration::from_secs(REJOIN_SECS),
     )?;
     facts.notes.insert(gold, block);
-    let block = pair.poll_block(true, roof, ROOF.1, GLASS, Duration::from_secs(SYNC_SECS))?;
+    let block = pair.poll_block(true, roof, ROOF.1, GLASS, Duration::from_secs(REJOIN_SECS))?;
     facts.notes.insert(roof, block);
     Ok(())
 }
