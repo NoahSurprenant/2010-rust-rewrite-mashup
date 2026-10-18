@@ -616,23 +616,31 @@ fn ingress_authority(
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct DebugGate<'w> {
     admins: Option<Res<'w, crate::DebugAdmins>>,
+    identities: Option<Res<'w, crate::PlayerIdentities>>,
     world: Option<Res<'w, AuthorityWorld>>,
     notify: Option<ResMut<'w, crate::PendingGameNotify>>,
 }
 
 impl DebugGate<'_> {
-    /// The player's name when it may not run debug commands here.
+    /// Who the player is (name and key), when it may not run debug commands
+    /// here: its proved key is not on the admin list.
     fn refuses(&self, client: ClientId) -> Option<String> {
+        let Some(identities) = self.identities.as_deref() else {
+            return Some(format!("client {}", client.0));
+        };
+        if self
+            .admins
+            .as_ref()
+            .is_some_and(|admins| admins.allows(identities, client))
+        {
+            return None;
+        }
         let name = self
             .world
             .as_ref()
             .map(|world| crate::client_name_string(&world.0, client))
             .unwrap_or_default();
-        let admitted = self
-            .admins
-            .as_ref()
-            .is_some_and(|admins| admins.admits(&name));
-        (!admitted).then_some(name)
+        Some(crate::authority::admins::who(identities, &name, client))
     }
 }
 

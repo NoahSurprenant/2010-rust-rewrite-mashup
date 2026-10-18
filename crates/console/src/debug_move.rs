@@ -47,7 +47,9 @@ pub(crate) fn spawn_showpos_hud(commands: &mut Commands, font: Handle<Font>) {
 
 pub(crate) fn register_debug_move_commands(registry: &mut ConsoleRegistry) {
     registry.register(crate::CommandSpec::new("skate").usage(crate::debug_skate::USAGE));
-    registry.register(crate::CommandSpec::new("admins").usage(crate::debug_admins::USAGE));
+    registry.register(crate::CommandSpec::new("admins").usage(crate::debug_admins::ADMINS_USAGE));
+    registry.register(crate::CommandSpec::new("admin").usage(crate::debug_admins::ADMIN_USAGE));
+    registry.register(crate::CommandSpec::new("whoami").usage(crate::debug_admins::WHOAMI_USAGE));
     if registry.resolve("showpos").is_none() {
         registry.register(
             crate::CommandSpec::new("showpos")

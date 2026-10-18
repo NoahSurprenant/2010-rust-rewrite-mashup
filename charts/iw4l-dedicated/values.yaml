@@ -53,11 +53,13 @@ room:
     existingSecret: ""
     key: password
 
-# The players allowed debug commands on the server (IW4L_ADMINS): `mc give`, `mc clear`, `mc fill`,
-# `mc set`, `mc summon`, `give`, `tp`, `kill`, `damage` and the like. By in-game player name (at
-# most 15 bytes, no commas), the only identity a player has: anyone can take a name, so list only
-# names you trust. Empty: no player may; a refused command is logged and the player told.
-admins: []
+# The players allowed debug commands on the server (IW4L_ADMIN_KEYS): `mc give`, `mc clear`,
+# `mc fill`, `mc set`, `mc summon`, `give`, `tp`, `kill`, `damage`, `admin transfer` and the like. By
+# player key: each game keeps a key pair in player.key beside its settings.cfg and proves it on
+# joining; its fingerprint (64 hex digits) is what the console's `whoami` prints, and what the
+# server logs on every join (`player joined: name=... key=...`). Empty: no player may; a refused
+# command is logged and the player told. docs/DEDICATED.md, "Player keys and admins".
+adminKeys: []
 
 # The Minecraft map's kept world.
 minecraft:

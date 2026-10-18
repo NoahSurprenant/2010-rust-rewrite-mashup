@@ -59,9 +59,11 @@ More about skating in [docs/SKATE.md](docs/SKATE.md).
 
 Host a lobby on **overworld** and your friends play the same world: the host's game picks the seed and runs the world, and every block placed or broken, every crafting click and every item on the ground goes through it. Players who join late get every change made so far.
 
-The host keeps the world. Hosting again continues it: the same seed, every block that changed, and each player's inventory, kept by player name. It is saved in `minecraft-worlds/world` beside your `settings.cfg` (in `iw4l-artifacts` on Windows, `~/.config/iw4l` on Linux) every few seconds and when the game closes. To keep several worlds, name one with `IW4L_MINECRAFT_WORLD=<name>` or the console's `mc world <name>` before hosting; `IW4L_MINECRAFT_WORLDS=<folder>` moves them all. Playing alone keeps nothing unless you name a world. Only the host writes the world; joining players keep nothing.
+The host keeps the world. Hosting again continues it: the same seed, every block that changed, and each player's inventory, kept by player key. It is saved in `minecraft-worlds/world` beside your `settings.cfg` (in `iw4l-artifacts` on Windows, `~/.config/iw4l` on Linux) every few seconds and when the game closes. To keep several worlds, name one with `IW4L_MINECRAFT_WORLD=<name>` or the console's `mc world <name>` before hosting; `IW4L_MINECRAFT_WORLDS=<folder>` moves them all. Playing alone keeps nothing unless you name a world. Only the host writes the world; joining players keep nothing.
 
 Mobs are the host's alone for now: the host sees and fights them, players who join don't.
+
+**Your player key** (`player.key` beside `settings.cfg`) is who you are to every host: your inventory is kept by it, and a host's admins (who may use debug commands such as `mc give` or `tp`) are listed by its fingerprint, which `whoami` in the console prints. Back the file up and keep it private; a lost key cannot be recovered, but a host's admin can move what you had to your new key with `admin transfer`. Details: [docs/DEDICATED.md](docs/DEDICATED.md#player-keys-and-admins).
 
 ## Controller
 

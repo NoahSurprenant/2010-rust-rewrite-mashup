@@ -253,6 +253,14 @@ pub enum ClientPacket {
         claimed_client: u32,
         state: Vec<u8>,
     },
+
+    /// The sender's player key and its proof for this join
+    /// (`player_key::PlayerProof`: the room and its member id, signed), on
+    /// the control stream once it is accepted.
+    Identity {
+        header: PacketHeader,
+        proof: player_key::PlayerProof,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -281,6 +289,7 @@ const TAG_CLIENT_CONNECT: u8 = 1;
 const TAG_CLIENT_COMMANDS: u8 = 2;
 const TAG_CLIENT_SNAP_ACK: u8 = 3;
 const TAG_CLIENT_SKATE: u8 = 4;
+const TAG_CLIENT_IDENTITY: u8 = 5;
 const TAG_SERVER_ACCEPT: u8 = 10;
 const TAG_SERVER_REJECT: u8 = 11;
 const TAG_SERVER_SNAPSHOT: u8 = 12;
@@ -506,6 +515,12 @@ impl ClientPacket {
                 out.put_u16(state.len() as u16);
                 out.put_bytes(state);
             }
+            Self::Identity { header, proof } => {
+                out.put_u8(TAG_CLIENT_IDENTITY);
+                put_header(out, header);
+                out.put_bytes(&proof.public);
+                out.put_bytes(&proof.signature);
+            }
         }
     }
 
@@ -546,6 +561,16 @@ impl ClientPacket {
                 header: get_header(input)?,
                 snapshot_seq: input.get_u32()?,
             }),
+            TAG_CLIENT_IDENTITY => {
+                let header = get_header(input)?;
+                let mut proof = player_key::PlayerProof {
+                    public: [0; player_key::PUBLIC_KEY_BYTES],
+                    signature: [0; player_key::SIGNATURE_BYTES],
+                };
+                input.get_bytes(&mut proof.public)?;
+                input.get_bytes(&mut proof.signature)?;
+                Ok(Self::Identity { header, proof })
+            }
             TAG_CLIENT_SKATE => {
                 let header = get_header(input)?;
                 let claimed_client = input.get_u32()?;

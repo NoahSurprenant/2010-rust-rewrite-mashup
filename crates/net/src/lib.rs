@@ -1,6 +1,7 @@
 pub mod authority;
 pub mod client;
 pub mod gaps;
+pub mod identity;
 mod observe;
 pub mod plugin;
 pub mod policy;
@@ -88,6 +89,7 @@ pub use client::runtime::{
     sample_client_input, send_pending_commands,
 };
 pub use gaps::{NetGap, NetGapCause, NetIdentityGaps, ScriptNotify};
+pub use identity::{LocalPlayerKey, PlayerIdentities, PlayerIdentity};
 pub use plugin::NetPlugin;
 pub use policy::seat::{
     ActiveKillcams, KillcamSession, SeatSample, apply_seat_to_snapshot, killcam_seconds_to_ms,
@@ -176,4 +178,4 @@ pub use skate::{SkateOutbox, SkaterDownlink, SkaterRelay, SkaterState, SkaterTra
 /// 96: the snapshot's Minecraft mob section carries the level's sounds,
 /// splashes and blasts, arrows and potions in flight, and the player's
 /// status effects.
-pub const PROTOCOL_VERSION: u32 = 96;
+pub const PROTOCOL_VERSION: u32 = 97;

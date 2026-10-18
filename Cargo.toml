@@ -53,6 +53,7 @@ members = [
     "crates/net",
     "crates/iw4l-master",
     "crates/perf",
+    "crates/player_key",
     "crates/playerstate_iw4",
     "crates/render",
     "crates/render_anim",
@@ -154,6 +155,7 @@ master_protocol = { path = "crates/master_protocol" }
 movement_iw4 = { path = "crates/movement_iw4" }
 net = { path = "crates/net" }
 perf = { path = "crates/perf" }
+player_key = { path = "crates/player_key" }
 playerstate_iw4 = { path = "crates/playerstate_iw4" }
 render = { path = "crates/render" }
 render_anim = { path = "crates/render_anim" }

@@ -19,6 +19,9 @@ use minecraftoss_player::inventory::{Inventory, ItemStack};
 use crate::pack::ResourceId;
 use crate::scene::{Block, BlockPos};
 
+pub mod players;
+pub use players::{PlayerEntry, PlayerRecord, Players, Transfer, is_fingerprint};
+
 /// The most bytes an encoded intent takes: it rides in a fixed-size
 /// `ClientAction`.
 pub const INTENT_BYTES: usize = 96;
@@ -290,6 +293,36 @@ pub enum Intent {
         kind: String,
         at: [f64; 3],
     },
+    /// The console's `admin transfer`: a player's kept record (by its old
+    /// key, or by the name it played under) moved to a new key.
+    Transfer {
+        from: TransferFrom,
+        to: [u8; 32],
+    },
+}
+
+/// Whose record an `admin transfer` moves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TransferFrom {
+    Key([u8; 32]),
+    Name(String),
+}
+
+/// A fingerprint's 32 bytes, from its 64 hex digits.
+pub fn fingerprint_bytes(fingerprint: &str) -> Option<[u8; 32]> {
+    if !is_fingerprint(fingerprint) {
+        return None;
+    }
+    let mut bytes = [0u8; 32];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&fingerprint[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(bytes)
+}
+
+/// 32 bytes as a fingerprint.
+pub fn fingerprint_hex(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn encode_slot(w: &mut Writer, slot: SlotRef) {
@@ -326,6 +359,7 @@ impl Intent {
             Self::Clear => Some("mc clear"),
             Self::Fill { .. } => Some("mc fill"),
             Self::Summon { .. } => Some("mc summon"),
+            Self::Transfer { .. } => Some("admin transfer"),
             Self::Break { .. }
             | Self::Place { .. }
             | Self::Click(_)
@@ -438,6 +472,23 @@ impl Intent {
                     w.f64(*v);
                 }
             }
+            Self::Transfer { from, to } => {
+                w.u8(12);
+                match from {
+                    TransferFrom::Key(key) => {
+                        w.u8(0);
+                        w.0.extend_from_slice(key);
+                    }
+                    TransferFrom::Name(name) => {
+                        if !id_fits(name) {
+                            return None;
+                        }
+                        w.u8(1);
+                        w.str(name);
+                    }
+                }
+                w.0.extend_from_slice(to);
+            }
         }
         (w.0.len() <= INTENT_BYTES).then_some(w.0)
     }
@@ -494,6 +545,14 @@ impl Intent {
             11 => Self::Summon {
                 kind: r.str()?,
                 at: [r.f64()?, r.f64()?, r.f64()?],
+            },
+            12 => Self::Transfer {
+                from: match r.u8()? {
+                    0 => TransferFrom::Key(r.array()?),
+                    1 => TransferFrom::Name(r.str()?),
+                    _ => return Err(DecodeError::Malformed("transfer")),
+                },
+                to: r.array()?,
             },
             _ => return Err(DecodeError::Malformed("intent")),
         };
@@ -930,8 +989,8 @@ pub struct Level {
 pub struct SavedWorld {
     pub level: Level,
     pub edits: EditLog,
-    /// Each player's inventory by player name.
-    pub players: BTreeMap<String, InventoryState>,
+    /// Each player by its key (`players::Players`).
+    pub players: Players,
 }
 
 /// A world name as a directory name: letters, digits, `-`, `_` and `.`
@@ -982,7 +1041,7 @@ impl SavedWorld {
                 origin,
             },
             edits: EditLog::default(),
-            players: BTreeMap::new(),
+            players: Players::default(),
         }
     }
 
@@ -1007,7 +1066,7 @@ impl SavedWorld {
         };
         let players = match std::fs::read(dir.join(PLAYERS_FILE)) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(io_error)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Players::default(),
             Err(e) => return Err(e),
         };
         Ok(Some(Self {
@@ -1094,6 +1153,14 @@ mod tests {
                 kind: "minecraft:husk".into(),
                 at: [320.5, 61.0, -2.25],
             },
+            Intent::Transfer {
+                from: TransferFrom::Key([0xab; 32]),
+                to: [0xcd; 32],
+            },
+            Intent::Transfer {
+                from: TransferFrom::Name("a_fifteen_bytes".into()),
+                to: [0x01; 32],
+            },
         ]
     }
 
@@ -1111,6 +1178,15 @@ mod tests {
     }
 
     #[test]
+    fn fingerprints_travel_as_their_bytes() {
+        let fingerprint = "0123456789abcdef".repeat(4);
+        let bytes = fingerprint_bytes(&fingerprint).unwrap();
+        assert_eq!(fingerprint_hex(&bytes), fingerprint);
+        assert_eq!(fingerprint_bytes("0123"), None);
+        assert_eq!(fingerprint_bytes(&"G".repeat(64)), None);
+    }
+
+    #[test]
     fn only_the_console_cheats_need_an_admin() {
         let debug: Vec<&str> = every_intent()
             .iter()
@@ -1118,7 +1194,15 @@ mod tests {
             .collect();
         assert_eq!(
             debug,
-            ["mc give", "mc clear", "mc fill", "mc fill", "mc summon"]
+            [
+                "mc give",
+                "mc clear",
+                "mc fill",
+                "mc fill",
+                "mc summon",
+                "admin transfer",
+                "admin transfer"
+            ]
         );
         // What play makes never does: mining, placing, clicks, punches.
         for intent in every_intent() {
@@ -1416,7 +1500,9 @@ mod tests {
             .edits
             .push((99, 135, -22), Some("minecraft:stone".into()));
         saved.edits.push((99, 135, -22), None);
-        saved.players.insert("host".into(), inventory_state());
+        saved
+            .players
+            .keep(&"a".repeat(64), "host", inventory_state(), 1);
         let mut other = InventoryState::default();
         other.slots = vec![None; 43];
         other.slots[3] = Some(WireStack {
@@ -1425,19 +1511,25 @@ mod tests {
             max: 64,
             components: None,
         });
-        saved.players.insert("client".into(), other.clone());
+        saved
+            .players
+            .keep(&"b".repeat(64), "client", other.clone(), 2);
         saved.save(&world).unwrap();
         let loaded = SavedWorld::load(&world).unwrap().unwrap();
         assert_eq!(loaded.level, saved.level);
         assert_eq!(loaded.edits, saved.edits.compacted());
-        assert_eq!(loaded.players.get("client"), Some(&other));
-        assert_eq!(loaded.players.get("host"), Some(&inventory_state()));
-        assert_eq!(loaded.players.len(), 2);
+        assert_eq!(loaded.players, saved.players);
+        let client = loaded.players.record(&"b".repeat(64)).unwrap();
+        assert_eq!(client.inventory, Some(other));
+        assert_eq!(client.name, "client");
         // Saving again replaces the files whole.
         let mut again = loaded.clone();
-        again.players.remove("host");
+        again.players = Players::default();
         again.save(&world).unwrap();
-        assert_eq!(SavedWorld::load(&world).unwrap().unwrap().players.len(), 1);
+        assert_eq!(
+            SavedWorld::load(&world).unwrap().unwrap().players,
+            Players::default()
+        );
     }
 
     #[test]

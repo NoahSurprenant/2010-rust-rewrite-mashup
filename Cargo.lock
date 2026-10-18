@@ -204,6 +204,7 @@ dependencies = [
  "asset_transport",
  "master_pin",
  "master_protocol",
+ "player_key",
  "rcgen",
  "rustls",
  "serde_json",
@@ -2222,6 +2223,7 @@ dependencies = [
  "master_protocol",
  "net",
  "perf",
+ "player_key",
  "playerstate_iw4",
  "render",
  "render_frontend",
@@ -4144,6 +4146,7 @@ dependencies = [
  "math_iw4",
  "movement_iw4",
  "perf",
+ "player_key",
  "playerstate_iw4",
  "quinn",
  "rustls",
@@ -4851,6 +4854,14 @@ name = "plain"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
+
+[[package]]
+name = "player_key"
+version = "0.1.0"
+dependencies = [
+ "ring",
+ "sha2",
+]
 
 [[package]]
 name = "playerstate_iw4"

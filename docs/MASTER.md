@@ -120,7 +120,8 @@ port `4434` and server name `iw4l-dev` instead.
 | `IW4L_MASTER_HOST_NAME` | The room name other players see. To host via `map`, set a name that is not empty or only whitespace, and leave `IW4L_MASTER_JOIN` unset. Names can occupy at most 48 UTF-8 bytes. Hosting through the menu uses `iw4l host` if the name is unset. Joining through the menu needs no host name. |
 | `IW4L_MASTER_MAX_PLAYERS` | The room capacity, **including the host**. Optional; defaults to `18`. Set an integer from `2` through `18` to limit the room size. It is read only when creating a room, via `map` or the menu; invalid values prevent room creation rather than being clamped. |
 | `IW4L_MASTER_PASSWORD` | The room password for command-line hosting and joining. Lobby settings can set, change or remove it; joining a protected room through the menu prompts for it. |
-| `IW4L_ADMINS` | The players (comma-separated in-game names) whose debug commands (`mc give`, `mc fill`, `mc summon`, `tp`, `give`, ...) the host applies. A host always takes them from its own console and bots; with this unset, from no other player. See [`DEDICATED.md`](DEDICATED.md). |
+| `IW4L_ADMIN_KEYS` | The players (comma-separated player key fingerprints, as `whoami` prints them) whose debug commands (`mc give`, `mc fill`, `mc summon`, `tp`, `give`, `admin transfer`, ...) the host applies. A host always takes them from its own console and bots; with this unset, from no other player. See [`DEDICATED.md`](DEDICATED.md), "Player keys and admins". |
+| `IW4L_PLAYER_KEY` | Where this game keeps its player key (default: `player.key` beside `settings.cfg`). |
 
 The host can start a match with:
 

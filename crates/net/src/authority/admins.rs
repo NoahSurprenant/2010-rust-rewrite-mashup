@@ -1,9 +1,9 @@
 //! Who may run debug commands on a host. A host's own console and its bots
-//! always may; a remote player only when its name is on the host's admin
-//! list, which `IW4L_ADMINS` (comma-separated player names) sets when the
-//! game starts and the `admins` console command changes. Player names are
-//! the only identity a player has: an admin's name is trusted as given.
-//! With no list, no remote player is an admin.
+//! always may; a remote player only when the player key it proved on
+//! joining (`crate::identity`) is on the host's admin list: `IW4L_ADMIN_KEYS`
+//! (comma-separated fingerprints, as `whoami` prints them) when the game
+//! starts, or the `admins` console command. With no list, no remote player
+//! is an admin; a guest (no valid proof) never is.
 //!
 //! A refused command is logged on the host (`debug-refused:` on stdout and
 //! a warning) and the player is told on its HUD (`host-message:` on its
@@ -11,66 +11,96 @@
 use bevy::prelude::Resource;
 use sim::ClientId;
 
-/// The environment variable a host reads its admin list from.
-pub const ADMINS_ENV: &str = "IW4L_ADMINS";
+/// The environment variable a host reads its admin keys from.
+pub const ADMINS_ENV: &str = "IW4L_ADMIN_KEYS";
 
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
 pub struct DebugAdmins {
-    names: Vec<String>,
+    keys: Vec<String>,
 }
 
 impl DebugAdmins {
-    /// The admins in `list`: comma-separated names, each as the game keeps
-    /// a player name (at most 15 bytes); blanks and repeats are dropped.
-    pub fn parse(list: &str) -> Self {
-        let mut names: Vec<String> = Vec::new();
-        for name in list.split(',').map(str::trim).filter_map(kept_name) {
-            if !names.contains(&name) {
-                names.push(name);
+    /// The admins in `list`: comma-separated fingerprints (64 hex digits,
+    /// any case, spaces or colons between digits); repeats are dropped, and
+    /// anything not a fingerprint is skipped (returned).
+    pub fn parse(list: &str) -> (Self, Vec<String>) {
+        let mut keys: Vec<String> = Vec::new();
+        let mut skipped = Vec::new();
+        for entry in list.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+            match player_key::normalize_fingerprint(entry) {
+                Some(key) if !keys.contains(&key) => keys.push(key),
+                Some(_) => {}
+                None => skipped.push(entry.to_owned()),
             }
         }
-        Self { names }
+        (Self { keys }, skipped)
     }
 
-    /// The list `IW4L_ADMINS` holds, or none.
+    /// The list `IW4L_ADMIN_KEYS` holds, or none.
     pub fn from_env() -> Self {
-        let admins =
-            std::env::var(ADMINS_ENV).map_or_else(|_| Self::default(), |list| Self::parse(&list));
-        if !admins.names.is_empty() {
+        let Ok(list) = std::env::var(ADMINS_ENV) else {
+            return Self::default();
+        };
+        let (admins, skipped) = Self::parse(&list);
+        for entry in skipped {
+            diag::warn!(
+                Net,
+                "{ADMINS_ENV}: `{entry}` is not a player key fingerprint; skipped"
+            );
+        }
+        if !admins.keys.is_empty() {
             diag::info!(Net, "admins: {}", admins.describe());
         }
         admins
     }
 
-    pub fn names(&self) -> &[String] {
-        &self.names
+    pub fn keys(&self) -> &[String] {
+        &self.keys
     }
 
-    /// The names, comma-separated, or `-` for none.
+    /// The fingerprints, comma-separated, or `-` for none.
     pub fn describe(&self) -> String {
-        if self.names.is_empty() {
+        if self.keys.is_empty() {
             "-".to_owned()
         } else {
-            self.names.join(",")
+            self.keys.join(",")
         }
     }
 
-    /// Whether the player called `name` is an admin.
-    pub fn admits(&self, name: &str) -> bool {
-        !name.is_empty() && self.names.iter().any(|admin| admin == name)
+    /// Whether the player with the key `fingerprint` is an admin.
+    pub fn admits(&self, fingerprint: &str) -> bool {
+        self.keys.iter().any(|key| key == fingerprint)
     }
 
-    /// Whether the host's player `client` is an admin, by the name the
-    /// host's world knows it by.
-    pub fn allows(&self, world: &sim::SimWorld, client: ClientId) -> bool {
-        self.admits(&crate::client_name_string(world, client))
+    /// Puts `to` where `from` was on the list (an `admin transfer`); whether
+    /// `from` was on it.
+    pub fn replace(&mut self, from: &str, to: &str) -> bool {
+        let Some(at) = self.keys.iter().position(|key| key == from) else {
+            return false;
+        };
+        if self.keys.iter().any(|key| key == to) {
+            self.keys.remove(at);
+        } else {
+            self.keys[at] = to.to_owned();
+        }
+        true
+    }
+
+    /// Whether `client` proved a key on the list.
+    pub fn allows(&self, identities: &crate::PlayerIdentities, client: ClientId) -> bool {
+        identities
+            .key_of(client)
+            .is_some_and(|fingerprint| self.admits(fingerprint))
     }
 }
 
-/// A name as the game keeps it: cut to a client state's 15 bytes.
-fn kept_name(name: &str) -> Option<String> {
-    let packed = entity_iw4::pack_client_state_name(name);
-    entity_iw4::client_state_name(&packed).map(str::to_owned)
+/// Who a client is, for a log line: its name and its key's short form, or
+/// `guest`.
+pub fn who(identities: &crate::PlayerIdentities, name: &str, client: ClientId) -> String {
+    match identities.key_of(client) {
+        Some(key) => format!("{name} {}", player_key::short(key)),
+        None => format!("{name} guest"),
+    }
 }
 
 /// What a refused player reads on its HUD.
@@ -87,16 +117,16 @@ pub fn refuse_debug(
     reliable: &mut crate::ReliableEventHub,
     notify: Option<&mut crate::PendingGameNotify>,
     client: ClientId,
-    name: &str,
+    who: &str,
     command: &str,
 ) {
     diag::warn!(
         Net,
-        "debug command `{command}` from client {} ({name}) refused: not an admin",
+        "debug command `{command}` from client {} ({who}) refused: not an admin",
         client.0
     );
     println!(
-        "debug-refused: client={} name={name} command=\"{command}\"",
+        "debug-refused: client={} who=\"{who}\" command=\"{command}\"",
         client.0
     );
     if let Some(notify) = notify {
@@ -111,33 +141,55 @@ pub fn refuse_debug(
 mod tests {
     use super::*;
 
+    fn key(seed: u8) -> String {
+        player_key::PlayerKey::from_seed([seed; 32]).fingerprint()
+    }
+
     #[test]
     fn no_list_admits_nobody() {
-        let admins = DebugAdmins::parse("");
-        assert!(admins.names().is_empty());
-        assert!(!admins.admits("client"));
-        assert!(!admins.admits(""));
+        let (admins, skipped) = DebugAdmins::parse("");
+        assert!(admins.keys().is_empty() && skipped.is_empty());
+        assert!(!admins.admits(&key(1)));
         assert_eq!(admins.describe(), "-");
-        assert!(!DebugAdmins::default().admits("anyone"));
+        assert!(!DebugAdmins::default().admits(&key(1)));
     }
 
     #[test]
-    fn a_list_admits_exactly_its_names() {
-        let admins = DebugAdmins::parse(" noah , client,,noah ");
-        assert_eq!(admins.names(), ["noah", "client"]);
-        assert!(admins.admits("noah"));
-        assert!(admins.admits("client"));
-        assert!(!admins.admits("Noah"));
-        assert!(!admins.admits("noa"));
-        assert!(!admins.admits("intruder"));
-        assert_eq!(admins.describe(), "noah,client");
+    fn a_list_admits_exactly_its_keys() {
+        let (a, b) = (key(1), key(2));
+        let (admins, skipped) =
+            DebugAdmins::parse(&format!(" {a} ,{},, {a}, noah", b.to_ascii_uppercase()));
+        assert_eq!(admins.keys(), [a.clone(), b.clone()]);
+        assert_eq!(skipped, ["noah"]);
+        assert!(admins.admits(&a));
+        assert!(admins.admits(&b));
+        assert!(!admins.admits(&key(3)));
+        // A short form is not a key.
+        assert!(!admins.admits(player_key::short(&a)));
+        // A transfer puts the new key in the old one's place.
+        let mut moved = admins.clone();
+        assert!(moved.replace(&a, &key(3)));
+        assert!(moved.admits(&key(3)) && !moved.admits(&a));
+        assert!(!moved.replace(&key(9), &key(4)));
     }
 
     #[test]
-    fn a_long_name_matches_as_the_game_keeps_it() {
-        let admins = DebugAdmins::parse("a_very_long_player_name");
-        assert_eq!(admins.names(), ["a_very_long_pla"]);
-        assert!(admins.admits("a_very_long_pla"));
+    fn an_admin_is_its_proved_key_not_its_name() {
+        let (admins, _) = DebugAdmins::parse(&key(1));
+        let mut identities = crate::PlayerIdentities::default();
+        let (admin, other, guest) = (ClientId(1), ClientId(2), ClientId(3));
+        identities.bind(admin, key(1));
+        identities.bind(other, key(2));
+        identities.make_guest(guest);
+        assert!(admins.allows(&identities, admin));
+        assert!(!admins.allows(&identities, other));
+        assert!(!admins.allows(&identities, guest));
+        assert!(!admins.allows(&identities, ClientId(9)), "still proving");
+        assert_eq!(who(&identities, "client", guest), "client guest");
+        assert_eq!(
+            who(&identities, "client", admin),
+            format!("client {}", player_key::short(&key(1)))
+        );
     }
 
     #[test]
@@ -202,7 +254,7 @@ mod tests {
             &mut reliable,
             Some(&mut notify),
             ClientId(2),
-            "intruder",
+            "intruder guest",
             "mc fill",
         );
         let rows = reliable.queue(ClientId(2)).expect("a queue").pending();

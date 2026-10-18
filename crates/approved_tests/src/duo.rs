@@ -98,10 +98,32 @@ impl Master {
     }
 }
 
-/// The player the scenarios' hosts take debug commands from: their
-/// client (`IW4L_ADMINS`), whose `mc set`, `mc give`, `mc summon` and `tp`
-/// steps need it.
-pub const ADMINS: (&str, &str) = ("IW4L_ADMINS", "client");
+/// The scenario client's player key (its `player.key`, written before it
+/// starts): the hosts take it as their admin (`IW4L_ADMIN_KEYS`), which its
+/// `mc set`, `mc give`, `mc summon` and `tp` steps need.
+pub fn client_key() -> player_key::PlayerKey {
+    player_key::PlayerKey::from_seed([0x42; 32])
+}
+
+/// A key no scenario player has: where a transfer parks a record.
+pub fn other_key() -> player_key::PlayerKey {
+    player_key::PlayerKey::from_seed([0x17; 32])
+}
+
+/// `IW4L_ADMIN_KEYS` naming the scenario client.
+pub fn admins_env() -> (&'static str, String) {
+    ("IW4L_ADMIN_KEYS", client_key().fingerprint())
+}
+
+/// Writes the scenario client's key in its folder (beside its
+/// `settings.cfg`), unless it is there.
+pub fn write_client_key(dir: &Path) -> Result<(), String> {
+    let path = dir.join(player_key::KEY_FILE);
+    if path.exists() {
+        return Ok(());
+    }
+    client_key().write(&path)
+}
 
 /// One game: its console, its stdout lines, and its master status file.
 pub struct Player {
@@ -124,6 +146,8 @@ pub struct Player {
     pub refusals: Vec<Event>,
     /// What its host told it in plain text (`host-message:` lines).
     pub messages: Vec<String>,
+    /// A host's `player joined:` lines: who joined, by key.
+    pub joins: Vec<Event>,
     /// Peak resident memory sampled, in KiB.
     pub peak_rss_kib: u64,
 }
@@ -165,8 +189,9 @@ impl Player {
             .env_remove("IW4L_MINECRAFT_SEED")
             .env_remove("IW4L_MINECRAFT_WORLD")
             .env_remove("IW4L_MINECRAFT_WORLDS")
-            // No admins but where a scenario names them.
-            .env_remove("IW4L_ADMINS")
+            // No admins but where a scenario names them; each game's own key.
+            .env_remove("IW4L_ADMIN_KEYS")
+            .env_remove("IW4L_PLAYER_KEY")
             // Skate 3 files only where a scenario hands them over.
             .env_remove("IW4L_SKATE_ASSETS")
             .stdin(Stdio::piped())
@@ -203,6 +228,7 @@ impl Player {
             mobnet: Vec::new(),
             refusals: Vec::new(),
             messages: Vec::new(),
+            joins: Vec::new(),
             peak_rss_kib: 0,
         })
     }
@@ -263,6 +289,10 @@ impl Player {
                 println!("[{:>7.1}s] {} -> {line}", at_ms as f64 / 1000.0, self.name);
                 self.refusals.push(event);
             }
+            if let Some(event) = parse(&line, "player joined:", at_ms) {
+                println!("[{:>7.1}s] {} -> {line}", at_ms as f64 / 1000.0, self.name);
+                self.joins.push(event);
+            }
             if let Some(text) = line.strip_prefix("host-message:") {
                 println!("[{:>7.1}s] {} -> {line}", at_ms as f64 / 1000.0, self.name);
                 self.messages.push(text.trim().to_owned());
@@ -275,6 +305,8 @@ impl Player {
                 "minecraft-mobrange:",
                 "skate-state:",
                 "debug-admins:",
+                "admin-transfer:",
+                "player-key:",
             ] {
                 if let Some(event) = parse(&line, prefix, at_ms) {
                     println!("[{:>7.1}s] {} -> {line}", at_ms as f64 / 1000.0, self.name);

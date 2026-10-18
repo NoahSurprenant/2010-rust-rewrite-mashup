@@ -3,10 +3,11 @@
 //!
 //! A dedicated server (`iw4l dedicated minecraft:overworld`) hosts a room on
 //! a master of the run's own, with no player of its own. A client joins
-//! that room; with the server's admin list emptied from its console, the
-//! client's `mc set`, `mc give`, `mc summon` and `tp` are refused, logged
-//! on the server and told to the client, and change nothing. An admin again
-//! (as `IW4L_ADMINS` made it), the client sets a block and fills its
+//! that room (the server logs it by its player key); with the server's admin
+//! list emptied from its console, the client's `mc set`, `mc give`, `mc
+//! summon`, `tp` and `admin transfer` are refused, logged on the server and
+//! told to the client, and change nothing. Its key an admin again (as
+//! `IW4L_ADMIN_KEYS` made it), the client sets a block and fills its
 //! inventory; far from the spawn, in
 //! a walled arena, a husk summoned beside it must reach it with the
 //! server's id, hurt it and die to its gun as the server sees (with no
@@ -17,7 +18,9 @@
 //! there stand for the server's measure with mobs. It leaves; the room
 //! stays listed and the server keeps running with nobody in it, past the
 //! master session's silence deadline, and meanwhile the server changes
-//! 2048 blocks, more history than one control message holds. The client
+//! 2048 blocks, more history than one control message holds, and its
+//! console moves the client's record to another key by name and back by key
+//! (`admin transfer`). The client
 //! joins again and finds its block, the last of those 2048, and its
 //! inventory. Then the server is stopped with SIGTERM, as a
 //! supervisor stops it, and started again: the world (seed, block) and the
@@ -91,6 +94,8 @@ pub struct Facts {
     pub rosters: Vec<Event>,
     /// The server's `debug-refused:` lines, in order.
     pub refusals: Vec<Event>,
+    /// The server's `player joined:` lines, in order.
+    pub joins: Vec<Event>,
     pub notes: BTreeMap<&'static str, String>,
     /// Server memory and CPU, by point.
     pub measures: BTreeMap<&'static str, Measure>,
@@ -112,6 +117,13 @@ impl Facts {
         self.lines.insert(label.to_owned(), event.clone());
         event
     }
+}
+
+/// How the server names the client in a refusal: its name and its key's
+/// short form.
+fn client_who() -> String {
+    let key = crate::duo::client_key().fingerprint();
+    format!("{CLIENT} {}", player_key::short(&key))
 }
 
 fn slots(event: &Event) -> Vec<String> {
@@ -210,13 +222,13 @@ const REFUSED_AT: [i32; 3] = [-2, 5, 0];
 const REFUSED_BLOCK: &str = "minecraft:diamond_block";
 const REFUSED_ITEM: &str = "minecraft:diamond";
 /// The debug commands the locked-out client tries, as the server names them.
-pub const REFUSED: [&str; 4] = ["mc fill", "mc give", "mc summon", "tp"];
+pub const REFUSED: [&str; 5] = ["mc fill", "mc give", "mc summon", "tp", "admin transfer"];
 
 /// The server's admin list emptied from its console: the client's `mc set`,
-/// `mc give`, `mc summon` and `tp` are refused (each logged on the server,
-/// each told to the client), the world and the client's inventory and
-/// place stay as they were; then the client is an admin again (as
-/// `IW4L_ADMINS` made it), for the steps after, which need it.
+/// `mc give`, `mc summon`, `tp` and `admin transfer` are refused (each logged
+/// on the server, each told to the client), the world and the client's
+/// inventory and place stay as they were; then the client's key is an admin
+/// again (as `IW4L_ADMIN_KEYS` made it), for the steps after, which need it.
 pub fn locked_out(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     let step = Duration::from_secs(STEP_SECS);
     let none = pair.ask(false, "admins set - s_admins_none", "s_admins_none", step)?;
@@ -225,8 +237,9 @@ pub fn locked_out(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     // A refused `tp` never reaches its pose: the console stops waiting for
     // it when the refusal comes, and the script goes on.
     client(pair)?.send(&format!(
-        "{}; mc give diamond 3; mc summon pig 2 0 0; tp {} {} {}",
+        "{}; mc give diamond 3; mc summon pig 2 0 0; admin transfer {CLIENT} {}; tp {} {} {}",
         set(REFUSED_AT, "diamond_block"),
+        crate::duo::other_key().fingerprint(),
         FAR_MAP[0],
         FAR_MAP[1],
         FAR_MAP[2]
@@ -256,7 +269,15 @@ pub fn locked_out(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     facts
         .notes
         .insert("client_messages", client(pair)?.messages.join("\n"));
-    let back = pair.ask(false, "admins set client s_admins", "s_admins", step)?;
+    let back = pair.ask(
+        false,
+        &format!(
+            "admins set {} s_admins",
+            crate::duo::client_key().fingerprint()
+        ),
+        "s_admins",
+        step,
+    )?;
     facts.keep("s_admins", back);
     facts
         .notes
@@ -416,6 +437,25 @@ pub fn empty_room(
         Duration::from_secs(SYNC_SECS),
     )?;
     facts.notes.insert("s_roof", roof);
+    // From the server's console, as its owner would after a player lost its
+    // key: the client's record moved by name to another key, and back by key.
+    let (mine, other) = (
+        crate::duo::client_key().fingerprint(),
+        crate::duo::other_key().fingerprint(),
+    );
+    let step = Duration::from_secs(STEP_SECS);
+    for (label, from, to) in [
+        ("s_xfer_away", CLIENT, other.as_str()),
+        ("s_xfer_back", other.as_str(), mine.as_str()),
+    ] {
+        let done = pair.ask(
+            false,
+            &format!("admin transfer {from} {to} {label}"),
+            label,
+            step,
+        )?;
+        facts.keep(label, done);
+    }
     Ok(())
 }
 
@@ -527,7 +567,7 @@ fn clean_stop(facts: &Facts, key: &str) -> Result<(), String> {
 
 pub fn judge(facts: &Facts) -> Vec<Check> {
     type Rule = fn(&Facts) -> Result<(), String>;
-    let rules: [(&'static str, Rule); 15] = [
+    let rules: [(&'static str, Rule); 17] = [
         ("server_has_no_player", |f| {
             let first = f.rosters.first().ok_or("no roster line from the server")?;
             want(
@@ -572,15 +612,14 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
         }),
         ("non_admin_refused", |f| {
             want(
-                line(f, "s_admins_none")?.get("names").unwrap_or(""),
+                line(f, "s_admins_none")?.get("keys").unwrap_or(""),
                 "-",
                 "the server's admins",
             )?;
             for command in REFUSED {
-                let refused = f
-                    .refusals
-                    .iter()
-                    .any(|r| r.get("command") == Some(command) && r.get("name") == Some(CLIENT));
+                let refused = f.refusals.iter().any(|r| {
+                    r.get("command") == Some(command) && r.get("who") == Some(client_who().as_str())
+                });
                 if !refused {
                     return Err(format!("the server never refused the client's `{command}`"));
                 }
@@ -615,8 +654,8 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
         }),
         ("admin_allowed", |f| {
             want(
-                line(f, "s_admins")?.get("names").unwrap_or(""),
-                CLIENT,
+                line(f, "s_admins")?.get("keys").unwrap_or(""),
+                &crate::duo::client_key().fingerprint(),
                 "the server's admins",
             )?;
             // The admin's `mc set`, `mc give`, `mc summon` and `tp` are the
@@ -631,6 +670,51 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
                 )),
                 None => Ok(()),
             }
+        }),
+        ("player_joined_by_key", |f| {
+            let key = crate::duo::client_key().fingerprint();
+            let joined = f
+                .joins
+                .iter()
+                .any(|j| j.get("name") == Some(CLIENT) && j.get("key") == Some(key.as_str()));
+            if joined {
+                Ok(())
+            } else {
+                Err(format!(
+                    "no `player joined: name={CLIENT} key={key}` on the server"
+                ))
+            }
+        }),
+        ("admin_transfer_on_server", |f| {
+            let (mine, other) = (
+                crate::duo::client_key().fingerprint(),
+                crate::duo::other_key().fingerprint(),
+            );
+            for (label, from, to) in [
+                ("s_xfer_away", &mine, &other),
+                ("s_xfer_back", &other, &mine),
+            ] {
+                let done = line(f, label)?;
+                want(done.get("result").unwrap_or("-"), "ok", label)?;
+                want(
+                    done.get("from").unwrap_or("-"),
+                    from,
+                    &format!("{label} from"),
+                )?;
+                want(done.get("to").unwrap_or("-"), to, &format!("{label} to"))?;
+                want(
+                    done.get("name").unwrap_or("-"),
+                    CLIENT,
+                    &format!("{label} name"),
+                )?;
+                want(
+                    done.get("inventory").unwrap_or("-"),
+                    "true",
+                    &format!("{label} inventory"),
+                )?;
+            }
+            // The planks came back with the record (rejoin_world_kept).
+            Ok(())
         }),
         ("client_block_on_server", |f| {
             want(note(f, "s_gold")?, "minecraft:gold_block", "server sees")
@@ -816,11 +900,17 @@ mod tests {
         }
         f.lines.insert(
             "s_admins_none".into(),
-            event("debug-admins:", "label=s_admins_none names=-"),
+            event("debug-admins:", "label=s_admins_none keys=-"),
         );
         f.lines.insert(
             "s_admins".into(),
-            event("debug-admins:", "label=s_admins names=client"),
+            event(
+                "debug-admins:",
+                &format!(
+                    "label=s_admins keys={}",
+                    crate::duo::client_key().fingerprint()
+                ),
+            ),
         );
         f.lines.insert(
             "c_refused".into(),
@@ -830,7 +920,7 @@ mod tests {
         for command in REFUSED {
             f.refusals.push(event(
                 "debug-refused:",
-                &format!("client=1 name=client command=\"{command}\""),
+                &format!("client=1 who=\"{}\" command=\"{command}\"", client_who()),
             ));
             told.push(format!(
                 "^1{command}^7 refused: only the host's admins may run debug commands"
@@ -840,6 +930,26 @@ mod tests {
         f.notes
             .insert("refused_before_admin", REFUSED.len().to_string());
         f.notes.insert("s_refused", "air".into());
+        let (mine, other) = (
+            crate::duo::client_key().fingerprint(),
+            crate::duo::other_key().fingerprint(),
+        );
+        f.joins
+            .push(event("player joined:", &format!("name=client key={mine}")));
+        for (label, from, to) in [
+            ("s_xfer_away", &mine, &other),
+            ("s_xfer_back", &other, &mine),
+        ] {
+            f.lines.insert(
+                label.into(),
+                event(
+                    "admin-transfer:",
+                    &format!(
+                        "label={label} result=ok from={from} to={to} name=\"client\" inventory=true admin=false"
+                    ),
+                ),
+            );
+        }
         f.notes.insert("husk_id", "9".into());
         f.notes.insert("husk_killed", "true".into());
         f.mobnet.push(event(
@@ -947,7 +1057,7 @@ mod tests {
         assert_eq!(failed(&f), ["non_admin_refused"]);
         let mut f = passing();
         f.refusals.retain(|r| r.get("command") != Some("mc summon"));
-        f.notes.insert("refused_before_admin", "3".into());
+        f.notes.insert("refused_before_admin", "4".into());
         assert_eq!(failed(&f), ["non_admin_refused"]);
     }
 
@@ -966,5 +1076,25 @@ mod tests {
             "client=1 name=client command=\"mc fill\"",
         ));
         assert_eq!(failed(&f), ["admin_allowed"]);
+    }
+
+    #[test]
+    fn a_join_not_logged_by_key_fails() {
+        let mut f = passing();
+        f.joins = vec![event("player joined:", "name=client key=guest")];
+        assert_eq!(failed(&f), ["player_joined_by_key"]);
+    }
+
+    #[test]
+    fn a_refused_transfer_on_the_server_fails() {
+        let mut f = passing();
+        f.lines.insert(
+            "s_xfer_away".into(),
+            event(
+                "admin-transfer:",
+                "label=s_xfer_away result=refused reason=\"2 players have played as `client`\"",
+            ),
+        );
+        assert_eq!(failed(&f), ["admin_transfer_on_server"]);
     }
 }

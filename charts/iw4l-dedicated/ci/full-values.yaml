@@ -18,9 +18,8 @@ room:
     key: password
 minecraft:
   world: example
-admins:
-  - example
-  - Another Player
+adminKeys:
+  - 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 gameData:
   nfs:
     server: nfs.example.com
