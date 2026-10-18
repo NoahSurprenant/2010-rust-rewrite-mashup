@@ -125,9 +125,17 @@ pub fn first_session(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     let feet = feet(&client).ok_or("c_ready has no feet")?;
     let stone = add(feet, [3, 0, 0]);
     let plank = add(feet, [2, 0, 0]);
+    // A stone floor under the way to the plank, so the client walks onto its
+    // drop rather than off whatever ground the seed gave it.
     let script = format!(
-        "{}; mc set {} {} {} {} {} {} air; mc clear; mc give oak_planks 4; wait 2s; mc state c_given",
+        "{}; mc set {} {} {} {} {} {} stone; mc set {} {} {} {} {} {} air; mc clear; mc give oak_planks 4; wait 2s; mc state c_given",
         set(stone, "stone"),
+        feet[0],
+        feet[1] - 1,
+        feet[2],
+        feet[0] + 3,
+        feet[1] - 1,
+        feet[2],
         feet[0] + 1,
         feet[1],
         feet[2],
