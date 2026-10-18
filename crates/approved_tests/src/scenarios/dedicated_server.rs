@@ -222,8 +222,10 @@ pub fn locked_out(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     let none = pair.ask(false, "admins set - s_admins_none", "s_admins_none", step)?;
     facts.keep("s_admins_none", none);
     let before = pair.host.refusals.len();
+    // The `tp` in the background: a refused one never reaches the pose the
+    // console would wait for.
     client(pair)?.send(&format!(
-        "{}; mc give diamond 3; mc summon pig 2 0 0; tp {} {} {}",
+        "{}; mc give diamond 3; mc summon pig 2 0 0; tp {} {} {} &",
         set(REFUSED_AT, "diamond_block"),
         FAR_MAP[0],
         FAR_MAP[1],
