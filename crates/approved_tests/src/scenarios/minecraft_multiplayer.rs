@@ -6,7 +6,11 @@
 //! (the same seed), see a block the host sets and one the host clears; the
 //! host must see a block the client sets, one it places by hand (a right
 //! click with planks the host gave it on its `mc give`) and one it breaks
-//! by hand. Then both quit, the host and the client start again on the same
+//! by hand. Far from the host, in a walled arena, a husk summoned beside the
+//! client must reach the client with the host's id and stand where the host
+//! has it, hurt the client, and die to the client's gun as the host sees;
+//! a pig shot dead there must drop its porkchop where the client sees it.
+//! Then both quit, the host and the client start again on the same
 //! settings, and the host's world comes back: the same seed, its blocks,
 //! the host's inventory and the client's (kept by player name).
 
@@ -15,6 +19,7 @@ use std::time::Duration;
 
 use crate::duo::Pair;
 use crate::runner::Event;
+use crate::scenarios::mob_steps;
 
 pub const NAME: &str = "minecraft_multiplayer";
 pub const MAP: &str = "minecraft:overworld";
@@ -40,6 +45,9 @@ const FAR_MAP: [i32; 3] = [FAR[0] * 36, -FAR[2] * 36, (FAR[1] + 1) * 36 + 18];
 pub struct Facts {
     pub lines: BTreeMap<String, Event>,
     pub notes: BTreeMap<&'static str, String>,
+    /// The host's `minecraft-mobnet:` lines: the mob bytes it sent each
+    /// client, every ten seconds.
+    pub mobnet: Vec<Event>,
 }
 
 impl Facts {
@@ -193,6 +201,57 @@ pub fn first_session(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     facts.keep("c_far1", far);
     let far = pair.ask(true, "wait 2s; mc state c_far2", "c_far2", step)?;
     facts.keep("c_far2", far);
+    far_mobs(pair, facts)
+}
+
+/// Far from the host, in a walled arena around the client's platform: a
+/// husk summoned beside the client reaches the client's view with the
+/// host's id, stands where the host has it, hurts the client, and dies to
+/// the client's gun as the host sees; then a pig shot dead there drops its
+/// porkchop where the client sees it (or picks it up).
+fn far_mobs(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
+    let client = pair.client.as_mut().ok_or("no client")?;
+    client.send(&format!(
+        "{}; wait 2s; mc summon husk 3 0 0",
+        mob_steps::arena(FAR)
+    ))?;
+    let see = Duration::from_secs(mob_steps::SEE_SECS);
+    let (seen, husk) = mob_steps::poll(pair, true, "c_husk", Some("husk"), see, |_, m| !m.dead)?;
+    facts.keep("c_husk", seen);
+    let husk = husk.ok_or("the client never saw the husk")?;
+    facts.notes.insert("husk_id", husk.id.to_string());
+    // Where each game has it, a moment apart.
+    let at = std::time::Instant::now();
+    pair.until("the husk to close in", Duration::from_secs(10), |_| {
+        at.elapsed() >= Duration::from_secs(2)
+    })?;
+    let mine = mob_steps::census(pair, true, "c_track", Some("husk"))?;
+    facts.keep("c_track", mine);
+    let theirs = mob_steps::census(pair, false, "h_track", Some("husk"))?;
+    facts.keep("h_track", theirs);
+    let hurt = mob_steps::poll_hurt(
+        pair,
+        "c_hurt",
+        100.0,
+        Duration::from_secs(mob_steps::HURT_SECS),
+    )?;
+    facts.keep("c_hurt", hurt);
+    let kill = Duration::from_secs(mob_steps::KILL_SECS);
+    let shot = mob_steps::shoot(pair, "husk", husk.id, 0.95, kill)?;
+    facts.keep("h_husk_shot", shot.host);
+    facts.notes.insert("husk_killed", shot.killed.to_string());
+    facts.notes.insert("husk_bursts", shot.bursts.to_string());
+    pair.client
+        .as_mut()
+        .ok_or("no client")?
+        .send("mc summon pig 2 0 2")?;
+    let (seen, pig) = mob_steps::poll(pair, true, "c_pig", Some("pig"), see, |_, m| !m.dead)?;
+    facts.keep("c_pig", seen);
+    let pig = pig.ok_or("the client never saw the pig")?;
+    let shot = mob_steps::shoot(pair, "pig", pig.id, 0.45, kill)?;
+    facts.notes.insert("pig_killed", shot.killed.to_string());
+    let drop = mob_steps::poll_drop(pair, "minecraft:porkchop", Duration::from_secs(SYNC_SECS))?;
+    facts.notes.insert("pig_drop", drop);
     Ok(())
 }
 
@@ -255,6 +314,15 @@ fn note<'a>(facts: &'a Facts, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("no `{key}` answer"))
 }
 
+/// The husk in a census line, by the id the client first saw it with.
+fn mob(facts: &Facts, label: &str) -> Result<mob_steps::Mob, String> {
+    let id: u64 = note(facts, "husk_id")?.parse().map_err(|_| "bad husk id")?;
+    mob_steps::mobs(line(facts, label)?)
+        .into_iter()
+        .find(|m| m.id == id)
+        .ok_or_else(|| format!("`{label}` lists no mob {id}"))
+}
+
 fn want(got: &str, want: &str, what: &str) -> Result<(), String> {
     if got == want {
         Ok(())
@@ -266,7 +334,7 @@ fn want(got: &str, want: &str, what: &str) -> Result<(), String> {
 /// Judges what both games printed.
 pub fn judge(facts: &Facts) -> Vec<Check> {
     type Rule = fn(&Facts) -> Result<(), String>;
-    let rules: [(&'static str, Rule); 13] = [
+    let rules: [(&'static str, Rule); 19] = [
         ("seed_shared", |f| {
             let host = line(f, "h_ready")?.get("seed").unwrap_or("-");
             let client = line(f, "c_ready")?.get("seed").unwrap_or("-");
@@ -337,6 +405,58 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
                 }
             }
             Ok(())
+        }),
+        ("client_sees_mob_far_from_host", |f| {
+            let husk = mob(f, "c_husk")?;
+            let platform = [f64::from(FAR[0]), f64::from(FAR[1] + 1), f64::from(FAR[2])];
+            if mob_steps::apart(husk.at, platform) > 8.0 {
+                return Err(format!(
+                    "the client's husk at {:?}, not by the platform",
+                    husk.at
+                ));
+            }
+            mob(f, "h_track").map(|_| ())
+        }),
+        ("mob_tracks_host_position", |f| {
+            let (mine, theirs) = (mob(f, "c_track")?, mob(f, "h_track")?);
+            let apart = mob_steps::apart(mine.at, theirs.at);
+            if apart > mob_steps::TRACK_BLOCKS {
+                return Err(format!(
+                    "the client has the husk at {:?}, the host at {:?}: {apart:.2} blocks apart",
+                    mine.at, theirs.at
+                ));
+            }
+            Ok(())
+        }),
+        ("mob_hurts_client", |f| {
+            let health = mob_steps::health(line(f, "c_hurt")?).ok_or("no health in `c_hurt`")?;
+            if health < 100.0 {
+                Ok(())
+            } else {
+                Err(format!("the client's health stayed {health}"))
+            }
+        }),
+        ("client_kills_mob_host_sees", |f| {
+            want(note(f, "husk_killed")?, "true", "the host saw the husk die")
+        }),
+        ("mob_drop_reaches_client", |f| {
+            want(note(f, "pig_killed")?, "true", "the host saw the pig die")?;
+            match note(f, "pig_drop")? {
+                "ground" | "picked" => Ok(()),
+                other => Err(format!("the client saw no porkchop: {other}")),
+            }
+        }),
+        ("mob_states_sent", |f| {
+            let sent = f.mobnet.iter().any(|e| {
+                e.get("frame_bytes_per_s")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .is_some_and(|b| b > 0.0)
+            });
+            if sent {
+                Ok(())
+            } else {
+                Err("the host reported no mob states sent".into())
+            }
         }),
         ("restart_same_seed", |f| {
             let seed = line(f, "h_ready")?.get("seed").unwrap_or("-");
@@ -488,6 +608,35 @@ mod tests {
         ] {
             f.notes.insert(key, value.into());
         }
+        let census = |label: &str, at: &str, health: u32| {
+            event(&format!(
+                "label={label} health={health} mobs=husk:41:{at}:20.0:alive"
+            ))
+        };
+        for (label, at, health) in [
+            ("c_husk", "323.00,61.00,0.00", 100),
+            ("c_track", "321.20,61.00,0.30", 100),
+            ("h_track", "321.50,61.00,0.20", 100),
+            ("c_hurt", "321.20,61.00,0.30", 85),
+        ] {
+            f.lines.insert(label.into(), census(label, at, health));
+        }
+        for (key, value) in [
+            ("husk_id", "41"),
+            ("husk_killed", "true"),
+            ("pig_killed", "true"),
+            ("pig_drop", "ground"),
+        ] {
+            f.notes.insert(key, value.into());
+        }
+        f.mobnet.push(
+            crate::runner::parse(
+                "minecraft-mobnet: client=1 mobs=2 frame_bytes_per_s=420 row_bytes_per_s=12",
+                "minecraft-mobnet:",
+                0,
+            )
+            .unwrap(),
+        );
         f
     }
 
@@ -543,6 +692,45 @@ mod tests {
             .map(|c| c.label)
             .collect();
         assert_eq!(failed, ["client_place_on_host"]);
+    }
+
+    #[test]
+    fn a_mob_the_two_games_place_apart_fails() {
+        let mut f = passing();
+        f.lines.insert(
+            "h_track".into(),
+            event("label=h_track mobs=husk:41:330.00,61.00,0.00:20.0:alive"),
+        );
+        let failed: Vec<_> = judge(&f)
+            .into_iter()
+            .filter(|c| !c.failures.is_empty())
+            .map(|c| c.label)
+            .collect();
+        assert_eq!(failed, ["mob_tracks_host_position"]);
+    }
+
+    #[test]
+    fn a_client_never_hurt_or_a_mob_never_killed_fails() {
+        let mut f = passing();
+        f.lines
+            .insert("c_hurt".into(), event("label=c_hurt health=100 mobs=-"));
+        f.notes.insert("husk_killed", "false".into());
+        f.notes.insert("pig_drop", "none".into());
+        f.mobnet.clear();
+        let failed: Vec<_> = judge(&f)
+            .into_iter()
+            .filter(|c| !c.failures.is_empty())
+            .map(|c| c.label)
+            .collect();
+        assert_eq!(
+            failed,
+            [
+                "mob_hurts_client",
+                "client_kills_mob_host_sees",
+                "mob_drop_reaches_client",
+                "mob_states_sent"
+            ]
+        );
     }
 
     #[test]

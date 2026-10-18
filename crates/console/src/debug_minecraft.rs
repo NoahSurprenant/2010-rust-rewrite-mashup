@@ -8,7 +8,7 @@ use frame::{McClick, McSlot, McStack, MinecraftUi};
 use crate::binds::{BindButton, parse_key_name};
 use crate::{ConsoleCommand, ConsoleRegistry, ConsoleSettings, ConsoleState};
 
-const MC_USAGE: &str = "mc give <item> [count] | mc clear | mc click <inv N|grid N|result> [right] [shift] | mc fill <x1 y1 z1 x2 y2 z2> <block|air> (from the feet) | mc set <x1 y1 z1 x2 y2 z2> <block|air> (from the world's spawn block) | mc block <label> <x y z> (from the spawn block) | mc state <label> | mc world [name] (the world a host keeps) — the Minecraft map";
+const MC_USAGE: &str = "mc give <item> [count] | mc clear | mc click <inv N|grid N|result> [right] [shift] | mc fill <x1 y1 z1 x2 y2 z2> <block|air> (from the feet) | mc set <x1 y1 z1 x2 y2 z2> <block|air> (from the world's spawn block) | mc block <label> <x y z> (from the spawn block) | mc state <label> | mc summon <mob> [dx dy dz] (from the feet) | mc mobs <label> [mob] (the mobs near the player) | mc world [name] (the world a host keeps) — the Minecraft map";
 const FILL_MAX: i32 = 4096;
 const KEY_USAGE: &str =
     "key <key|mouse1|mouse2> [seconds] — press a key or mouse button as the device does";
@@ -192,6 +192,23 @@ pub(crate) fn route_debug_minecraft_commands(
                         (Ok(x), Ok(y), Ok(z)) => ui.probes.push(((*label).to_owned(), [x, y, z])),
                         _ => console.echo(format!("usage: {MC_USAGE}"), capacity),
                     },
+                    ["summon", kind, rest @ ..] if rest.is_empty() || rest.len() == 3 => {
+                        let offset: Option<Vec<f64>> = rest
+                            .iter()
+                            .map(|v| v.parse::<f64>().ok().filter(|v| v.is_finite() && v.abs() <= 64.0))
+                            .collect();
+                        match offset {
+                            Some(o) => {
+                                let at = if o.is_empty() { [2.0, 0.0, 0.0] } else { [o[0], o[1], o[2]] };
+                                console.echo(format!("mc: summon {kind}"), capacity);
+                                ui.summon.push(((*kind).to_owned(), at));
+                            }
+                            None => console.echo(format!("usage: {MC_USAGE} (offsets within 64 blocks)"), capacity),
+                        }
+                    }
+                    ["mobs", label, kind @ ..] if kind.len() <= 1 => {
+                        ui.mob_probes.push(((*label).to_owned(), kind.first().map(|k| (*k).to_owned())));
+                    }
                     ["click", rest @ ..] => match parse_click(rest) {
                         Some(click) => ui.clicks.push(click),
                         None => console.echo(format!("usage: {MC_USAGE}"), capacity),

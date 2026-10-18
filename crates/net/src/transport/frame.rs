@@ -40,6 +40,10 @@ pub struct Frame {
     pub svc_hud_splashes: Vec<crate::SvcHudSplash>,
 
     pub svc_game_notifies: Vec<crate::SvcGameNotify>,
+
+    /// Minecraft bytes for this client (`PendingMinecraftFrames`); empty
+    /// for none.
+    pub minecraft: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -110,6 +114,12 @@ impl Frame {
         crate::svc_playercard::encode_svc_open_menus(out, &self.svc_open_menus);
         crate::svc_playercard::encode_svc_hud_splashes(out, &self.svc_hud_splashes);
         crate::svc_gamenotify::encode_svc_game_notifies(out, &self.svc_game_notifies);
+        // Last, and only when there are any: a frame without them reads as
+        // before.
+        if !self.minecraft.is_empty() && self.minecraft.len() <= crate::MAX_MINECRAFT_FRAME_BYTES {
+            out.put_u16(self.minecraft.len() as u16);
+            out.put_bytes(&self.minecraft);
+        }
         let svc = out.len() - mark;
         FrameSectionBytes {
             header,
@@ -149,6 +159,17 @@ impl Frame {
         let svc_open_menus = crate::svc_playercard::decode_svc_open_menus(input)?;
         let svc_hud_splashes = crate::svc_playercard::decode_svc_hud_splashes(input)?;
         let svc_game_notifies = crate::svc_gamenotify::decode_svc_game_notifies(input)?;
+        let minecraft = if input.remaining() >= 2 {
+            let len = input.get_u16()? as usize;
+            if len > crate::MAX_MINECRAFT_FRAME_BYTES {
+                return Err(WireError::Malformed("Minecraft frame too long"));
+            }
+            let mut bytes = vec![0u8; len];
+            input.get_bytes(&mut bytes)?;
+            bytes
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             tick,
             state_hash,
@@ -165,6 +186,7 @@ impl Frame {
             svc_open_menus,
             svc_hud_splashes,
             svc_game_notifies,
+            minecraft,
         })
     }
 
@@ -312,6 +334,7 @@ pub fn frame_from_acked_tick_with_reliable(
         svc_open_menus: Vec::new(),
         svc_hud_splashes: Vec::new(),
         svc_game_notifies: Vec::new(),
+        minecraft: Vec::new(),
     }
 }
 

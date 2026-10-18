@@ -842,6 +842,7 @@ struct FanoutQueues<'w> {
     pending_svc: ResMut<'w, crate::PendingSvcSounds>,
     pending_playercard: ResMut<'w, crate::PendingPlayerCard>,
     pending_gamenotify: ResMut<'w, crate::PendingGameNotify>,
+    pending_minecraft: ResMut<'w, crate::PendingMinecraftFrames>,
     pending_scores: ResMut<'w, crate::PendingScoreboard>,
     world: ResMut<'w, AuthorityWorld>,
     local: Option<Res<'w, LocalPresentClient>>,
@@ -1075,6 +1076,7 @@ fn fanout_loopback(
             Some(&mut queues.pending_svc),
             Some(&mut queues.pending_playercard),
             Some(&mut queues.pending_gamenotify),
+            Some(&mut queues.pending_minecraft),
             Some(&reliable),
             false,
         ) {
@@ -1135,6 +1137,7 @@ pub fn register_listen_runtime(app: &mut App) {
         .init_resource::<crate::PendingSvcSounds>()
         .init_resource::<crate::PendingPlayerCard>()
         .init_resource::<crate::PendingGameNotify>()
+        .init_resource::<crate::PendingMinecraftFrames>()
         .init_resource::<crate::PendingScoreboard>()
         .init_resource::<FixedUpdateCensus>()
         .init_resource::<ListenFanoutCensus>()

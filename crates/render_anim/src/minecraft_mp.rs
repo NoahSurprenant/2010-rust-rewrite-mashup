@@ -14,8 +14,11 @@
 //! world directory (with the region files its chunks save to), so hosting
 //! again continues it. Clients never write the host's world.
 //!
-//! Mobs are the host's alone: its level spawns and runs them around the
-//! host's player, and clients neither see them nor are hunted by them.
+//! Mobs are the host's: its level spawns and runs them around every player
+//! (`minecraft_entities`), and each client is told of the mobs near it
+//! (`minecraft_terrain::mob_sync`): a `HostMessage::Mobs` row when one comes
+//! into its view or changes its looks, a `MobsGone` row when it leaves, and
+//! every mob's state with each snapshot, unreliably.
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
@@ -24,6 +27,7 @@ use minecraft_terrain::multiplayer::{
     edits_that_fit,
 };
 use minecraft_terrain::scene::BlockPos;
+use minecraft_terrain::mob_sync::{GONE_PER_MESSAGE, HostMob, MobSpawn, spawns_that_fit};
 use minecraftoss_player::inventory::Inventory;
 
 /// Reliable rows a client may still owe acks for before more Minecraft rows
@@ -38,6 +42,8 @@ const AUTOSAVE_SECONDS: f64 = 10.0;
 const ITEMS_SECONDS: f64 = 0.25;
 /// How far from a client its items are sent, in blocks.
 const ITEMS_RANGE: f64 = 48.0;
+/// How often the host reports the mob bytes it sends each client.
+const MOB_REPORT_SECONDS: f64 = 10.0;
 /// The default world a host keeps.
 pub(crate) const DEFAULT_WORLD: &str = "world";
 
@@ -92,6 +98,20 @@ pub(crate) struct Remote {
     pub held: HashMap<(i32, i32), std::sync::Arc<minecraftoss_core::Chunk>>,
     /// The host holds it still: there is no ground where it stands yet.
     pub held_still: bool,
+    /// The mobs it was shown, as it was shown them.
+    mobs_sent: HashMap<u64, MobSpawn>,
+    /// Mob bytes sent it since the last report: snapshot states and rows.
+    mob_frame_bytes: u64,
+    mob_row_bytes: u64,
+    mob_clock: f64,
+}
+
+/// The host's mobs this frame, for its clients: each mob as it is told,
+/// the tick they are of, and whether that tick is new.
+pub(crate) struct MobView<'a> {
+    pub mobs: &'a [HostMob],
+    pub tick: u32,
+    pub fresh: bool,
 }
 
 pub(crate) struct Host {
@@ -284,6 +304,10 @@ impl Remote {
             collision: None,
             held: HashMap::new(),
             held_still: false,
+            mobs_sent: HashMap::new(),
+            mob_frame_bytes: 0,
+            mob_row_bytes: 0,
+            mob_clock: 0.0,
         }
     }
 }
@@ -304,15 +328,18 @@ fn has_room(queue: Option<&net::ReliableEventQueue>) -> bool {
     queue.pending_len() < ROWS_IN_FLIGHT && bytes < BYTES_IN_FLIGHT
 }
 
-fn push(reliable: &mut net::ReliableEventHub, client: sim::ClientId, message: &HostMessage) {
-    reliable
-        .queue_mut(client)
-        .push(net::ReliableRow::Minecraft(message.encode()));
+/// Queues a message on a client's reliable stream; its length.
+fn push(reliable: &mut net::ReliableEventHub, client: sim::ClientId, message: &HostMessage) -> usize {
+    let bytes = message.encode();
+    let len = bytes.len();
+    reliable.queue_mut(client).push(net::ReliableRow::Minecraft(bytes));
+    len
 }
 
 /// Sends one client what it lacks, as its stream has room: the world, the
 /// host's corrections, the edit log from its cursor, its inventory when it
-/// changed, and the items near it.
+/// changed, the items near it, and the mobs near it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn send_to(
     reliable: &mut net::ReliableEventHub,
     client: sim::ClientId,
@@ -321,6 +348,8 @@ pub(crate) fn send_to(
     items: &[WireItem],
     feet: Option<[f64; 3]>,
     dt: f64,
+    mobs: Option<&MobView<'_>>,
+    frames: Option<&mut net::PendingMinecraftFrames>,
 ) {
     if !remote.world_sent {
         push(
@@ -381,6 +410,81 @@ pub(crate) fn send_to(
             push(reliable, client, &HostMessage::Items(near.clone()));
             remote.sent_items = Some(near);
         }
+    }
+    if let (Some(view), Some(feet)) = (mobs, feet) {
+        send_mobs(reliable, client, remote, view, feet, frames);
+    }
+    remote.mob_clock += dt;
+    if remote.mob_clock >= MOB_REPORT_SECONDS {
+        let per_second = |bytes: u64| (bytes as f64 / remote.mob_clock).round();
+        let line = format!(
+            "minecraft-mobnet: client={} mobs={} frame_bytes_per_s={} row_bytes_per_s={}",
+            client.0,
+            remote.mobs_sent.len(),
+            per_second(remote.mob_frame_bytes),
+            per_second(remote.mob_row_bytes),
+        );
+        diag::info!(World, "{line}");
+        println!("{line}");
+        remote.mob_clock = 0.0;
+        remote.mob_frame_bytes = 0;
+        remote.mob_row_bytes = 0;
+    }
+}
+
+/// The mobs near a client: rows for the ones it leaves and the ones it
+/// comes to see (or that change their looks), as its stream has room, then
+/// the states of those it was shown with its next snapshot, once each tick.
+fn send_mobs(
+    reliable: &mut net::ReliableEventHub,
+    client: sim::ClientId,
+    remote: &mut Remote,
+    view: &MobView<'_>,
+    feet: [f64; 3],
+    frames: Option<&mut net::PendingMinecraftFrames>,
+) {
+    let near = minecraft_terrain::mob_sync::interest(view.mobs, feet);
+    let near_ids: std::collections::HashSet<u64> = near.iter().map(|&i| view.mobs[i].spawn.id).collect();
+    let gone: Vec<u64> = remote
+        .mobs_sent
+        .keys()
+        .copied()
+        .filter(|id| !near_ids.contains(id))
+        .collect();
+    for ids in gone.chunks(GONE_PER_MESSAGE) {
+        if !has_room(reliable.queue(client)) {
+            break;
+        }
+        remote.mob_row_bytes += push(reliable, client, &HostMessage::MobsGone(ids.to_vec())) as u64;
+        for id in ids {
+            remote.mobs_sent.remove(id);
+        }
+    }
+    let spawns: Vec<MobSpawn> = near
+        .iter()
+        .map(|&i| &view.mobs[i].spawn)
+        .filter(|spawn| remote.mobs_sent.get(&spawn.id).is_none_or(|sent| !sent.same_look(spawn)))
+        .cloned()
+        .collect();
+    let mut rest = &spawns[..];
+    while !rest.is_empty() && has_room(reliable.queue(client)) {
+        let n = spawns_that_fit(rest);
+        remote.mob_row_bytes += push(reliable, client, &HostMessage::Mobs(rest[..n].to_vec())) as u64;
+        for spawn in &rest[..n] {
+            remote.mobs_sent.insert(spawn.id, spawn.clone());
+        }
+        rest = &rest[n..];
+    }
+    if view.fresh
+        && let Some(frames) = frames
+    {
+        let states = near
+            .iter()
+            .map(|&i| &view.mobs[i].state)
+            .filter(|state| remote.mobs_sent.contains_key(&state.id));
+        let bytes = minecraft_terrain::mob_sync::encode_frame(view.tick, states);
+        remote.mob_frame_bytes += bytes.len() as u64;
+        frames.set(client, bytes);
     }
 }
 

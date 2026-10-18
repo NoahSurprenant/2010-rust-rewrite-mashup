@@ -56,37 +56,37 @@ impl std::fmt::Display for DecodeError {
 impl std::error::Error for DecodeError {}
 
 #[derive(Default)]
-struct Writer(Vec<u8>);
+pub(crate) struct Writer(pub(crate) Vec<u8>);
 
 impl Writer {
-    fn u8(&mut self, v: u8) {
+    pub(crate) fn u8(&mut self, v: u8) {
         self.0.push(v);
     }
-    fn u16(&mut self, v: u16) {
+    pub(crate) fn u16(&mut self, v: u16) {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
-    fn u32(&mut self, v: u32) {
+    pub(crate) fn u32(&mut self, v: u32) {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
-    fn i32(&mut self, v: i32) {
+    pub(crate) fn i32(&mut self, v: i32) {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
-    fn i64(&mut self, v: i64) {
+    pub(crate) fn i64(&mut self, v: i64) {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
-    fn f32(&mut self, v: f32) {
+    pub(crate) fn f32(&mut self, v: f32) {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
-    fn f64(&mut self, v: f64) {
+    pub(crate) fn f64(&mut self, v: f64) {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
-    fn pos(&mut self, p: BlockPos) {
+    pub(crate) fn pos(&mut self, p: BlockPos) {
         self.i32(p.0);
         self.i32(p.1);
         self.i32(p.2);
     }
     /// A string of at most `u16::MAX` bytes (longer is cut at a char boundary).
-    fn str(&mut self, s: &str) {
+    pub(crate) fn str(&mut self, s: &str) {
         let mut end = s.len().min(u16::MAX as usize);
         while !s.is_char_boundary(end) {
             end -= 1;
@@ -94,7 +94,7 @@ impl Writer {
         self.u16(end as u16);
         self.0.extend_from_slice(&s.as_bytes()[..end]);
     }
-    fn opt_str(&mut self, s: Option<&str>) {
+    pub(crate) fn opt_str(&mut self, s: Option<&str>) {
         match s {
             None => self.u8(0),
             Some(s) => {
@@ -105,10 +105,10 @@ impl Writer {
     }
 }
 
-struct Reader<'a>(&'a [u8]);
+pub(crate) struct Reader<'a>(pub(crate) &'a [u8]);
 
 impl Reader<'_> {
-    fn take(&mut self, n: usize) -> Result<&[u8], DecodeError> {
+    pub(crate) fn take(&mut self, n: usize) -> Result<&[u8], DecodeError> {
         if self.0.len() < n {
             return Err(DecodeError::Truncated);
         }
@@ -116,52 +116,52 @@ impl Reader<'_> {
         self.0 = rest;
         Ok(head)
     }
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
+    pub(crate) fn array<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
         Ok(self.take(N)?.try_into().expect("sized"))
     }
-    fn u8(&mut self) -> Result<u8, DecodeError> {
+    pub(crate) fn u8(&mut self) -> Result<u8, DecodeError> {
         Ok(self.take(1)?[0])
     }
-    fn bool(&mut self) -> Result<bool, DecodeError> {
+    pub(crate) fn bool(&mut self) -> Result<bool, DecodeError> {
         match self.u8()? {
             0 => Ok(false),
             1 => Ok(true),
             _ => Err(DecodeError::Malformed("bool")),
         }
     }
-    fn u16(&mut self) -> Result<u16, DecodeError> {
+    pub(crate) fn u16(&mut self) -> Result<u16, DecodeError> {
         Ok(u16::from_le_bytes(self.array()?))
     }
-    fn u32(&mut self) -> Result<u32, DecodeError> {
+    pub(crate) fn u32(&mut self) -> Result<u32, DecodeError> {
         Ok(u32::from_le_bytes(self.array()?))
     }
-    fn i32(&mut self) -> Result<i32, DecodeError> {
+    pub(crate) fn i32(&mut self) -> Result<i32, DecodeError> {
         Ok(i32::from_le_bytes(self.array()?))
     }
-    fn i64(&mut self) -> Result<i64, DecodeError> {
+    pub(crate) fn i64(&mut self) -> Result<i64, DecodeError> {
         Ok(i64::from_le_bytes(self.array()?))
     }
-    fn f32(&mut self) -> Result<f32, DecodeError> {
+    pub(crate) fn f32(&mut self) -> Result<f32, DecodeError> {
         Ok(f32::from_le_bytes(self.array()?))
     }
-    fn f64(&mut self) -> Result<f64, DecodeError> {
+    pub(crate) fn f64(&mut self) -> Result<f64, DecodeError> {
         Ok(f64::from_le_bytes(self.array()?))
     }
-    fn pos(&mut self) -> Result<BlockPos, DecodeError> {
+    pub(crate) fn pos(&mut self) -> Result<BlockPos, DecodeError> {
         Ok((self.i32()?, self.i32()?, self.i32()?))
     }
-    fn str(&mut self) -> Result<String, DecodeError> {
+    pub(crate) fn str(&mut self) -> Result<String, DecodeError> {
         let len = self.u16()? as usize;
         String::from_utf8(self.take(len)?.to_vec()).map_err(|_| DecodeError::Malformed("utf-8"))
     }
-    fn opt_str(&mut self) -> Result<Option<String>, DecodeError> {
+    pub(crate) fn opt_str(&mut self) -> Result<Option<String>, DecodeError> {
         Ok(if self.bool()? {
             Some(self.str()?)
         } else {
             None
         })
     }
-    fn done(&self) -> Result<(), DecodeError> {
+    pub(crate) fn done(&self) -> Result<(), DecodeError> {
         if self.0.is_empty() {
             Ok(())
         } else {
@@ -280,6 +280,16 @@ pub enum Intent {
         b: BlockPos,
         block: Option<String>,
     },
+    /// A punch on the mob with this key (`minecraft_entities`' bullet
+    /// key), which the client saw within its reach.
+    Attack {
+        key: u64,
+    },
+    /// The console's `mc summon`: a mob of this kind at this block point.
+    Summon {
+        kind: String,
+        at: [f64; 3],
+    },
 }
 
 fn encode_slot(w: &mut Writer, slot: SlotRef) {
@@ -394,6 +404,20 @@ impl Intent {
                 w.pos(*b);
                 w.opt_str(block.as_deref());
             }
+            Self::Attack { key } => {
+                w.u8(10);
+                w.0.extend_from_slice(&key.to_le_bytes());
+            }
+            Self::Summon { kind, at } => {
+                if !id_fits(kind) {
+                    return None;
+                }
+                w.u8(11);
+                w.str(kind);
+                for v in at {
+                    w.f64(*v);
+                }
+            }
         }
         (w.0.len() <= INTENT_BYTES).then_some(w.0)
     }
@@ -443,6 +467,13 @@ impl Intent {
                 a: r.pos()?,
                 b: r.pos()?,
                 block: r.opt_str()?,
+            },
+            10 => Self::Attack {
+                key: u64::from_le_bytes(r.array()?),
+            },
+            11 => Self::Summon {
+                kind: r.str()?,
+                at: [r.f64()?, r.f64()?, r.f64()?],
             },
             _ => return Err(DecodeError::Malformed("intent")),
         };
@@ -594,6 +625,10 @@ pub enum HostMessage {
     /// The host moved the client here (map units) for its arrival in the
     /// world.
     Placed { at: [f32; 3] },
+    /// Mobs that came into the client's view, or whose looks changed.
+    Mobs(Vec<crate::mob_sync::MobSpawn>),
+    /// Mobs that left the client's view or the level, by id.
+    MobsGone(Vec<u64>),
 }
 
 impl HostMessage {
@@ -659,6 +694,17 @@ impl HostMessage {
                 for v in at {
                     w.f32(*v);
                 }
+            }
+            Self::Mobs(spawns) => {
+                w.u8(6);
+                w.u16(spawns.len().min(u16::MAX as usize) as u16);
+                for spawn in spawns.iter().take(u16::MAX as usize) {
+                    crate::mob_sync::encode_spawn(&mut w, spawn);
+                }
+            }
+            Self::MobsGone(ids) => {
+                w.u8(7);
+                crate::mob_sync::encode_ids(&mut w, ids);
             }
         }
         w.0
@@ -729,6 +775,19 @@ impl HostMessage {
             5 => Self::Placed {
                 at: [r.f32()?, r.f32()?, r.f32()?],
             },
+            6 => {
+                let n = r.u16()? as usize;
+                // Each spawn is at least 39 bytes: a short count cannot claim more.
+                if n > r.0.len() / 39 {
+                    return Err(DecodeError::Truncated);
+                }
+                let mut spawns = Vec::with_capacity(n);
+                for _ in 0..n {
+                    spawns.push(crate::mob_sync::decode_spawn(&mut r)?);
+                }
+                Self::Mobs(spawns)
+            }
+            7 => Self::MobsGone(crate::mob_sync::decode_ids(&mut r)?),
             _ => return Err(DecodeError::Malformed("host message")),
         };
         r.done()?;
@@ -1008,6 +1067,13 @@ mod tests {
                 b: (0, 0, 0),
                 block: Some("minecraft:stone".into()),
             },
+            Intent::Attack {
+                key: (3 << 56) | 77,
+            },
+            Intent::Summon {
+                kind: "minecraft:husk".into(),
+                at: [320.5, 61.0, -2.25],
+            },
         ]
     }
 
@@ -1151,6 +1217,22 @@ mod tests {
             HostMessage::Placed {
                 at: [0.0, -108.0, 36.5],
             },
+            HostMessage::Mobs(vec![crate::mob_sync::MobSpawn {
+                id: 1234,
+                look: crate::mob_sync::Look::Zombie {
+                    kind: 2,
+                    main_hand: Some("minecraft:iron_shovel".into()),
+                    armor: [None, Some("minecraft:chainmail_chestplate".into()), None, None],
+                    villager: None,
+                },
+                baby: true,
+                width: 0.3,
+                height: 0.975,
+                position: [320.5, 61.0, -2.25],
+                yaw: -45.0,
+            }]),
+            HostMessage::Mobs(Vec::new()),
+            HostMessage::MobsGone(vec![1, 1234, 1 << 40]),
         ];
         for message in messages {
             assert_eq!(HostMessage::decode(&message.encode()).unwrap(), message);
@@ -1161,6 +1243,13 @@ mod tests {
     fn a_host_message_claiming_more_edits_than_it_holds_is_refused() {
         let mut bytes = HostMessage::Edits(vec![((0, 0, 0), None)]).encode();
         bytes[1..5].copy_from_slice(&1_000_000u32.to_le_bytes());
+        assert_eq!(HostMessage::decode(&bytes), Err(DecodeError::Truncated));
+    }
+
+    #[test]
+    fn a_host_message_claiming_more_mobs_than_it_holds_is_refused() {
+        let mut bytes = HostMessage::Mobs(Vec::new()).encode();
+        bytes[1..3].copy_from_slice(&500u16.to_le_bytes());
         assert_eq!(HostMessage::decode(&bytes), Err(DecodeError::Truncated));
     }
 

@@ -14,6 +14,7 @@ pub(crate) mod interface;
 pub mod lighting;
 pub mod mesh;
 pub mod multiplayer;
+pub mod mob_sync;
 pub mod model;
 pub mod pack;
 pub mod scene;

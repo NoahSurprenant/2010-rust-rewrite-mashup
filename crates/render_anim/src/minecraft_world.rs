@@ -544,6 +544,7 @@ pub(crate) struct MinecraftNet<'w, 's> {
     role: Res<'w, frame::RuntimeRole>,
     prediction: Option<Res<'w, net::ClientPredictionState>>,
     downlink: Option<ResMut<'w, net::MinecraftDownlink>>,
+    frames: Option<ResMut<'w, net::PendingMinecraftFrames>>,
     reliable: Option<ResMut<'w, net::ReliableEventHub>>,
     hub: Option<Res<'w, net::UdpAuthorityHub>>,
     inbox: Option<ResMut<'w, net::ClientActionInbox>>,
@@ -641,6 +642,7 @@ fn update(
         stop(runtime, &mut view);
         if let Some(downlink) = net.downlink.as_mut() {
             downlink.rows.clear();
+            downlink.frames.clear();
         }
         ui.seed = None;
         if !assets::minecraft_map::is_minecraft(&match_.zone) {
@@ -687,6 +689,12 @@ fn update(
 
     // A client takes the host's messages; the first is the world to make.
     if let NetRole::Client(client) = &mut runtime.net {
+        // Mob states before the world exists have no mobs to move.
+        if runtime.world.is_none()
+            && let Some(downlink) = net.downlink.as_mut()
+        {
+            downlink.frames.clear();
+        }
         for bytes in net.downlink.as_mut().map(|d| std::mem::take(&mut d.rows)).unwrap_or_default() {
             match HostMessage::decode(&bytes) {
                 Ok(HostMessage::World { seed, origin }) => {
@@ -912,10 +920,14 @@ fn update(
         }
         let (min_y, height) = (chunk.min_y(), chunk.height());
         let ids = chunk_collision(&chunk, world, shapes, shape_ids);
-        if let Some(entities) = entities.as_mut() {
+        // The mobs' level holds it once, however many players stand near.
+        let holders = voxel_holders.entry((chunk.pos.x, chunk.pos.z)).or_default();
+        *holders += 1;
+        if *holders == 1
+            && let Some(entities) = entities.as_mut()
+        {
             entities.load_chunk(&chunk);
         }
-        *voxel_holders.entry((chunk.pos.x, chunk.pos.z)).or_default() += 1;
         sim::voxel::set_chunk(
             chunk.pos.x,
             chunk.pos.z,
@@ -929,13 +941,14 @@ fn update(
     for pos in forgotten {
         // The stream dropped it from the scene; a client still standing there
         // keeps it.
-        if !release_chunk(voxel_holders, (pos.x, pos.z))
+        let released = release_chunk(voxel_holders, (pos.x, pos.z));
+        if !released
             && let NetRole::Host(host) = &*net_role
             && let Some(chunk) = host.remotes.values().find_map(|remote| remote.held.get(&(pos.x, pos.z)))
         {
             world.scene.insert_chunk(chunk.clone());
         }
-        if let Some(entities) = entities.as_mut() {
+        if released && let Some(entities) = entities.as_mut() {
             entities.unload_chunk(pos);
         }
     }
@@ -986,6 +999,23 @@ fn update(
                         entities.world_items.entities = crate::minecraft_mp::client_items(&items);
                     }
                 }
+                HostMessage::Mobs(spawns) => {
+                    if let Some(entities) = entities.as_mut() {
+                        entities.mob_spawns(&spawns);
+                    }
+                }
+                HostMessage::MobsGone(ids) => {
+                    if let Some(entities) = entities.as_mut() {
+                        entities.mobs_gone(&ids);
+                    }
+                }
+            }
+        }
+        // The mobs near it, as its snapshots last told.
+        let frames = net.downlink.as_mut().map(|d| std::mem::take(&mut d.frames)).unwrap_or_default();
+        if let Some(entities) = entities.as_mut() {
+            for bytes in frames {
+                entities.mob_frame(&bytes);
             }
         }
     }
@@ -1019,6 +1049,9 @@ fn update(
                 for pos in remote.held.keys() {
                     if release_chunk(voxel_holders, *pos) {
                         world.scene.remove_chunk(*pos);
+                        if let Some(entities) = entities.as_mut() {
+                            entities.unload_chunk(minecraftoss_core::ChunkPos::new(pos.0, pos.1));
+                        }
                     }
                 }
                 host.keep_inventory(&remote.name, &remote.inventory, remote.selected);
@@ -1115,10 +1148,28 @@ fn update(
                 let (min_y, height) = (chunk.min_y(), chunk.height());
                 let ids = chunk_collision(&chunk, world, shapes, shape_ids);
                 sim::voxel::set_chunk(pos.0, pos.1, sim::voxel::VoxelChunk { min_y, height, shapes: ids });
+                // The mobs' level takes it too, with the log's changes in it:
+                // they spawn and walk around this client as around the host.
+                if let Some(entities) = entities.as_mut() {
+                    entities.load_chunk(&chunk);
+                    let edited: std::collections::BTreeSet<(i32, i32, i32)> = host
+                        .log
+                        .entries()
+                        .iter()
+                        .map(|(at, _)| *at)
+                        .filter(|at| (at.0 >> 4, at.2 >> 4) == pos)
+                        .collect();
+                    for at in edited {
+                        entities.placed(&world.scene, at);
+                    }
+                }
             }
             for pos in forgotten {
                 if remote.held.remove(&pos).is_some() && release_chunk(voxel_holders, pos) {
                     world.scene.remove_chunk(pos);
+                    if let Some(entities) = entities.as_mut() {
+                        entities.unload_chunk(minecraftoss_core::ChunkPos::new(pos.0, pos.1));
+                    }
                 }
             }
             // Until there is ground where it stands, the host holds it still
@@ -1270,7 +1321,20 @@ fn update(
                         Err(error) => diag::warn!(World, "Minecraft fill from client {client}: {error}"),
                     }
                 }
-                Intent::Give { .. } | Intent::Clear | Intent::Fill { .. } => {}
+                Intent::Attack { key } => {
+                    if alive
+                        && let Some(entities) = entities.as_mut()
+                        && !entities.attack(key, client, their_feet, mc_yaw_of(their.viewangles[1]))
+                    {
+                        diag::info!(World, "Minecraft: client {client}'s punch out of reach");
+                    }
+                }
+                Intent::Summon { kind, at } if cheats => {
+                    if let Some(entities) = entities.as_mut() {
+                        entities.summon(&kind, at);
+                    }
+                }
+                Intent::Give { .. } | Intent::Clear | Intent::Fill { .. } | Intent::Summon { .. } => {}
             }
             thrown.extend(remote.inventory.take_pending_drops());
             let thrown = crate::minecraft_inventory::keep_guns(&mut remote.inventory, thrown, remote.selected);
@@ -1287,6 +1351,28 @@ fn update(
                     let ps = authority.player(sim::ClientId(id)).filter(|ps| ps.pm_type == 0)?;
                     let feet = sim::voxel::to_block(origin, ps.origin);
                     Some((u64::from(id), feet, remote.inventory.clone(), remote.selected))
+                })
+                .collect();
+            // And every client as the mobs see it.
+            entities.players = host
+                .remotes
+                .keys()
+                .filter_map(|&id| {
+                    let ps = authority.player(sim::ClientId(id))?;
+                    let alive = ps.pm_type == 0
+                        && authority
+                            .client_meta(sim::ClientId(id))
+                            .is_some_and(|meta| meta.lifecycle == sim::ClientLifecycle::Alive);
+                    Some(crate::minecraft_entities::RemotePlayer {
+                        client: id,
+                        view: crate::minecraft_entities::PlayerView {
+                            feet: sim::voxel::to_block(origin, ps.origin),
+                            alive,
+                            health: ps.health as f32,
+                            yaw: mc_yaw_of(ps.viewangles[1]),
+                            pitch: ps.viewangles[0],
+                        },
+                    })
                 })
                 .collect();
         }
@@ -1490,8 +1576,18 @@ fn update(
         .partition(|event| matches!(event, sim::voxel::VoxelEvent::MobShot { .. }));
     if let Some(entities) = entities.as_mut() {
         for shot in mob_shots {
-            if let sim::voxel::VoxelEvent::MobShot { key, damage, from } = shot {
-                entities.shoot(key, damage, from, mc_yaw);
+            if let sim::voxel::VoxelEvent::MobShot { key, damage, from, shooter } = shot {
+                // The host's own shot, or one of its clients', which the mob
+                // then turns on.
+                if shooter == local.0.0 {
+                    entities.shoot(key, damage, from, mc_yaw, None);
+                } else {
+                    let yaw = authority
+                        .as_ref()
+                        .and_then(|authority| authority.0.player(sim::ClientId(shooter)))
+                        .map_or(mc_yaw, |ps| mc_yaw_of(ps.viewangles[1]));
+                    entities.shoot(key, damage, from, yaw, Some(shooter));
+                }
             }
         }
     }
@@ -1651,6 +1747,21 @@ fn update(
                 client.send(net.inbox.as_deref_mut(), net.ids.as_deref_mut(), local.0, &Intent::Fill { a, b, block: id });
             }
         }
+        // The console's summons, from the feet, and a client's punches on
+        // mobs: a client asks its host for both.
+        for (kind, rel) in std::mem::take(&mut ui.summon) {
+            let at = [feet[0] + rel[0], feet[1] + rel[1], feet[2] + rel[2]];
+            if let NetRole::Client(client) = &mut *net_role {
+                client.send(net.inbox.as_deref_mut(), net.ids.as_deref_mut(), local.0, &Intent::Summon { kind, at });
+            } else {
+                entities.summon(&kind, at);
+            }
+        }
+        if let NetRole::Client(client) = &mut *net_role {
+            for key in std::mem::take(&mut entities.pending_attacks) {
+                client.send(net.inbox.as_deref_mut(), net.ids.as_deref_mut(), local.0, &Intent::Attack { key });
+            }
+        }
         let mut filled = Vec::new();
         for (base, a, b, id) in boxes {
             let block_of = match id
@@ -1712,6 +1823,10 @@ fn update(
         }
         for (amount, from) in hits {
             sim::voxel::push_player_damage(local.0.0, amount, from.map(|b| sim::voxel::to_map(origin, b)));
+        }
+        // And on the host's clients.
+        for (client, amount, from) in std::mem::take(&mut entities.remote_hits) {
+            sim::voxel::push_player_damage(client, amount, from.map(|b| sim::voxel::to_map(origin, b)));
         }
         // The inventory: MW2 guns as items, the HUD's clicks, the hotbar's
         // gun, and what the HUD shows.
@@ -1885,15 +2000,33 @@ fn update(
                 .as_ref()
                 .map(|entities| crate::minecraft_mp::wire_items(&entities.world_items))
                 .unwrap_or_default();
+            let mobs = entities.as_ref().map(|entities| crate::minecraft_mp::MobView {
+                mobs: &entities.host_mobs,
+                tick: entities.mob_tick,
+                fresh: entities.mobs_fresh,
+            });
             let mut remotes = std::mem::take(&mut host.remotes);
             for (&id, remote) in remotes.iter_mut() {
                 let feet = authority
                     .as_ref()
                     .and_then(|authority| authority.0.player(sim::ClientId(id)))
                     .map(|ps| sim::voxel::to_block(origin, ps.origin));
-                crate::minecraft_mp::send_to(reliable, sim::ClientId(id), host, remote, &items, feet, dt);
+                crate::minecraft_mp::send_to(
+                    reliable,
+                    sim::ClientId(id),
+                    host,
+                    remote,
+                    &items,
+                    feet,
+                    dt,
+                    mobs.as_ref(),
+                    net.frames.as_deref_mut(),
+                );
             }
             host.remotes = remotes;
+            if let Some(entities) = entities.as_mut() {
+                entities.mobs_fresh = false;
+            }
         }
         host.autosave(dt);
     }
@@ -1902,6 +2035,55 @@ fn update(
         let pos = (origin[0].floor() as i32 + at[0], origin[1].floor() as i32 + at[1], origin[2].floor() as i32 + at[2]);
         let block = minecraft_terrain::scene::Scene::block(&world.scene, pos).map_or_else(|| "air".to_owned(), block_text);
         let line = format!("minecraft-block: label={label} at={},{},{} block={block}", at[0], at[1], at[2]);
+        diag::info!(Console, "{line}");
+        println!("{line}");
+    }
+    // The console's mob census: the mobs this game shows, nearest first, and
+    // the player's eye, all from the world's spawn block.
+    for (label, kind) in std::mem::take(&mut ui.mob_probes) {
+        let base = [origin[0].floor(), origin[1].floor(), origin[2].floor()];
+        let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
+        let mut mobs = entities.as_ref().map(|entities| entities.census()).unwrap_or_default();
+        mobs.retain(|mob| kind.as_deref().is_none_or(|kind| kind == mob.1));
+        let distance = |at: &[f64; 3]| (0..3).map(|i| (at[i] - feet[i]).powi(2)).sum::<f64>();
+        mobs.sort_by(|a, b| distance(&a.2).total_cmp(&distance(&b.2)));
+        let list: Vec<String> = mobs
+            .iter()
+            .take(12)
+            .map(|(id, kind, at, health, dead)| {
+                format!(
+                    "{kind}:{id}:{:.2},{:.2},{:.2}:{health:.1}:{}",
+                    at[0] - base[0],
+                    at[1] - base[1],
+                    at[2] - base[2],
+                    if *dead { "dead" } else { "alive" }
+                )
+            })
+            .collect();
+        // And the items on the ground within eight blocks.
+        let items: Vec<String> = entities
+            .as_ref()
+            .map(|entities| {
+                entities
+                    .world_items
+                    .entities
+                    .iter()
+                    .filter(|item| (0..3).map(|i| (item.position[i] - feet[i]).powi(2)).sum::<f64>() < 64.0)
+                    .map(|item| format!("{}*{}", item.stack.id, item.stack.count))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let line = format!(
+            "minecraft-mobs: label={label} role={} health={} eye={:.2},{:.2},{:.2} count={} mobs={} items={}",
+            ui.net_role,
+            ps.health,
+            eye[0] - base[0],
+            eye[1] - base[1],
+            eye[2] - base[2],
+            mobs.len(),
+            if list.is_empty() { "-".to_owned() } else { list.join(";") },
+            if items.is_empty() { "-".to_owned() } else { items.join(",") }
+        );
         diag::info!(Console, "{line}");
         println!("{line}");
     }
