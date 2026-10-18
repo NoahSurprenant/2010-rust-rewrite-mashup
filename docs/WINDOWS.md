@@ -32,6 +32,22 @@ folder. `IW4L_UPDATE=0` (in `.env` or the environment) turns the check off;
 `IW4L_UPDATE_URL` points it elsewhere. A folder from before the first build
 with `iw4launcher.exe` does not update: extract a new zip over it once.
 
+`iw4l.exe --version` prints the commit and the game and master protocols
+without updating; `--help` is answered after the update, before first-run
+setup. `IW4L_UPDATE_URL` in the environment (not `.env`) also makes a build
+with no built-in URL, such as a pull request's, hand off and update. It may
+name a folder, `file:///D:/updates`, holding `manifest.json` and the files it
+lists, read from disk with the same checks (no percent-encoding).
+
+The Release workflow's *Windows update hand-off (windows-2025)* job runs the
+real hand-off on a GitHub-hosted runner for every pull request and main
+(`scripts/windows-update-handoff.ps1`): Build 49's `iw4l.exe` in this run's
+folder updates from this run's files through `file://` (with a launcher
+that differs, so it replaces itself while running), and the new
+`iw4l.exe --version` must name the commit; then Build 49 as published
+updates from the newest release over HTTPS and starts its `iw4l.exe`. Each
+file must end up with the manifest's SHA-256.
+
 Trust: the manifest and the files come from this repository's releases
 over HTTPS, and each file must match the manifest's hash before it is
 installed. There is no signing key: whoever can publish a release here can

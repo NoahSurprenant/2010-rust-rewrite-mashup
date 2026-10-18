@@ -3681,6 +3681,7 @@ dependencies = [
  "console",
  "diag",
  "rfd",
+ "updater",
 ]
 
 [[package]]

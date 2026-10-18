@@ -73,7 +73,24 @@ fn parse_acceptance_flag(
     Ok((out, acceptance))
 }
 
-const USAGE: &str = "usage: iw4l [--cmds '<script>'] map <zone> | dedicated <zone> | menu | play <demo>\n       iw4l export-gltf <zone>\n       iw4l dedicated-console '<command>'\n       iw4l --help";
+pub const USAGE: &str = "usage: iw4l [--cmds '<script>'] map <zone> | dedicated <zone> | menu | play <demo>\n       iw4l export-gltf <zone>\n       iw4l dedicated-console '<command>'\n       iw4l --help | --version";
+
+/// `iw4l --version`: the commit and the protocols a peer or a master must share.
+pub fn version() -> String {
+    let git = [
+        option_env!("IW4L_GIT_HASH"),
+        Some(env!("IW4L_BUILD_GIT_SHA")),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|hash| !hash.is_empty())
+    .unwrap_or("unknown");
+    format!(
+        "iw4l {git} protocol={} master_protocol={}",
+        net::PROTOCOL_VERSION,
+        master_protocol::PROTOCOL_VERSION
+    )
+}
 
 pub fn parse_launch_args(mut args: impl Iterator<Item = String>) -> Result<LaunchMode, String> {
     match args.next().as_deref() {
