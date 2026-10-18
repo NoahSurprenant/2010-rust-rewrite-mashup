@@ -81,6 +81,7 @@ impl Plugin for ConsolePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, crate::debug_move::update_skate_overlay.in_set(ClientSet::Ui));
         crate::startup::install_stdin(app);
+        crate::control::install(app);
         app.init_resource::<ConsoleSettings>()
             .init_resource::<ConsoleState>()
             .init_resource::<frame::HudInputView>()
@@ -139,6 +140,12 @@ impl Plugin for ConsolePlugin {
             .add_systems(
                 Update,
                 crate::debug_move::release_refused_move.before(dispatch_console_command),
+            )
+            .add_systems(
+                Update,
+                crate::control::serve_requests
+                    .after(crate::startup::drain_stdin)
+                    .before(drain_startup_queue),
             )
             .add_systems(
                 Update,

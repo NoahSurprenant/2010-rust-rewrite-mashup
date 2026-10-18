@@ -23,6 +23,7 @@
 {{- $env = append $env (dict "name" "IW4L_MASTER_PASSWORD" "valueFrom" (dict "secretKeyRef" (dict "name" . "key" $.Values.room.password.key))) }}
 {{- end }}
 {{- $env = append $env (dict "name" "IW4L_MASTER_STATUS_FILE" "value" "/tmp/master.status") }}
+{{- $env = append $env (dict "name" "IW4L_CONSOLE_SOCKET" "value" "/tmp/iw4l-console.sock") }}
 {{- with .Values.minecraft.world }}
 {{- $env = append $env (dict "name" "IW4L_MINECRAFT_WORLD" "value" .) }}
 {{- end }}

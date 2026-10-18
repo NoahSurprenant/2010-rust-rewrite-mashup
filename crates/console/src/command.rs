@@ -114,4 +114,8 @@ impl ConsoleQueue {
     pub fn drain(&mut self) -> Vec<ConsoleCommand> {
         core::mem::take(&mut self.pending)
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
 }

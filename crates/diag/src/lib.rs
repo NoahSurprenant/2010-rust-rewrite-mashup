@@ -22,6 +22,38 @@ use std::{
 static SINK: OnceLock<Mutex<DiagState>> = OnceLock::new();
 static START: OnceLock<Instant> = OnceLock::new();
 static STDOUT_MIRROR: AtomicBool = AtomicBool::new(false);
+static TAP: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+/// The most lines one tap keeps.
+const TAP_LINES: usize = 512;
+
+/// Keeps every console line from now until `end_tap`: the `Console`
+/// channel's and whatever `tap_line` is given, a line repeated back to back
+/// once. The console's answer to a command asked from outside the process.
+pub fn begin_tap() {
+    if let Ok(mut tap) = TAP.lock() {
+        *tap = Some(Vec::new());
+    }
+}
+
+pub fn tap_line(line: &str) {
+    let Ok(mut tap) = TAP.lock() else {
+        return;
+    };
+    if let Some(lines) = tap.as_mut()
+        && lines.len() < TAP_LINES
+        && lines.last().map(String::as_str) != Some(line)
+    {
+        lines.push(line.to_owned());
+    }
+}
+
+pub fn end_tap() -> Vec<String> {
+    TAP.lock()
+        .ok()
+        .and_then(|mut tap| tap.take())
+        .unwrap_or_default()
+}
 
 /// Every line the log file takes is also written to stdout, for a process
 /// whose log is its output (a dedicated server under a supervisor).
@@ -331,6 +363,9 @@ pub fn write_event(
     ev: Option<&str>,
     fields: Option<&serde_json::Value>,
 ) {
+    if ch == Channel::Console {
+        tap_line(msg);
+    }
     let Some(sink) = SINK.get() else {
         eprintln!("{}  {}  {msg}", ch.as_str(), lvl.as_str());
         return;

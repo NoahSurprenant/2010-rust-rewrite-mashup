@@ -26,6 +26,9 @@
 //! supervisor stops it, and started again: the world (seed, block) and the
 //! client's inventory come back. Memory and CPU of the server are recorded
 //! with no client and with one.
+//! Each time it is up, its console answers `iw4l dedicated-console` over
+//! its Unix socket (`whoami`, `admins`, an unknown command), the second
+//! time over the socket the first left behind.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -59,6 +62,7 @@ pub const PARTS: Parts = &[
             "sigterm_saves_and_exits",
             "restart_world_kept",
             "second_sigterm",
+            "console_socket_answers",
         ],
     ),
     (
@@ -619,9 +623,65 @@ fn clean_stop(facts: &Facts, key: &str) -> Result<(), String> {
     }
 }
 
+/// What `iw4l dedicated-console` asks the server, by the note its answer is
+/// kept under, and what each answer must hold: the second life's socket is
+/// made over the one the first left behind.
+pub const CONSOLE_ASKS: [(&str, &str); 4] = [
+    ("console_whoami", "player-key: none"),
+    ("console_admins", "debug-admins: keys="),
+    ("console_unknown", "unknown command"),
+    ("console2_admins", "debug-admins: keys="),
+];
+
+/// The server's console asked from outside its process, as `kubectl exec`
+/// asks it: `iw4l dedicated-console <command>` over the socket at `socket`,
+/// each answer kept under its note. `life` 1 asks everything, 2 `admins`.
+pub fn console_socket(
+    bin: &std::path::Path,
+    socket: &std::path::Path,
+    life: u32,
+    facts: &mut Facts,
+) -> Result<(), String> {
+    let asks: &[(&'static str, &str)] = if life == 1 {
+        &[
+            ("console_whoami", "whoami"),
+            ("console_admins", "admins"),
+            ("console_unknown", "no_such_command"),
+        ]
+    } else {
+        &[("console2_admins", "admins")]
+    };
+    for (key, command) in asks {
+        let out = std::process::Command::new(bin)
+            .args(["dedicated-console", command])
+            .env("IW4L_CONSOLE_SOCKET", socket)
+            .output()
+            .map_err(|e| format!("iw4l dedicated-console: {e}"))?;
+        let answer = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        println!("[console] {command} -> {}", answer.trim_end());
+        facts.notes.insert(key, answer);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(socket)
+            .map_err(|e| format!("{}: {e}", socket.display()))?
+            .permissions()
+            .mode();
+        facts
+            .notes
+            .insert("console_mode", format!("{:o}", mode & 0o777));
+    }
+    Ok(())
+}
+
 pub fn judge(facts: &Facts) -> Vec<Check> {
     type Rule = fn(&Facts) -> Result<(), String>;
-    let rules: [(&'static str, Rule); 17] = [
+    let rules: [(&'static str, Rule); 18] = [
         ("server_has_no_player", |f| {
             let first = f.rosters.first().ok_or("no roster line from the server")?;
             want(
@@ -853,6 +913,15 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
             has_planks(f, "c3_ready")
         }),
         ("second_sigterm", |f| clean_stop(f, "stop2")),
+        ("console_socket_answers", |f| {
+            for (key, expected) in CONSOLE_ASKS {
+                let answer = note(f, key)?;
+                if !answer.contains(expected) {
+                    return Err(format!("{key}: `{expected}` not in {answer:?}"));
+                }
+            }
+            want(note(f, "console_mode")?, "600", "the console socket's mode")
+        }),
     ];
     rules
         .iter()
@@ -944,6 +1013,14 @@ mod tests {
             ),
             ("stop1", "code=0 secs=0.4"),
             ("stop2", "code=0 secs=0.3"),
+            (
+                "console_whoami",
+                "player-key: none (a dedicated server has no player; or no key could be kept)\n",
+            ),
+            ("console_admins", "debug-admins: keys=0123456789abcdef\n"),
+            ("console_unknown", "unknown command `no_such_command`\n"),
+            ("console2_admins", "debug-admins: keys=0123456789abcdef\n"),
+            ("console_mode", "600"),
         ] {
             f.notes.insert(key, value.into());
         }
@@ -1098,6 +1175,22 @@ mod tests {
                 "client_kills_mob_server_sees"
             ]
         );
+    }
+
+    #[test]
+    fn a_console_socket_that_does_not_answer_fails() {
+        let mut f = passing();
+        f.notes.insert(
+            "console_admins",
+            "dedicated-console: /tmp/x.sock: Connection refused (os error 111)".into(),
+        );
+        assert_eq!(failed(&f), ["console_socket_answers"]);
+        let mut f = passing();
+        f.notes.remove("console2_admins");
+        assert_eq!(failed(&f), ["console_socket_answers"]);
+        let mut f = passing();
+        f.notes.insert("console_mode", "666".into());
+        assert_eq!(failed(&f), ["console_socket_answers"]);
     }
 
     #[test]

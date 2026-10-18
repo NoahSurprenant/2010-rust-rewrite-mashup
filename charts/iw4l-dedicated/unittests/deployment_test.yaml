@@ -40,6 +40,7 @@ tests:
             - { name: IW4L_MASTER_SERVER_NAME, value: iw4l-prod }
             - { name: IW4L_MASTER_KEY_SHA256, value: abababababababababababababababababababababababababababababababab }
             - { name: IW4L_MASTER_STATUS_FILE, value: /tmp/master.status }
+            - { name: IW4L_CONSOLE_SOCKET, value: /tmp/iw4l-console.sock }
 
   - it: names the room, caps it, takes its password from a Secret and names the world
     set:
@@ -173,3 +174,9 @@ tests:
   - it: uses the appVersion as the default tag
     asserts:
       - equal: { path: 'spec.template.spec.containers[0].image', value: "ghcr.io/noahsurprenant/iw4l-dedicated:latest" }
+
+  - it: takes console commands on a Unix socket in its own /tmp, with no port open
+    asserts:
+      - contains: { path: 'spec.template.spec.containers[0].env', content: { name: IW4L_CONSOLE_SOCKET, value: /tmp/iw4l-console.sock } }
+      - contains: { path: 'spec.template.spec.containers[0].volumeMounts', content: { name: tmp, mountPath: /tmp } }
+      - notExists: { path: 'spec.template.spec.containers[0].ports' }
