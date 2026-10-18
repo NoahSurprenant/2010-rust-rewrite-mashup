@@ -682,7 +682,10 @@ impl ReliableInbound<'_> {
                             self.fail("ActionOutcomeUnknown: request expired");
                             return;
                         }
-                        crate::ActionVerdict::Applied | crate::ActionVerdict::Refused => {}
+                        crate::ActionVerdict::Refused => {
+                            diag::info!(Net, "the host refused action request {request_id}");
+                        }
+                        crate::ActionVerdict::Applied => {}
                     }
                     self.actions.retire(local, *request_id);
                 }
@@ -1985,7 +1988,27 @@ pub fn register_client_runtime(app: &mut App) {
                 .in_set(ClientSet::Present)
                 .after(publish_presented),
         ),
+    )
+    .add_systems(
+        Update,
+        log_host_messages
+            .in_set(ClientSet::Receive)
+            .after(receive_ticks),
     );
+}
+
+/// What a host says to this player in plain text (a refused debug command,
+/// say), on stdout as `host-message: <text>` beside its HUD line.
+fn log_host_messages(mut notifies: MessageReader<crate::SvcGameNotify>) {
+    for cmd in notifies.read() {
+        if cmd.tag != crate::SVC_PRINT {
+            continue;
+        }
+        if let Some(text) = cmd.key.strip_prefix(sim::HUD_STRING_PLAIN) {
+            diag::info!(Net, "host message: {text}");
+            println!("host-message: {text}");
+        }
+    }
 }
 
 pub fn register_listen_prediction_arm(app: &mut App) {

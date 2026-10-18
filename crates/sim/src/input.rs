@@ -189,6 +189,39 @@ impl TickInput {
     }
 }
 
+/// The console name of an action that changes the world at a player's
+/// asking (teleports, deaths, spawns, damage, weapons, ammo, killstreaks,
+/// the match phase, script movers), or `None` for one a player's own play
+/// makes. A host takes these only from its own console, its bots and the
+/// players on its admin list (`net::DebugAdmins`). Minecraft intents are
+/// not sorted here: the host's Minecraft world tells its debug ones apart
+/// (`minecraft_terrain::multiplayer::Intent::debug_name`).
+pub fn debug_action_name(action: &ClientAction) -> Option<&'static str> {
+    Some(match action {
+        ClientAction::GiveWeapon { .. } => "give",
+        ClientAction::ForceDeath { .. } => "kill",
+        ClientAction::ForceSpawn { .. } => "force_spawn",
+        ClientAction::SetMatchPhase { .. } => "force_match_start",
+        ClientAction::Move { .. } => "tp",
+        ClientAction::BeginScriptMoverRotateVelocity { .. } => "rotatevelocity",
+        ClientAction::DebugDamage { .. } => "damage",
+        ClientAction::ResupplyAmmo { .. } => "give ammo",
+        ClientAction::GiveKillstreak { .. } => "give killstreak",
+        ClientAction::JoinMatch { .. }
+        | ClientAction::LeaveMatch { .. }
+        | ClientAction::SelectClass { .. }
+        | ClientAction::ChangeWeaponConfiguration { .. }
+        | ClientAction::SpawnClient { .. }
+        | ClientAction::SpawnIntermission { .. }
+        | ClientAction::SetName { .. }
+        | ClientAction::UseCopycat { .. }
+        | ClientAction::ActionSlot { .. }
+        | ClientAction::ChooseDefaultClass { .. }
+        | ClientAction::MenuResponse { .. }
+        | ClientAction::Minecraft { .. } => return None,
+    })
+}
+
 pub fn action_request_id(action: &ClientAction) -> ActionRequestId {
     match *action {
         ClientAction::JoinMatch { request_id }

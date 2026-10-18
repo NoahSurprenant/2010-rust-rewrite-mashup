@@ -58,6 +58,20 @@ impl PendingGameNotify {
         }
     }
 
+    /// A print of plain `text` (`sim::HUD_STRING_PLAIN` first) for a
+    /// caller to send itself, numbered with these rows so a HUD that skips
+    /// numbers it has shown keeps both.
+    pub fn plain_print(&mut self, text: String) -> SvcGameNotify {
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        SvcGameNotify {
+            id,
+            tag: SVC_PRINT,
+            name: String::new(),
+            key: clip(text),
+        }
+    }
+
     fn push(&mut self, recipient: Option<ClientId>, tag: u8, name: String, key: String) {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);

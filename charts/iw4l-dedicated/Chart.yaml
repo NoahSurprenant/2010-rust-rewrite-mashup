@@ -7,7 +7,7 @@ type: application
 # The major and minor: the Helm chart workflow publishes each change as <major>.<minor>.<run number>
 # (oci://ghcr.io/noahsurprenant/charts, signed with cosign), so only a major or minor bump is an edit
 # here.
-version: 0.1.0
+version: 0.2.0
 # The Kubernetes versions the Helm chart workflow tests. Raise it as old minors reach end of life.
 kubeVersion: ">=1.34.0-0"
 # Informational only: which image runs is set by image.repository, image.tag and image.digest.

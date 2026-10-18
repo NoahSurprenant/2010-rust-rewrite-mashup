@@ -3,7 +3,11 @@
 //!
 //! A dedicated server (`iw4l dedicated minecraft:overworld`) hosts a room on
 //! a master of the run's own, with no player of its own. A client joins
-//! that room, sets a block and fills its inventory; far from the spawn, in
+//! that room; with the server's admin list emptied from its console, the
+//! client's `mc set`, `mc give`, `mc summon` and `tp` are refused, logged
+//! on the server and told to the client, and change nothing. An admin again
+//! (as `IW4L_ADMINS` made it), the client sets a block and fills its
+//! inventory; far from the spawn, in
 //! a walled arena, a husk summoned beside it must reach it with the
 //! server's id, hurt it and die to its gun as the server sees (with no
 //! player of the server's own about); it must hear the husk, knife a husk
@@ -85,6 +89,8 @@ pub struct Facts {
     pub lines: BTreeMap<String, Event>,
     /// The server's `dedicated-players:` lines, in order.
     pub rosters: Vec<Event>,
+    /// The server's `debug-refused:` lines, in order.
+    pub refusals: Vec<Event>,
     pub notes: BTreeMap<&'static str, String>,
     /// Server memory and CPU, by point.
     pub measures: BTreeMap<&'static str, Measure>,
@@ -198,12 +204,71 @@ pub fn join(pair: &mut Pair, room: &str, label: &str) -> Result<Event, String> {
     )
 }
 
+/// A block a client not on the admin list asks for, from the world's spawn
+/// block, and the item it asks to be given: the server must refuse both.
+const REFUSED_AT: [i32; 3] = [-2, 5, 0];
+const REFUSED_BLOCK: &str = "minecraft:diamond_block";
+const REFUSED_ITEM: &str = "minecraft:diamond";
+/// The debug commands the locked-out client tries, as the server names them.
+pub const REFUSED: [&str; 4] = ["mc fill", "mc give", "mc summon", "tp"];
+
+/// The server's admin list emptied from its console: the client's `mc set`,
+/// `mc give`, `mc summon` and `tp` are refused (each logged on the server,
+/// each told to the client), the world and the client's inventory and
+/// place stay as they were; then the client is an admin again (as
+/// `IW4L_ADMINS` made it), for the steps after, which need it.
+pub fn locked_out(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
+    let step = Duration::from_secs(STEP_SECS);
+    let none = pair.ask(false, "admins set - s_admins_none", "s_admins_none", step)?;
+    facts.keep("s_admins_none", none);
+    let before = pair.host.refusals.len();
+    client(pair)?.send(&format!(
+        "{}; mc give diamond 3; mc summon pig 2 0 0; tp {} {} {}",
+        set(REFUSED_AT, "diamond_block"),
+        FAR_MAP[0],
+        FAR_MAP[1],
+        FAR_MAP[2]
+    ))?;
+    pair.until("the server's refusals", step, |pair| {
+        pair.host.refusals.len() >= before + REFUSED.len()
+            && pair
+                .client
+                .as_ref()
+                .is_some_and(|c| c.messages.len() >= REFUSED.len())
+    })?;
+    // The client's guess at its own inventory is taken back.
+    let after = pair.ask(true, "wait 3s; mc state c_refused", "c_refused", step)?;
+    facts.keep("c_refused", after);
+    let block = pair.ask(
+        false,
+        &format!(
+            "mc block s_refused {} {} {}",
+            REFUSED_AT[0], REFUSED_AT[1], REFUSED_AT[2]
+        ),
+        "s_refused",
+        step,
+    )?;
+    facts
+        .notes
+        .insert("s_refused", block.get("block").unwrap_or("").to_owned());
+    facts
+        .notes
+        .insert("client_messages", client(pair)?.messages.join("\n"));
+    let back = pair.ask(false, "admins set client s_admins", "s_admins", step)?;
+    facts.keep("s_admins", back);
+    facts
+        .notes
+        .insert("refused_before_admin", pair.host.refusals.len().to_string());
+    Ok(())
+}
+
 /// The first visit: the client sets a block and fills its inventory, and
 /// the server sees the block.
 pub fn first_visit(pair: &mut Pair, facts: &mut Facts, room: &str) -> Result<(), String> {
     let step = Duration::from_secs(STEP_SECS);
     let ready = join(pair, room, "c_ready")?;
     facts.keep("c_ready", ready);
+    locked_out(pair, facts)?;
     let given = pair.ask(
         true,
         &format!(
@@ -460,7 +525,7 @@ fn clean_stop(facts: &Facts, key: &str) -> Result<(), String> {
 
 pub fn judge(facts: &Facts) -> Vec<Check> {
     type Rule = fn(&Facts) -> Result<(), String>;
-    let rules: [(&'static str, Rule); 13] = [
+    let rules: [(&'static str, Rule); 15] = [
         ("server_has_no_player", |f| {
             let first = f.rosters.first().ok_or("no roster line from the server")?;
             want(
@@ -502,6 +567,68 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
                 server.get("seed").unwrap_or("-"),
                 "client seed",
             )
+        }),
+        ("non_admin_refused", |f| {
+            want(
+                line(f, "s_admins_none")?.get("names").unwrap_or(""),
+                "-",
+                "the server's admins",
+            )?;
+            for command in REFUSED {
+                let refused = f
+                    .refusals
+                    .iter()
+                    .any(|r| r.get("command") == Some(command) && r.get("name") == Some(CLIENT));
+                if !refused {
+                    return Err(format!("the server never refused the client's `{command}`"));
+                }
+                let told = note(f, "client_messages")?
+                    .lines()
+                    .any(|m| m.contains(command) && m.contains("refused"));
+                if !told {
+                    return Err(format!("the client was never told `{command}` was refused"));
+                }
+            }
+            if note(f, "s_refused")? == REFUSED_BLOCK {
+                return Err("the refused `mc set` changed the server's world".into());
+            }
+            let after = line(f, "c_refused")?;
+            if slots(after)
+                .iter()
+                .any(|s| s.starts_with(&format!("{REFUSED_ITEM}*")))
+            {
+                return Err(format!(
+                    "the refused `mc give` left {REFUSED_ITEM} with the client"
+                ));
+            }
+            let x = after
+                .get("origin")
+                .and_then(|o| o.split(',').next())
+                .and_then(|x| x.parse::<f64>().ok())
+                .ok_or("no origin in `c_refused`")?;
+            if (x - f64::from(FAR_MAP[0])).abs() < 1000.0 {
+                return Err(format!("the refused `tp` moved the client (x {x})"));
+            }
+            Ok(())
+        }),
+        ("admin_allowed", |f| {
+            want(
+                line(f, "s_admins")?.get("names").unwrap_or(""),
+                CLIENT,
+                "the server's admins",
+            )?;
+            // The admin's `mc set`, `mc give`, `mc summon` and `tp` are the
+            // steps the other checks judge; none of them was refused.
+            let before: usize = note(f, "refused_before_admin")?
+                .parse()
+                .map_err(|_| "bad refusal count")?;
+            match f.refusals.get(before) {
+                Some(late) => Err(format!(
+                    "refused once the client was an admin: {}",
+                    late.get("command").unwrap_or("?")
+                )),
+                None => Ok(()),
+            }
         }),
         ("client_block_on_server", |f| {
             want(note(f, "s_gold")?, "minecraft:gold_block", "server sees")
@@ -685,6 +812,32 @@ mod tests {
                 ),
             );
         }
+        f.lines.insert(
+            "s_admins_none".into(),
+            event("debug-admins:", "label=s_admins_none names=-"),
+        );
+        f.lines.insert(
+            "s_admins".into(),
+            event("debug-admins:", "label=s_admins names=client"),
+        );
+        f.lines.insert(
+            "c_refused".into(),
+            state("label=c_refused origin=36,-18,330 seed=7 role=client slots=-"),
+        );
+        let mut told = Vec::new();
+        for command in REFUSED {
+            f.refusals.push(event(
+                "debug-refused:",
+                &format!("client=1 name=client command=\"{command}\""),
+            ));
+            told.push(format!(
+                "^1{command}^7 refused: only the host's admins may run debug commands"
+            ));
+        }
+        f.notes.insert("client_messages", told.join("\n"));
+        f.notes
+            .insert("refused_before_admin", REFUSED.len().to_string());
+        f.notes.insert("s_refused", "air".into());
         f.notes.insert("husk_id", "9".into());
         f.notes.insert("husk_killed", "true".into());
         f.mobnet.push(event(
@@ -771,5 +924,45 @@ mod tests {
         let mut f = passing();
         f.notes.insert("stop1", "code=signal secs=30.0".into());
         assert_eq!(failed(&f), ["sigterm_saves_and_exits"]);
+    }
+
+    #[test]
+    fn a_debug_command_a_non_admin_got_through_fails() {
+        let mut f = passing();
+        f.notes.insert("s_refused", REFUSED_BLOCK.into());
+        assert_eq!(failed(&f), ["non_admin_refused"]);
+        let mut f = passing();
+        f.lines.insert(
+            "c_refused".into(),
+            state("label=c_refused origin=36,-18,330 seed=7 role=client slots=minecraft:diamond*3"),
+        );
+        assert_eq!(failed(&f), ["non_admin_refused"]);
+        let mut f = passing();
+        f.lines.insert(
+            "c_refused".into(),
+            state("label=c_refused origin=11520,0,2232 seed=7 role=client slots=-"),
+        );
+        assert_eq!(failed(&f), ["non_admin_refused"]);
+        let mut f = passing();
+        f.refusals.retain(|r| r.get("command") != Some("mc summon"));
+        f.notes.insert("refused_before_admin", "3".into());
+        assert_eq!(failed(&f), ["non_admin_refused"]);
+    }
+
+    #[test]
+    fn a_refused_client_never_told_fails() {
+        let mut f = passing();
+        f.notes.insert("client_messages", String::new());
+        assert_eq!(failed(&f), ["non_admin_refused"]);
+    }
+
+    #[test]
+    fn an_admin_refused_fails() {
+        let mut f = passing();
+        f.refusals.push(event(
+            "debug-refused:",
+            "client=1 name=client command=\"mc fill\"",
+        ));
+        assert_eq!(failed(&f), ["admin_allowed"]);
     }
 }

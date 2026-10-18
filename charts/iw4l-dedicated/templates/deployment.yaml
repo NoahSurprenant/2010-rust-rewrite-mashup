@@ -26,6 +26,9 @@
 {{- with .Values.minecraft.world }}
 {{- $env = append $env (dict "name" "IW4L_MINECRAFT_WORLD" "value" .) }}
 {{- end }}
+{{- with .Values.admins }}
+{{- $env = append $env (dict "name" "IW4L_ADMINS" "value" (join "," .)) }}
+{{- end }}
 {{- $probe := dict "exec" (dict "command" (list "grep" "-q" "^state=hosting$" "/tmp/master.status")) }}
 apiVersion: apps/v1
 kind: Deployment

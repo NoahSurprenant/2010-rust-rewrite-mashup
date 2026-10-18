@@ -172,6 +172,7 @@ impl Plugin for ConsolePlugin {
                             crate::debug_draw_method::route_debug_draw_method_commands,
                             crate::debug_minecraft::route_debug_minecraft_commands,
                             crate::debug_skate::route_skate_commands,
+                            crate::debug_admins::route_admins_commands,
                         ),
                         crate::debug_view_proj::route_view_proj_commands,
                         (

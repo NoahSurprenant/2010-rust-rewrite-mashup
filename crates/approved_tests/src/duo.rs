@@ -98,6 +98,11 @@ impl Master {
     }
 }
 
+/// The player the scenarios' hosts take debug commands from: their
+/// client (`IW4L_ADMINS`), whose `mc set`, `mc give`, `mc summon` and `tp`
+/// steps need it.
+pub const ADMINS: (&str, &str) = ("IW4L_ADMINS", "client");
+
 /// One game: its console, its stdout lines, and its master status file.
 pub struct Player {
     pub name: &'static str,
@@ -115,6 +120,10 @@ pub struct Player {
     pub rosters: Vec<Event>,
     /// Its `minecraft-mobnet:` lines (a host's mob bytes to each client).
     pub mobnet: Vec<Event>,
+    /// A host's `debug-refused:` lines: debug commands it refused a player.
+    pub refusals: Vec<Event>,
+    /// What its host told it in plain text (`host-message:` lines).
+    pub messages: Vec<String>,
     /// Peak resident memory sampled, in KiB.
     pub peak_rss_kib: u64,
 }
@@ -156,6 +165,8 @@ impl Player {
             .env_remove("IW4L_MINECRAFT_SEED")
             .env_remove("IW4L_MINECRAFT_WORLD")
             .env_remove("IW4L_MINECRAFT_WORLDS")
+            // No admins but where a scenario names them.
+            .env_remove("IW4L_ADMINS")
             // Skate 3 files only where a scenario hands them over.
             .env_remove("IW4L_SKATE_ASSETS")
             .stdin(Stdio::piped())
@@ -190,6 +201,8 @@ impl Player {
             seen: BTreeMap::new(),
             rosters: Vec::new(),
             mobnet: Vec::new(),
+            refusals: Vec::new(),
+            messages: Vec::new(),
             peak_rss_kib: 0,
         })
     }
@@ -246,6 +259,14 @@ impl Player {
                 println!("[{:>7.1}s] {} -> {line}", at_ms as f64 / 1000.0, self.name);
                 self.mobnet.push(event);
             }
+            if let Some(event) = parse(&line, "debug-refused:", at_ms) {
+                println!("[{:>7.1}s] {} -> {line}", at_ms as f64 / 1000.0, self.name);
+                self.refusals.push(event);
+            }
+            if let Some(text) = line.strip_prefix("host-message:") {
+                println!("[{:>7.1}s] {} -> {line}", at_ms as f64 / 1000.0, self.name);
+                self.messages.push(text.trim().to_owned());
+            }
             for prefix in [
                 "minecraft-state:",
                 "minecraft-block:",
@@ -253,6 +274,7 @@ impl Player {
                 "minecraft-sounds:",
                 "minecraft-mobrange:",
                 "skate-state:",
+                "debug-admins:",
             ] {
                 if let Some(event) = parse(&line, prefix, at_ms) {
                     println!("[{:>7.1}s] {} -> {line}", at_ms as f64 / 1000.0, self.name);

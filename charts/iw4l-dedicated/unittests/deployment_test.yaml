@@ -53,6 +53,12 @@ tests:
       - contains: { path: 'spec.template.spec.containers[0].env', content: { name: IW4L_MASTER_PASSWORD, valueFrom: { secretKeyRef: { name: room, key: pw } } } }
       - contains: { path: 'spec.template.spec.containers[0].env', content: { name: IW4L_MINECRAFT_WORLD, value: home } }
 
+  - it: takes debug commands from the players it lists, none by default (the first test)
+    set:
+      admins: [noah, Another Player]
+    asserts:
+      - contains: { path: 'spec.template.spec.containers[0].env', content: { name: IW4L_ADMINS, value: "noah,Another Player" } }
+
   - it: puts extraEnv after the chart's variables, so it can override them
     set:
       extraEnv: [{ name: IW4L_MASTER_SERVER_NAME, value: iw4l-dev }]

@@ -18,6 +18,7 @@ pub mod svc_sound;
 mod time_scale;
 pub mod transport;
 
+pub use authority::admins::{ADMINS_ENV, DebugAdmins, refuse_debug, refusal_text};
 pub use authority::actions::{
     ActionAdmission, ActionRequestIds, ClientActionLedger, MAX_REMEMBERED_ACTIONS_PER_CLIENT,
 };

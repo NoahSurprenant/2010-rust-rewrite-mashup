@@ -490,6 +490,7 @@ fn open_duo(
         ("IW4L_MASTER_CA_CERT", master.ca.display().to_string()),
     ];
     env.extend(extra_env.iter().cloned());
+    env.push((duo::ADMINS.0, duo::ADMINS.1.to_owned()));
     let setup = format!(
         "set ui_mapname {}; set ui_gametype dm",
         minecraft_multiplayer::MAP
@@ -730,6 +731,7 @@ fn dedicated_sessions(
     ];
     let mut server_env = env.to_vec();
     server_env.push(("IW4L_MASTER_HOST_NAME", ds::ROOM.to_owned()));
+    server_env.push((duo::ADMINS.0, duo::ADMINS.1.to_owned()));
     server_env.push((
         "IW4L_MINECRAFT_WORLDS",
         dirs[0].join("minecraft-worlds").display().to_string(),
@@ -789,6 +791,7 @@ fn dedicated_sessions(
         })();
         pair.host.pump();
         facts.rosters.append(&mut pair.host.rosters);
+        facts.refusals.append(&mut pair.host.refusals);
         facts.mobnet.append(&mut pair.host.mobnet);
         peaks.push(json!({
             "server_life": life,
@@ -974,6 +977,7 @@ fn skate_sessions(
     ];
     let mut server_env = env.to_vec();
     server_env.push(("IW4L_MASTER_HOST_NAME", sk::ROOM.to_owned()));
+    server_env.push((duo::ADMINS.0, duo::ADMINS.1.to_owned()));
     server_env.push((
         "IW4L_MINECRAFT_WORLDS",
         dirs[2].join("minecraft-worlds").display().to_string(),

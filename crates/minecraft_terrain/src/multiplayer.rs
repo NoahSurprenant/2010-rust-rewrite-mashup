@@ -316,6 +316,26 @@ fn decode_slot(r: &mut Reader<'_>) -> Result<SlotRef, DecodeError> {
 }
 
 impl Intent {
+    /// The console command behind an intent that changes the world or an
+    /// inventory beyond what play does (`mc give`, `mc clear`, `mc fill` or
+    /// `mc set`, `mc summon`), or `None` for one a player's own play makes.
+    /// A host applies these only for the players on its admin list.
+    pub fn debug_name(&self) -> Option<&'static str> {
+        match self {
+            Self::Give { .. } => Some("mc give"),
+            Self::Clear => Some("mc clear"),
+            Self::Fill { .. } => Some("mc fill"),
+            Self::Summon { .. } => Some("mc summon"),
+            Self::Break { .. }
+            | Self::Place { .. }
+            | Self::Click(_)
+            | Self::Select { .. }
+            | Self::Drop { .. }
+            | Self::OpenTable { .. }
+            | Self::Attack { .. } => None,
+        }
+    }
+
     /// The intent as at most `INTENT_BYTES` bytes, or `None` when an id or
     /// a spread is too long to send.
     pub fn encode(&self) -> Option<Vec<u8>> {
@@ -1087,6 +1107,32 @@ mod tests {
                 bytes.len()
             );
             assert_eq!(Intent::decode(&bytes).unwrap(), intent);
+        }
+    }
+
+    #[test]
+    fn only_the_console_cheats_need_an_admin() {
+        let debug: Vec<&str> = every_intent()
+            .iter()
+            .filter_map(Intent::debug_name)
+            .collect();
+        assert_eq!(
+            debug,
+            ["mc give", "mc clear", "mc fill", "mc fill", "mc summon"]
+        );
+        // What play makes never does: mining, placing, clicks, punches.
+        for intent in every_intent() {
+            let play = matches!(
+                intent,
+                Intent::Break { .. }
+                    | Intent::Place { .. }
+                    | Intent::Click(_)
+                    | Intent::Select { .. }
+                    | Intent::Drop { .. }
+                    | Intent::OpenTable { .. }
+                    | Intent::Attack { .. }
+            );
+            assert_eq!(intent.debug_name().is_none(), play, "{intent:?}");
         }
     }
 

@@ -18,6 +18,17 @@ holds one of the slots) and `IW4L_MASTER_PASSWORD` as for any host. Its log is i
 the match changes. `IW4L_CONSOLE_STDIN=1` takes console commands on stdin
 (`mc state`, `mc block`, `mc set` work with no player).
 
+**Debug commands** (`mc give`, `mc clear`, `mc fill`, `mc set`, `mc summon`,
+`give`, `tp`, `kill`, `damage`, `force_spawn`, ...) change the world for
+whoever runs them, so a host takes them only from its own console, its bots
+and the players named in `IW4L_ADMINS` (comma-separated in-game names, at
+most 15 bytes each; the Helm chart's `admins`). With none set, no player may.
+A name is the only identity a player has and anyone can take one: list only
+names you trust. A refused command changes nothing; the host prints
+`debug-refused: client=… name=… command=…` and the player is told on its HUD
+(and its stdout, `host-message: …`). On the host's console, `admins` shows the
+list and `admins set <name,name|->` replaces it until the next start.
+
 It runs one match for the life of its room. SIGTERM (or Ctrl-C) saves and
 exits with 0; a room the master lost (the master restarted, the network
 dropped) or a match that ended exits with 1, for a supervisor to start it

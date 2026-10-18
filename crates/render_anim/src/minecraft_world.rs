@@ -580,6 +580,8 @@ pub(crate) struct MinecraftNet<'w, 's> {
     bridge: Option<Res<'w, net::MasterBridge>>,
     identity: Option<Res<'w, frame::LaunchIdentity>>,
     dedicated: Option<Res<'w, frame::DedicatedServer>>,
+    admins: Option<Res<'w, net::DebugAdmins>>,
+    notify: Option<ResMut<'w, net::PendingGameNotify>>,
 }
 
 /// A console block box as world blocks: corners relative to `base`.
@@ -1281,6 +1283,21 @@ fn update(
                     continue;
                 }
             };
+            // The console's cheats only from the host's admins. A refused
+            // one still counts as applied, so the client takes back the
+            // inventory it predicted.
+            if let Some(command) = intent.debug_name() {
+                if !cheats {
+                    continue;
+                }
+                let name = net::client_name_string(authority, sim::ClientId(client));
+                if !net.admins.as_ref().is_some_and(|admins| admins.admits(&name)) {
+                    if let Some(reliable) = net.reliable.as_mut() {
+                        net::refuse_debug(reliable, net.notify.as_deref_mut(), sim::ClientId(client), &name, command);
+                    }
+                    continue;
+                }
+            }
             let Some(their) = authority.player(sim::ClientId(client)).copied() else {
                 continue;
             };

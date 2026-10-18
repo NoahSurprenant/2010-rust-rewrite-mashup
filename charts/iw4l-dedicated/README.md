@@ -85,6 +85,7 @@ a rollout or a node drain keeps it. Deleting the claim starts a new world.
 | `room.maxPlayers` | `IW4L_MASTER_MAX_PLAYERS`: 2 to 18, the server's own slot included; 0 the game's 18 |
 | `room.password.existingSecret`, `.key` | `IW4L_MASTER_PASSWORD`, from the Secret |
 | `minecraft.world` | `IW4L_MINECRAFT_WORLD` |
+| `admins` | `IW4L_ADMINS`: the players (by in-game name) allowed debug commands (`mc give`, `mc fill`, `mc summon`, `tp`, ...); empty, none |
 
 Always set: `IW4L_MASTER_STATUS_FILE=/tmp/master.status`, which the probe reads. The image sets
 `IW4L_GAMES=/games` and the paths under `/data`. Any other setting goes in `extraEnv`, which comes

@@ -78,6 +78,11 @@
         }
       }
     },
+    "admins": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 15, "pattern": "^[^,\\s]([^,]*[^,\\s])?$" },
+      "uniqueItems": true
+    },
     "minecraft": {
       "type": "object",
       "additionalProperties": false,

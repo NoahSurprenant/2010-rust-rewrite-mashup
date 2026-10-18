@@ -53,6 +53,12 @@ room:
     existingSecret: ""
     key: password
 
+# The players allowed debug commands on the server (IW4L_ADMINS): `mc give`, `mc clear`, `mc fill`,
+# `mc set`, `mc summon`, `give`, `tp`, `kill`, `damage` and the like. By in-game player name (at
+# most 15 bytes, no commas), the only identity a player has: anyone can take a name, so list only
+# names you trust. Empty: no player may; a refused command is logged and the player told.
+admins: []
+
 # The Minecraft map's kept world.
 minecraft:
   # IW4L_MINECRAFT_WORLD: the world's name, a folder of /data/minecraft-worlds. Empty: the game's,
