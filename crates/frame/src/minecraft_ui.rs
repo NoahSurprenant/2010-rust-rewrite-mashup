@@ -97,6 +97,12 @@ pub struct MinecraftUi {
     /// Blocks the console asks about, relative to the world's spawn block,
     /// each with its label (`mc block`).
     pub probes: Vec<(String, [i32; 3])>,
+    /// Mobs the console summons: kind and where, in blocks from the
+    /// player's feet (`mc summon`).
+    pub summon: Vec<(String, [f64; 3])>,
+    /// Labels the console asks the mobs near the player under, each with
+    /// the one kind it asks about, if any (`mc mobs`).
+    pub mob_probes: Vec<(String, Option<String>)>,
     /// The block at the player's feet, relative to the world's spawn block.
     pub feet: Option<[i32; 3]>,
     /// The world's seed, once it is known.

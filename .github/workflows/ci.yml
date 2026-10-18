@@ -23,8 +23,9 @@ jobs:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p approved_tests
-      # The Minecraft map's multiplayer wire and save formats.
+      # The Minecraft map's multiplayer wire and save formats, and its mobs'.
       - run: cargo test -p minecraft_terrain --lib multiplayer
+      - run: cargo test -p minecraft_terrain --lib mob_sync
 
   # The approved crafting_table scenario plays the real game on the
   # Minecraft map, so it needs the owner's MW2 files, which only the

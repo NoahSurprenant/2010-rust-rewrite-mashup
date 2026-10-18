@@ -650,6 +650,17 @@ impl ServerSim {
         })
     }
 
+    /// The mobs any of several players tracks.
+    pub fn tracked_mobs_near(&self, positions: &[[f64; 3]], range: f64) -> minecraftoss_entities::world::EntityWorld {
+        let range_sq = range * range;
+        self.mobs.clone_where(|p| {
+            positions.iter().any(|at| {
+                let (dx, dz) = (p.x - at[0], p.z - at[2]);
+                dx * dx + dz * dz <= range_sq
+            })
+        })
+    }
+
     /// A chunk leaves the level; its entities are saved and taken out.
     pub fn unload_chunk(&mut self, pos: ChunkPos) {
         self.save_chunk_entities(pos, true);
@@ -712,16 +723,24 @@ impl ServerSim {
     /// The chunks random ticks run in: every loaded chunk within
     /// `distance` (Chebyshev) of `center`, in X then Z order.
     pub fn set_simulation_area(&mut self, center: (i32, i32), distance: i32) {
-        let mut list = Vec::with_capacity(((2 * distance + 1) * (2 * distance + 1)) as usize);
-        for x in center.0 - distance..=center.0 + distance {
-            for z in center.1 - distance..=center.1 + distance {
-                let pos = ChunkPos::new(x, z);
-                if self.level.chunk(pos).is_some() {
-                    list.push(pos);
+        self.set_simulation_areas(&[center], distance);
+    }
+
+    /// The chunks random ticks run in around several players: every loaded
+    /// chunk within `distance` of any of `centers`, once each, in X then Z
+    /// order.
+    pub fn set_simulation_areas(&mut self, centers: &[(i32, i32)], distance: i32) {
+        let mut list = std::collections::BTreeSet::new();
+        for center in centers {
+            for x in center.0 - distance..=center.0 + distance {
+                for z in center.1 - distance..=center.1 + distance {
+                    if self.level.chunk(ChunkPos::new(x, z)).is_some() {
+                        list.insert((x, z));
+                    }
                 }
             }
         }
-        self.level.ticking_chunks = Some(list);
+        self.level.ticking_chunks = Some(list.into_iter().map(|(x, z)| ChunkPos::new(x, z)).collect());
     }
 
     /// Keeps the level's default clock with the client's day time.
@@ -854,7 +873,8 @@ pub struct TickInput {
     pub day_ticks: i64,
     pub players: Vec<[f64; 3]>,
     pub difficulty: i32,
-    pub simulation_center: (i32, i32),
+    /// Each player's chunk: the level ticks around every one.
+    pub simulation_centers: Vec<(i32, i32)>,
     pub simulation_distance: i32,
     /// The player's feet, when it can pick items up, with its inventory and
     /// selected slot (the server offers touching stacks to this copy).
@@ -871,8 +891,8 @@ pub struct TickInput {
     pub mob_vitals: Vec<(u64, minecraftoss_entities::monster_ai::PlayerVitals)>,
     /// `Level.isBrightOutside`.
     pub bright_outside: bool,
-    /// The player's position and how far away it tracks mobs.
-    pub tracking: ([f64; 3], f64),
+    /// The players' positions and how far away each tracks mobs.
+    pub tracking: (Vec<[f64; 3]>, f64),
     /// The hurts that landed on the player since the last tick: the mob
     /// behind each and the damage type (its tame wolves avenge it).
     pub player_hurts: Vec<(Option<u64>, &'static str)>,
@@ -1136,7 +1156,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.set_players(&input.players, input.difficulty);
                     // Living, non-spectating players draw experience orbs.
                     sim.level.living_players = input.mob_players.iter().filter(|p| p.alive && !p.spectator).map(|p| (p.position.to_array(), f64::from(p.eye_height))).collect();
-                    sim.set_simulation_area(input.simulation_center, input.simulation_distance);
+                    sim.set_simulation_areas(&input.simulation_centers, input.simulation_distance);
                     if let Some(natural) = &mut sim.level.natural_spawning {
                         natural.spawn_mobs = input.spawn_mobs;
                     }
@@ -1148,6 +1168,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     // The player's fight memory: its `tickCount` moves on and
                     // the hurts the client took land in it.
                     sim.mobs.tick_player(0);
+                    for player in input.mob_players.iter().filter(|p| p.id != 0) {
+                        sim.mobs.tick_player(player.id);
+                    }
                     for &(source, kind) in &input.player_hurts {
                         sim.mobs.player_hurt(0, source, kind);
                     }
@@ -1166,7 +1189,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.explosions.extend(sim.take_explosions());
                     out.mob_sounds.extend(sim.mobs.take_sounds());
                     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
-                    out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));
+                    out.mobs = Some(Box::new(sim.tracked_mobs_near(&input.tracking.0, input.tracking.1)));
                     let pickup_feet = input.pickup.as_ref().map(|(feet, _, _)| *feet);
                     if let Some((feet, mut inventory, selected)) = input.pickup {
                         let recipes = inventory.recipes.clone();

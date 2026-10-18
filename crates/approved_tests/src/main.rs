@@ -13,6 +13,7 @@ mod scenarios {
     pub mod dedicated_server;
     pub mod heavy_gameplay_lifecycle;
     pub mod minecraft_multiplayer;
+    pub mod mob_steps;
 }
 
 use std::path::{Path, PathBuf};
@@ -634,6 +635,8 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
             minecraft_multiplayer::second_session(&mut pair, &mut facts)
         };
         let closed = close_duo(&mut pair);
+        pair.host.pump();
+        facts.mobnet.append(&mut pair.host.mobnet);
         peaks.push(json!({
             "session": session,
             "host_peak_rss_mib": pair.host.peak_rss_kib / 1024,
@@ -678,6 +681,12 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
         .iter()
         .map(|(label, event)| (label.clone(), json!(event.fields)))
         .collect::<serde_json::Map<_, _>>()
+        .into();
+    manifest["mob_bandwidth"] = facts
+        .mobnet
+        .iter()
+        .map(|e| json!(e.fields))
+        .collect::<Vec<_>>()
         .into();
     manifest["answers"] = json!(facts.notes);
     manifest["result"] = if passed { "passed" } else { "failed" }.into();
@@ -756,6 +765,7 @@ fn dedicated_sessions(
                 pair.client = Some(client(1)?);
                 ds::first_visit(&mut pair, facts, &room)?;
                 ds::measure(&mut pair, facts, "one_client")?;
+                ds::mob_visit(&mut pair, facts)?;
                 ds::leave(&mut pair)?;
                 ds::empty_room(&mut pair, facts, &list)?;
                 pair.client = Some(client(2)?);
@@ -772,6 +782,7 @@ fn dedicated_sessions(
         })();
         pair.host.pump();
         facts.rosters.append(&mut pair.host.rosters);
+        facts.mobnet.append(&mut pair.host.mobnet);
         peaks.push(json!({
             "server_life": life,
             "server_peak_rss_mib": pair.host.peak_rss_kib / 1024,
@@ -870,6 +881,12 @@ fn run_dedicated_server(root: &Path, args: &Args) -> Result<bool, String> {
             )
         })
         .collect::<serde_json::Map<_, _>>()
+        .into();
+    manifest["mob_bandwidth"] = facts
+        .mobnet
+        .iter()
+        .map(|e| json!(e.fields))
+        .collect::<Vec<_>>()
         .into();
     let checks = dedicated_server::judge(&facts);
     for check in &checks {

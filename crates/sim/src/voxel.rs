@@ -114,8 +114,13 @@ pub enum VoxelEvent {
     /// An explosion went off here, in blocks.
     Explosion { center: [f64; 3] },
     /// A bullet struck the mob with this key, with the damage it would have
-    /// done at that range, from this block point.
-    MobShot { key: u64, damage: f32, from: [f64; 3] },
+    /// done at that range, from this block point, fired by this client.
+    MobShot {
+        key: u64,
+        damage: f32,
+        from: [f64; 3],
+        shooter: u32,
+    },
     /// A bullet's path through the air, in blocks, up to what stopped it:
     /// blocks without collision on it (grass, flowers) take its damage.
     Ray { from: [f64; 3], to: [f64; 3], damage: f32 },
@@ -259,7 +264,7 @@ pub fn mob_targets() -> Vec<(u64, [f32; 3], [f32; 3])> {
         .collect()
 }
 
-pub(crate) fn push_mob_shot(key: u64, damage: f32, from: [f32; 3]) {
+pub(crate) fn push_mob_shot(key: u64, damage: f32, from: [f32; 3], shooter: u32) {
     let Ok(world) = WORLD.read() else {
         return;
     };
@@ -268,7 +273,12 @@ pub(crate) fn push_mob_shot(key: u64, damage: f32, from: [f32; 3]) {
     };
     let from = to_block(world.origin, from);
     if let Ok(mut events) = EVENTS.lock() {
-        events.push(VoxelEvent::MobShot { key, damage, from });
+        events.push(VoxelEvent::MobShot {
+            key,
+            damage,
+            from,
+            shooter,
+        });
     }
 }
 

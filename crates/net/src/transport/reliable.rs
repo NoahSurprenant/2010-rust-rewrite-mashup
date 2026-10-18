@@ -407,4 +407,29 @@ impl ReliableEventHub {
 #[derive(bevy::prelude::Resource, Debug, Default)]
 pub struct MinecraftDownlink {
     pub rows: Vec<Vec<u8>>,
+    /// The Minecraft bytes snapshots carried (the mobs near the client), in
+    /// the order they arrived; unreliable, so some never come.
+    pub frames: Vec<Vec<u8>>,
+}
+
+/// The most Minecraft bytes one snapshot carries.
+pub const MAX_MINECRAFT_FRAME_BYTES: usize = 8 * 1024;
+
+/// Minecraft bytes a host sends each client with its next snapshot
+/// (unreliably): the newest replaces any not yet sent.
+#[derive(bevy::prelude::Resource, Debug, Default)]
+pub struct PendingMinecraftFrames {
+    per_client: std::collections::HashMap<sim::ClientId, Vec<u8>>,
+}
+
+impl PendingMinecraftFrames {
+    pub fn set(&mut self, client: sim::ClientId, bytes: Vec<u8>) {
+        if bytes.len() <= MAX_MINECRAFT_FRAME_BYTES {
+            self.per_client.insert(client, bytes);
+        }
+    }
+
+    pub fn take_for(&mut self, client: sim::ClientId) -> Vec<u8> {
+        self.per_client.remove(&client).unwrap_or_default()
+    }
 }

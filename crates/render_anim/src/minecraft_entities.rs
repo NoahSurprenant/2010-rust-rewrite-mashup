@@ -13,6 +13,7 @@ use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
 use minecraft_terrain::server::{PlayerEdit, ServerHandle, ServerSim, TickInput};
 use minecraft_terrain::terrain::TerrainStream;
 use minecraft_terrain::client_mobs::{ClientMobs, server_mobs};
+use minecraft_terrain::mob_sync::{ClientCopy, HostMob, MobSpawn};
 use minecraft_terrain::mesh::ItemVisuals;
 use minecraft_terrain::server::{EntitySnapshot, ServerItem};
 use minecraftoss_player::inventory::{Inventory, ItemStack};
@@ -75,6 +76,31 @@ pub(crate) struct Entities {
     pub(crate) others: Vec<(u64, [f64; 3], Inventory, usize)>,
     /// What those players picked up, by key.
     pub(crate) others_picked: Vec<(u64, ItemStack)>,
+    /// A host's other players as the mobs see them this tick.
+    pub(crate) players: Vec<RemotePlayer>,
+    /// Mob hits on those players since the last take: client, MW2 damage and
+    /// where the mob was (block point).
+    pub(crate) remote_hits: Vec<(u32, i32, Option<[f64; 3]>)>,
+    /// A host's mobs as its clients are told of them, as of `mob_tick`;
+    /// `mobs_fresh` while the host has not sent them yet.
+    pub(crate) host_mobs: Vec<HostMob>,
+    pub(crate) mob_tick: u32,
+    pub(crate) mobs_fresh: bool,
+    /// A client's copy of the host's mobs near it.
+    copy: ClientCopy,
+    /// A client's punches on mobs, for the host.
+    pub(crate) pending_attacks: Vec<u64>,
+}
+
+/// One of a host's clients as the mobs see it.
+pub(crate) struct RemotePlayer {
+    pub client: u32,
+    pub view: PlayerView,
+}
+
+/// A host client's id in the mob world (the host's own player is 0).
+fn remote_key(client: u32) -> u64 {
+    u64::from(client) + 1
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -156,6 +182,13 @@ impl Entities {
             remote: false,
             others: Vec::new(),
             others_picked: Vec::new(),
+            players: Vec::new(),
+            remote_hits: Vec::new(),
+            host_mobs: Vec::new(),
+            mob_tick: 0,
+            mobs_fresh: false,
+            copy: ClientCopy::default(),
+            pending_attacks: Vec::new(),
         }
     }
 
@@ -319,6 +352,11 @@ impl Entities {
         let Some((hit, _)) = self.world.mob_on_ray(eye, look, 3.0) else {
             return false;
         };
+        // A client's punch is the host's to land.
+        if self.remote {
+            self.pending_attacks.push(encode(hit));
+            return true;
+        }
         let attack = minecraftoss_entities::world::PlayerAttack {
             player_id: PLAYER,
             position: eye - DVec3::Y * f64::from(EYE_HEIGHT),
@@ -358,12 +396,12 @@ impl Entities {
 
     /// A bullet on a mob: an attack with the bullet's damage from where it
     /// was fired.
-    pub(crate) fn shoot(&mut self, key: u64, damage: f32, from: [f64; 3], yaw: f32) {
+    pub(crate) fn shoot(&mut self, key: u64, damage: f32, from: [f64; 3], yaw: f32, shooter: Option<u32>) {
         let Some(hit) = decode(key) else {
             return;
         };
         let attack = minecraftoss_entities::world::PlayerAttack {
-            player_id: PLAYER,
+            player_id: shooter.map_or(PLAYER, remote_key),
             position: DVec3::from_array(from),
             yaw,
             attack_damage: f64::from(damage * HEALTH_SCALE),
@@ -374,6 +412,82 @@ impl Entities {
         };
         self.server
             .mob_action(hit, Some(attack), &minecraftoss_player::inventory::Inventory::default(), 0, false);
+    }
+
+    /// A host client's punch on the mob with `key`: an empty hand's one
+    /// damage, when the mob is within its reach (with room for the time the
+    /// punch took to arrive). False when it is not.
+    pub(crate) fn attack(&mut self, key: u64, client: u32, feet: [f64; 3], yaw: f32) -> bool {
+        let Some(hit) = decode(key) else {
+            return false;
+        };
+        let reach = self.boxes().into_iter().any(|(k, b)| {
+            let centre = [(b[0] + b[3]) * 0.5, (b[1] + b[4]) * 0.5, (b[2] + b[5]) * 0.5];
+            k == key && (0..3).map(|i| (centre[i] - feet[i]).powi(2)).sum::<f64>() < 6.0 * 6.0
+        });
+        if !reach {
+            return false;
+        }
+        let attack = minecraftoss_entities::world::PlayerAttack {
+            player_id: remote_key(client),
+            position: DVec3::from_array(feet),
+            yaw,
+            attack_damage: 1.0,
+            strength: 1.0,
+            sprinting: false,
+            can_critical: false,
+            can_sweep: false,
+        };
+        self.server.mob_action(hit, Some(attack), &Inventory::default(), 0, false);
+        true
+    }
+
+    /// The console's `mc summon`: a mob of `kind` at a block point.
+    pub(crate) fn summon(&mut self, kind: &str, at: [f64; 3]) {
+        if self.remote {
+            return;
+        }
+        let kind = if kind.contains(':') { kind.to_owned() } else { format!("minecraft:{kind}") };
+        self.server.summon(kind, at, None);
+    }
+
+    /// Mobs that came into this client's view.
+    pub(crate) fn mob_spawns(&mut self, spawns: &[MobSpawn]) {
+        for spawn in spawns {
+            self.copy.spawn(&mut self.world, spawn);
+        }
+    }
+
+    /// Mobs that left this client's view.
+    pub(crate) fn mobs_gone(&mut self, ids: &[u64]) {
+        self.copy.gone(&mut self.world, ids);
+    }
+
+    /// A snapshot's mob states for this client's copy, which its trackers
+    /// then take as they take a server tick's.
+    pub(crate) fn mob_frame(&mut self, bytes: &[u8]) {
+        match minecraft_terrain::mob_sync::decode_frame(bytes) {
+            Ok((tick, states)) => {
+                if self.copy.apply(&mut self.world, tick, &states) {
+                    for (feet, width, height) in self.client.receive(server_mobs(&self.world)) {
+                        self.poof.spawn(feet, width, height);
+                    }
+                }
+            }
+            Err(error) => diag::warn!(World, "Minecraft mob states dropped: {error}"),
+        }
+    }
+
+    /// Every mob this game has: id, kind, feet as drawn, health and whether
+    /// it is dead (the console's `mc mobs`).
+    pub(crate) fn census(&self) -> Vec<(u64, &'static str, [f64; 3], f32, bool)> {
+        minecraft_terrain::mob_sync::census(&self.world)
+            .into_iter()
+            .map(|(id, kind, feet, health, dead)| {
+                let shown = self.client.get(id).map_or(feet, |mob| mob.position.to_array());
+                (id, kind, shown, health, dead)
+            })
+            .collect()
     }
 
     /// Sends a server tick when one is due and takes what came back: block
@@ -407,9 +521,9 @@ impl Entities {
             }
             let feet = DVec3::from_array(player.feet);
             let center = ((feet.x.floor() as i32) >> 4, (feet.z.floor() as i32) >> 4);
-            let candidate = PlayerCandidate {
-                id: PLAYER,
-                position: feet,
+            let candidate = |id: u64, view: &PlayerView| PlayerCandidate {
+                id,
+                position: DVec3::from_array(view.feet),
                 eye_height: EYE_HEIGHT,
                 main_hand_cow_food: false,
                 offhand_cow_food: false,
@@ -423,15 +537,43 @@ impl Entities {
                 offhand_wolf_interest: false,
                 main_hand_horse_tempt: false,
                 offhand_horse_tempt: false,
-                alive: player.alive,
-                spectator: !player.alive,
-                attackable: player.alive,
+                alive: view.alive,
+                spectator: !view.alive,
+                attackable: view.alive,
             };
+            let look = |view: &PlayerView| minecraftoss_entities::enderman::PlayerView {
+                head_yaw: view.yaw,
+                pitch: view.pitch,
+                disguised: false,
+            };
+            let vitals = |view: &PlayerView| minecraftoss_entities::monster_ai::PlayerVitals {
+                health: view.health * HEALTH_SCALE,
+                ..Default::default()
+            };
+            // The host's own player, then its clients: the level ticks,
+            // spawns and despawns around each, and its mobs hunt each.
+            let mut players = if player.alive { vec![player.feet] } else { Vec::new() };
+            let mut centers = vec![center];
+            let mut tracking = vec![player.feet];
+            let mut mob_players = vec![candidate(PLAYER, player)];
+            let mut mob_views = vec![(PLAYER, look(player))];
+            let mut mob_vitals = vec![(PLAYER, vitals(player))];
+            for remote in &self.players {
+                let (key, view) = (remote_key(remote.client), &remote.view);
+                if view.alive {
+                    players.push(view.feet);
+                }
+                centers.push(((view.feet[0].floor() as i32) >> 4, (view.feet[2].floor() as i32) >> 4));
+                tracking.push(view.feet);
+                mob_players.push(candidate(key, view));
+                mob_views.push((key, look(view)));
+                mob_vitals.push((key, vitals(view)));
+            }
             self.server.tick(TickInput {
                 day_ticks,
-                players: if player.alive { vec![player.feet] } else { Vec::new() },
+                players,
                 difficulty: 2,
-                simulation_center: center,
+                simulation_centers: centers,
                 simulation_distance: 8,
                 pickup: player
                     .alive
@@ -440,24 +582,11 @@ impl Entities {
                     .into_iter()
                     .map(|(key, feet, inventory, selected)| (key, feet, Box::new(inventory), selected))
                     .collect(),
-                mob_players: vec![candidate],
-                mob_views: vec![(
-                    PLAYER,
-                    minecraftoss_entities::enderman::PlayerView {
-                        head_yaw: player.yaw,
-                        pitch: player.pitch,
-                        disguised: false,
-                    },
-                )],
-                mob_vitals: vec![(
-                    PLAYER,
-                    minecraftoss_entities::monster_ai::PlayerVitals {
-                        health: player.health * HEALTH_SCALE,
-                        ..Default::default()
-                    },
-                )],
+                mob_players,
+                mob_views,
+                mob_vitals,
                 bright_outside,
-                tracking: (player.feet, 160.0),
+                tracking: (tracking, 160.0),
                 player_hurts: Vec::new(),
                 spawn_mobs: true,
             });
@@ -491,18 +620,37 @@ impl Entities {
                 let pitch = (1.0 + (self.random.next_float() - self.random.next_float()) * 0.2) * 0.7;
                 self.sounds.push(("minecraft:entity.generic.explode".to_owned(), blast.position, 4.0, pitch));
             }
+            for summoned in &output.summoned {
+                match summoned {
+                    Ok(kind) => diag::info!(World, "Minecraft summon: {kind}"),
+                    Err(error) => diag::warn!(World, "Minecraft summon failed: {error}"),
+                }
+            }
             if let Some(mobs) = output.mobs {
                 self.world = *mobs;
                 for (feet, width, height) in self.client.receive(server_mobs(&self.world)) {
                     self.poof.spawn(feet, width, height);
                 }
+                // What the host's clients are told of them.
+                self.mob_tick = self.mob_tick.wrapping_add(1);
+                self.mobs_fresh = true;
+                self.host_mobs = if self.players.is_empty() {
+                    Vec::new()
+                } else {
+                    minecraft_terrain::mob_sync::host_mobs(&self.world)
+                };
             }
-            for hit in output.player_hits.into_iter().filter(|h| h.player_id == PLAYER) {
+            for hit in output.player_hits {
                 let from = match hit.kind {
                     PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
                     _ => None,
                 };
-                hits.push(((hit.damage / HEALTH_SCALE).round() as i32, from));
+                let damage = (hit.damage / HEALTH_SCALE).round() as i32;
+                if hit.player_id == PLAYER {
+                    hits.push((damage, from));
+                } else if let Some(client) = hit.player_id.checked_sub(1).and_then(|c| u32::try_from(c).ok()) {
+                    self.remote_hits.push((client, damage, from));
+                }
             }
         }
         if ticked {

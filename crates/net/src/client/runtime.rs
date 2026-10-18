@@ -564,6 +564,9 @@ pub fn reconcile_prediction(
             reliable.scores.parsed = crate::parse_scoreboard_cmd(&cmd);
             reliable.scores.cmd = Some(cmd);
         }
+        if !tick.frame.minecraft.is_empty() {
+            reliable.minecraft.frames.push(tick.frame.minecraft);
+        }
     }
 }
 

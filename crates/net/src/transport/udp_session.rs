@@ -679,6 +679,7 @@ impl UdpAuthorityHub {
             None,
             None,
             None,
+            None,
             false,
         )
     }
@@ -693,6 +694,7 @@ impl UdpAuthorityHub {
         mut pending_svc: Option<&mut crate::PendingSvcSounds>,
         mut pending_playercard: Option<&mut crate::PendingPlayerCard>,
         mut pending_gamenotify: Option<&mut crate::PendingGameNotify>,
+        mut pending_minecraft: Option<&mut crate::PendingMinecraftFrames>,
         reliable: Option<&crate::ReliableEventHub>,
         scores_due: bool,
     ) -> Result<(), UdpSendError> {
@@ -789,6 +791,9 @@ impl UdpAuthorityHub {
             }
             if let Some(pending) = pending_gamenotify.as_mut() {
                 frame.svc_game_notifies = pending.take_for(client);
+            }
+            if let Some(pending) = pending_minecraft.as_mut() {
+                frame.minecraft = pending.take_for(client);
             }
 
             frame

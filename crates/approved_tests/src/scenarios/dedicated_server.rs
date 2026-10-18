@@ -3,7 +3,11 @@
 //!
 //! A dedicated server (`iw4l dedicated minecraft:overworld`) hosts a room on
 //! a master of the run's own, with no player of its own. A client joins
-//! that room, sets a block and fills its inventory, and leaves; the room
+//! that room, sets a block and fills its inventory; far from the spawn, in
+//! a walled arena, a husk summoned beside it must reach it with the
+//! server's id, hurt it and die to its gun as the server sees (with no
+//! player of the server's own about), and a dozen pigs there stand for the
+//! server's measure with mobs. It leaves; the room
 //! stays listed and the server keeps running with nobody in it, past the
 //! master session's silence deadline, and meanwhile the server changes
 //! 2048 blocks, more history than one control message holds. The client
@@ -18,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use crate::duo::{Pair, Player, cpu_secs, field};
 use crate::runner::Event;
+use crate::scenarios::mob_steps;
 
 pub const NAME: &str = "dedicated_server";
 pub const MAP: &str = "minecraft:overworld";
@@ -47,6 +52,26 @@ const PLANKS: &str = "minecraft:oak_planks*5";
 /// client is owed (a control message holds 16 KiB).
 const ROOF: ([i32; 3], [i32; 3]) = ([-16, 30, -16], [15, 31, 15]);
 const GLASS: &str = "minecraft:glass";
+/// A stone platform far from the world's spawn (320 blocks east, 60 up),
+/// in a walled arena, and the map point (36 units a block) just over its
+/// middle.
+const FAR: [i32; 3] = [320, 60, 0];
+const FAR_MAP: [i32; 3] = [FAR[0] * 36, -FAR[2] * 36, (FAR[1] + 1) * 36 + 18];
+/// Where the pigs go, in blocks from the client's feet across the arena.
+const PIGS: [[i32; 2]; 12] = [
+    [-3, -3],
+    [-3, 0],
+    [-3, 3],
+    [0, -3],
+    [0, 3],
+    [3, -3],
+    [3, 3],
+    [-2, -2],
+    [-2, 2],
+    [2, -2],
+    [2, 2],
+    [-1, 3],
+];
 
 #[derive(Default)]
 pub struct Facts {
@@ -57,6 +82,9 @@ pub struct Facts {
     pub notes: BTreeMap<&'static str, String>,
     /// Server memory and CPU, by point.
     pub measures: BTreeMap<&'static str, Measure>,
+    /// The server's `minecraft-mobnet:` lines: the mob bytes it sent its
+    /// client, every ten seconds.
+    pub mobnet: Vec<Event>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -188,6 +216,66 @@ pub fn first_visit(pair: &mut Pair, facts: &mut Facts, room: &str) -> Result<(),
         Duration::from_secs(SYNC_SECS),
     )?;
     facts.notes.insert("s_gold", gold);
+    Ok(())
+}
+
+/// Far from the world's spawn, in a walled arena on a platform the client
+/// asks for: a husk summoned beside the client, with no player of the
+/// server's own about, reaches the client with the server's id, hurts it,
+/// and dies to its gun as the server sees. Then a dozen pigs there, for the
+/// server's memory and CPU with mobs about and the mob bytes it sends.
+pub fn mob_visit(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
+    let step = Duration::from_secs(STEP_SECS);
+    client(pair)?.send(&format!(
+        "{}; wait 2s; tp {} {} {}; wait 8s",
+        mob_steps::arena(FAR),
+        FAR_MAP[0],
+        FAR_MAP[1],
+        FAR_MAP[2]
+    ))?;
+    let far = pair.ask(true, "mc state c_far", "c_far", step)?;
+    facts.keep("c_far", far);
+    // A bullet gun up before the husk comes.
+    mob_steps::draw_gun(pair)?;
+    client(pair)?.send("mc summon husk 3 0 0")?;
+    let see = Duration::from_secs(mob_steps::SEE_SECS);
+    let (seen, husk) =
+        mob_steps::poll(pair, true, "c_husk", Some("husk"), see, mob_steps::summoned)?;
+    facts.keep("c_husk", seen);
+    let husk = husk.ok_or("the client never saw the husk")?;
+    facts.notes.insert("husk_id", husk.id.to_string());
+    let theirs = mob_steps::census(pair, false, "s_track", Some("husk"))?;
+    facts.keep("s_track", theirs);
+    let hurt = mob_steps::poll_hurt(
+        pair,
+        "c_hurt",
+        "husk",
+        100.0,
+        Duration::from_secs(mob_steps::HURT_SECS),
+    )?;
+    facts.keep("c_hurt", hurt.clone());
+    let shot = mob_steps::shoot(
+        pair,
+        "husk",
+        husk.id,
+        0.95,
+        &hurt,
+        Duration::from_secs(mob_steps::KILL_SECS),
+    )?;
+    facts.keep("s_husk_shot", shot.host);
+    facts.notes.insert("husk_killed", shot.killed.to_string());
+    let pigs: Vec<String> = PIGS
+        .iter()
+        .map(|[x, z]| format!("mc summon pig {x} 0 {z}"))
+        .collect();
+    client(pair)?.send(&pigs.join("; "))?;
+    let (seen, _) = mob_steps::poll(pair, true, "c_pigs", Some("pig"), see, |event, _| {
+        mob_steps::mobs(event).iter().filter(|m| !m.dead).count() >= PIGS.len()
+    })?;
+    facts.keep("c_pigs", seen);
+    measure(pair, facts, "one_client_mobs")?;
+    let census = mob_steps::census(pair, false, "s_mobs", None)?;
+    facts.keep("s_mobs", census);
     Ok(())
 }
 
@@ -344,6 +432,15 @@ fn has_planks(facts: &Facts, label: &str) -> Result<(), String> {
     }
 }
 
+/// The husk in a census line, by the id the client first saw it with.
+fn husk(facts: &Facts, label: &str) -> Result<mob_steps::Mob, String> {
+    let id: u64 = note(facts, "husk_id")?.parse().map_err(|_| "bad husk id")?;
+    mob_steps::mobs(line(facts, label)?)
+        .into_iter()
+        .find(|m| m.id == id)
+        .ok_or_else(|| format!("`{label}` lists no mob {id}"))
+}
+
 /// A `stop` note: exit code 0, in time.
 fn clean_stop(facts: &Facts, key: &str) -> Result<(), String> {
     let stopped = note(facts, key)?;
@@ -356,7 +453,7 @@ fn clean_stop(facts: &Facts, key: &str) -> Result<(), String> {
 
 pub fn judge(facts: &Facts) -> Vec<Check> {
     type Rule = fn(&Facts) -> Result<(), String>;
-    let rules: [(&'static str, Rule); 9] = [
+    let rules: [(&'static str, Rule); 13] = [
         ("server_has_no_player", |f| {
             let first = f.rosters.first().ok_or("no roster line from the server")?;
             want(
@@ -403,6 +500,44 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
             want(note(f, "s_gold")?, "minecraft:gold_block", "server sees")
         }),
         ("client_inventory", |f| has_planks(f, "c_given")),
+        ("mob_seen_with_no_server_player", |f| {
+            let seen = husk(f, "c_husk")?;
+            let platform = [f64::from(FAR[0]), f64::from(FAR[1] + 1), f64::from(FAR[2])];
+            if mob_steps::apart(seen.at, platform) > 8.0 {
+                return Err(format!(
+                    "the client's husk at {:?}, not by the platform",
+                    seen.at
+                ));
+            }
+            husk(f, "s_track").map(|_| ())
+        }),
+        ("mob_hurts_client", |f| {
+            let health = mob_steps::health(line(f, "c_hurt")?).ok_or("no health in `c_hurt`")?;
+            if health < 100.0 {
+                Ok(())
+            } else {
+                Err(format!("the client's health stayed {health}"))
+            }
+        }),
+        ("client_kills_mob_server_sees", |f| {
+            want(
+                note(f, "husk_killed")?,
+                "true",
+                "the server saw the husk die",
+            )
+        }),
+        ("mob_states_sent", |f| {
+            let sent = f.mobnet.iter().any(|e| {
+                e.get("frame_bytes_per_s")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .is_some_and(|b| b > 0.0)
+            });
+            if sent {
+                Ok(())
+            } else {
+                Err("the server reported no mob states sent".into())
+            }
+        }),
         ("room_kept_empty", |f| {
             want(note(f, "empty_state")?, "hosting", "state")?;
             want(note(f, "empty_room")?, note(f, "room1")?, "room")?;
@@ -523,6 +658,23 @@ mod tests {
         ] {
             f.notes.insert(key, value.into());
         }
+        for (label, health) in [("c_husk", 100), ("s_track", 100), ("c_hurt", 85)] {
+            f.lines.insert(
+                label.into(),
+                event(
+                    "minecraft-mobs:",
+                    &format!(
+                        "label={label} health={health} mobs=husk:9:322.50,61.00,0.20:20.0:alive"
+                    ),
+                ),
+            );
+        }
+        f.notes.insert("husk_id", "9".into());
+        f.notes.insert("husk_killed", "true".into());
+        f.mobnet.push(event(
+            "minecraft-mobnet:",
+            "client=1 mobs=13 frame_bytes_per_s=5600 row_bytes_per_s=40",
+        ));
         f
     }
 
@@ -579,6 +731,23 @@ mod tests {
         let mut f = passing();
         f.notes.insert("c2_roof", "air".into());
         assert_eq!(failed(&f), ["rejoin_world_kept"]);
+    }
+
+    #[test]
+    fn a_mob_only_the_server_has_fails() {
+        let mut f = passing();
+        f.lines.insert(
+            "c_husk".into(),
+            event("minecraft-mobs:", "label=c_husk health=100 mobs=-"),
+        );
+        f.notes.insert("husk_killed", "false".into());
+        assert_eq!(
+            failed(&f),
+            [
+                "mob_seen_with_no_server_player",
+                "client_kills_mob_server_sees"
+            ]
+        );
     }
 
     #[test]

@@ -107,10 +107,13 @@ pub struct Player {
     lines: mpsc::Receiver<(u128, String)>,
     log: std::fs::File,
     started: Instant,
-    /// Every `minecraft-state:` and `minecraft-block:` line, by label.
+    /// Every `minecraft-state:`, `minecraft-block:` and `minecraft-mobs:`
+    /// line, by label.
     pub seen: BTreeMap<String, Event>,
     /// A dedicated server's `dedicated-players:` lines, in order.
     pub rosters: Vec<Event>,
+    /// Its `minecraft-mobnet:` lines (a host's mob bytes to each client).
+    pub mobnet: Vec<Event>,
     /// Peak resident memory sampled, in KiB.
     pub peak_rss_kib: u64,
 }
@@ -183,6 +186,7 @@ impl Player {
             started,
             seen: BTreeMap::new(),
             rosters: Vec::new(),
+            mobnet: Vec::new(),
             peak_rss_kib: 0,
         })
     }
@@ -235,7 +239,11 @@ impl Player {
                 println!("[{:>7.1}s] {} -> {line}", at_ms as f64 / 1000.0, self.name);
                 self.rosters.push(event);
             }
-            for prefix in ["minecraft-state:", "minecraft-block:"] {
+            if let Some(event) = parse(&line, "minecraft-mobnet:", at_ms) {
+                println!("[{:>7.1}s] {} -> {line}", at_ms as f64 / 1000.0, self.name);
+                self.mobnet.push(event);
+            }
+            for prefix in ["minecraft-state:", "minecraft-block:", "minecraft-mobs:"] {
                 if let Some(event) = parse(&line, prefix, at_ms) {
                     println!("[{:>7.1}s] {} -> {line}", at_ms as f64 / 1000.0, self.name);
                     if let Some(label) = event.get("label") {

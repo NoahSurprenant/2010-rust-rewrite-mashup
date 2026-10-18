@@ -160,7 +160,7 @@ pub use transport::protocol::{
     UDP_IMPLEMENTED, decode_client_packet, decode_server_packet, evaluate_handshake,
 };
 pub use transport::reliable::{
-    ActionVerdict, MAX_PENDING_RELIABLE, MinecraftDownlink, ReliableEventHub, ReliableEventQueue,
+    ActionVerdict, MAX_MINECRAFT_FRAME_BYTES, MAX_PENDING_RELIABLE, MinecraftDownlink, PendingMinecraftFrames, ReliableEventHub, ReliableEventQueue,
     ReliablePayload, ReliableRow, decode_reliable_payload, encode_reliable_payload,
 };
 pub use transport::udp_session::{CommittedAdmission, UdpAuthorityHub, UdpClientLink};

@@ -1243,7 +1243,7 @@ pub(crate) fn phase_trace(
                 // its multiplier for where on the body it struck.
                 let scale = facts.location_scale(crate::voxel::mob_hitloc(up));
                 let damage = bullet_damage_at_distance(&facts, dist).max(0) as f32 * scale;
-                crate::voxel::push_mob_shot(key, damage, em.origin);
+                crate::voxel::push_mob_shot(key, damage, em.origin, em.attacker.0);
                 mob_shot = true;
                 let length = {
                     let d: [f32; 3] = std::array::from_fn(|k| first_surface[k] - em.origin[k]);
