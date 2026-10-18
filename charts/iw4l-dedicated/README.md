@@ -33,7 +33,7 @@ master:
   keySha256: <the master's pin>
 
 room:
-  name: Minecraft            # the browser shows 16 characters
+  name: Minecraft            # listed whole, up to 48 bytes
 
 gameData:
   nfs:
@@ -81,7 +81,7 @@ a rollout or a node drain keeps it. Deleting the claim starts a new world.
 | --- | --- |
 | `zone` | `iw4l dedicated <zone>` (`minecraft:overworld`) |
 | `master.address`, `master.serverName`, `master.keySha256` | `IW4L_MASTER_ADDR`, `IW4L_MASTER_SERVER_NAME`, `IW4L_MASTER_KEY_SHA256` (address and pin required) |
-| `room.name` | `IW4L_MASTER_HOST_NAME`: at most 48 bytes; the browser shows the first 16 characters |
+| `room.name` | `IW4L_MASTER_HOST_NAME`: at most 48 bytes, listed whole (the browser's column shows 22 characters, the line above the list the focused room's whole name) |
 | `room.maxPlayers` | `IW4L_MASTER_MAX_PLAYERS`: 2 to 18, the server's own slot included; 0 the game's 18 |
 | `room.password.existingSecret`, `.key` | `IW4L_MASTER_PASSWORD`, from the Secret |
 | `minecraft.world` | `IW4L_MINECRAFT_WORLD` |

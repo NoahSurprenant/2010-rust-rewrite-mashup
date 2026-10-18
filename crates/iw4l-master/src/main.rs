@@ -700,8 +700,28 @@ async fn run_connection(
                     ControlFrame::Relay(bytes) => {
                         let relay = decode_relay_stream(&bytes)?;
                         let current = state.lock().await;
-                        let (target, outgoing) = current.route_target_stream(connection_id, &relay)?;
-                        let peer = current.peers.values().find(|peer| peer.connection.stable_id() == target.stable_id()).ok_or(ServiceError::NotMember)?;
+                        let routed = current.route_target_stream(connection_id, &relay).and_then(|(target, outgoing)| {
+                            let peer = current.peers.values().find(|peer| peer.connection.stable_id() == target.stable_id()).ok_or(ServiceError::NotMember)?;
+                            Ok((target, outgoing, peer))
+                        });
+                        let (target, outgoing, peer) = match routed {
+                            Ok(routed) => routed,
+                            // A member that left while its host still had
+                            // messages queued for it: nothing to deliver, and
+                            // the host learns of the leave from its room. Not
+                            // the host's fault, so its room lives on.
+                            Err(error)
+                                if matches!(relay, RelayDatagram::HostToMember { .. })
+                                    && error.downcast_ref::<ServiceError>() == Some(&ServiceError::NotMember) =>
+                            {
+                                let _ = writeln!(
+                                    std::io::stderr(),
+                                    "connection {connection_id} relay to a member that left: dropped"
+                                );
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        };
                         if peer.control_tx.try_send(ControlFrame::Relay(outgoing)).is_err() {
                             target.close(0_u8.into(), b"control queue exhausted");
                             break Err("control queue exhausted".into());
@@ -1534,7 +1554,7 @@ fn normalize_player_name(name: &str) -> String {
         .trim()
         .chars()
         .filter(|c| !c.is_control())
-        .take(16)
+        .take(master_protocol::MAX_KEPT_PLAYER_NAME_CHARS)
         .collect();
     if name.is_empty() {
         "Player".into()

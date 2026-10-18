@@ -36,9 +36,9 @@ use crate::scenarios::mob_steps;
 
 pub const NAME: &str = "dedicated_server";
 pub const MAP: &str = "minecraft:overworld";
-/// The room's name on the master. The browser shows a room by its host
-/// member's name, which the master cuts to 16 characters.
-pub const ROOM: &str = "approved server";
+/// The room's name on the master, longer than the 16 characters a master
+/// keeps of a player's name: the list shows it whole.
+pub const ROOM: &str = "approved dedicated server";
 /// The client's player name: the server keeps inventories by name.
 pub const CLIENT: &str = "client";
 pub const CLASSES: &str = crate::scenarios::crafting_table::CLASSES;
@@ -880,7 +880,7 @@ mod tests {
             ("empty_in_match", "true"),
             (
                 "empty_list",
-                "generation=3 adverts=1\nab12\t1/18\tminecraft:overworld\tdm\tlocked=0\tin_match=1\tgen=3\trequires=0x01\tapproved server",
+                "generation=3 adverts=1\nab12\t1/18\tminecraft:overworld\tdm\tlocked=0\tin_match=1\tgen=3\trequires=0x01\tapproved dedicated server",
             ),
             ("stop1", "code=0 secs=0.4"),
             ("stop2", "code=0 secs=0.3"),
@@ -994,6 +994,15 @@ mod tests {
         let mut f = passing();
         f.notes
             .insert("empty_list", "generation=4 adverts=0".into());
+        assert_eq!(failed(&f), ["room_kept_empty"]);
+    }
+
+    #[test]
+    fn a_room_listed_by_a_cut_name_fails() {
+        let mut f = passing();
+        let cut: String = ROOM.chars().take(16).collect();
+        let list = f.notes["empty_list"].replace(ROOM, &cut);
+        f.notes.insert("empty_list", list);
         assert_eq!(failed(&f), ["room_kept_empty"]);
     }
 

@@ -11,8 +11,9 @@ IW4L_MASTER_ADDR=1.2.3.4:4433 IW4L_MASTER_SERVER_NAME=iw4l-prod IW4L_MASTER_KEY_
 IW4L_MASTER_HOST_NAME='Minecraft' iw4l dedicated minecraft:overworld
 ```
 
-The room is `IW4L_MASTER_HOST_NAME` (default `Dedicated server`; the browser
-shows its first 16 characters), with `IW4L_MASTER_MAX_PLAYERS` (the server
+The room is `IW4L_MASTER_HOST_NAME` (default `Dedicated server`), listed whole up to its 48 bytes: the browser's
+column shows 22 characters and the line above the list the focused room's
+whole name (a master older than this cuts it to 16 characters), with `IW4L_MASTER_MAX_PLAYERS` (the server
 holds one of the slots) and `IW4L_MASTER_PASSWORD` as for any host. Its log is its stdout, and
 `dedicated-players: count=N clients=… names=…` is printed whenever who is in
 the match changes. `IW4L_CONSOLE_STDIN=1` takes console commands on stdin

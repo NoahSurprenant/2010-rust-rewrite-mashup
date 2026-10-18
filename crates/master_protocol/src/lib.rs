@@ -23,6 +23,9 @@ pub const MAX_MAP_BYTES: usize = 64;
 pub const MAX_MODE_BYTES: usize = 24;
 pub const MAX_BUILD_BYTES: usize = 64;
 pub const MAX_PLAYER_NAME_BYTES: usize = 64;
+/// The characters of a player's name a master keeps (`iw4l-master` trims
+/// it and drops control characters first).
+pub const MAX_KEPT_PLAYER_NAME_CHARS: usize = 16;
 pub const MAX_LIST_ADVERTS: usize = 128;
 
 pub const SESSION_IDLE: core::time::Duration = core::time::Duration::from_secs(8);
@@ -346,14 +349,34 @@ pub struct RoomView {
 }
 
 impl RoomView {
+    /// The name the browser lists the room by: its host player's, or the
+    /// room's own (as a master keeps a name, up to `MAX_ADVERT_NAME_BYTES`)
+    /// when the host's is that cut to `MAX_KEPT_PLAYER_NAME_CHARS`. A
+    /// dedicated server has no player: it hosts under its room's name, which
+    /// would otherwise show cut short.
+    pub fn listed_name(&self) -> String {
+        let room: String = self
+            .name
+            .trim()
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        match self.member_names.get(&self.host) {
+            Some(host)
+                if host.chars().count() < MAX_KEPT_PLAYER_NAME_CHARS
+                    || !room.starts_with(host.as_str()) =>
+            {
+                host.clone()
+            }
+            Some(_) => room,
+            None => self.name.clone(),
+        }
+    }
+
     pub fn advert(&self) -> Advert {
         Advert {
             id: self.room_id,
-            name: self
-                .member_names
-                .get(&self.host)
-                .cloned()
-                .unwrap_or_else(|| self.name.clone()),
+            name: self.listed_name(),
             map: self.map.clone(),
             mode: self.mode.clone(),
             players: u8::try_from(self.members.len()).unwrap_or(MAX_SESSION_MEMBERS),
@@ -1673,5 +1696,61 @@ impl SessionCloseReason {
             2 => Ok(Self::Overload),
             _ => Err(ProtocolError::InvalidBody),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn room(name: &str, host: &str) -> RoomView {
+        let member = MemberId([7; 16]);
+        RoomView {
+            room_id: AdvertId([1; 16]),
+            name: name.to_owned(),
+            host: member,
+            members: vec![member],
+            member_names: [(member, host.to_owned())].into(),
+            map: "minecraft:overworld".into(),
+            mode: "dm".into(),
+            joinable: true,
+            revision: 1,
+            epoch: 0,
+            phase: RoomPhase::Gathering,
+            max_players: 18,
+            requires: ContentFlags(0),
+            available: ContentFlags(0),
+            password_protected: false,
+        }
+    }
+
+    #[test]
+    fn a_room_is_listed_by_its_host_player() {
+        assert_eq!(room("Friday match", "Noah").advert().name, "Noah");
+        assert_eq!(room("Noah", "Noah").advert().name, "Noah");
+        // A host name that is a room name's start but not cut: the player's.
+        assert_eq!(room("Noah's Friday match", "Noah").advert().name, "Noah");
+    }
+
+    #[test]
+    fn a_dedicated_server_is_listed_by_its_whole_room_name() {
+        let name = "Home Minecraft: survival, mobs on, be nice";
+        assert!(name.len() <= MAX_ADVERT_NAME_BYTES);
+        // The master keeps the server's player name, the room's name, cut.
+        let kept: String = name.chars().take(MAX_KEPT_PLAYER_NAME_CHARS).collect();
+        assert_eq!(room(name, &kept).advert().name, name);
+        assert_eq!(room(&format!("  {name}\t"), &kept).advert().name, name);
+        // A different long player name is still the player's.
+        assert_eq!(
+            room(name, "A_Very_Long_Name").advert().name,
+            "A_Very_Long_Name"
+        );
+    }
+
+    #[test]
+    fn a_room_with_no_host_name_is_listed_by_its_own() {
+        let mut view = room("Lobby", "x");
+        view.member_names.clear();
+        assert_eq!(view.advert().name, "Lobby");
     }
 }
