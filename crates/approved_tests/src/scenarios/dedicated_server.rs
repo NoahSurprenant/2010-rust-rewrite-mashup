@@ -235,6 +235,8 @@ pub fn mob_visit(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     ))?;
     let far = pair.ask(true, "mc state c_far", "c_far", step)?;
     facts.keep("c_far", far);
+    // A bullet gun up before the husk comes.
+    mob_steps::draw_gun(pair)?;
     client(pair)?.send("mc summon husk 3 0 0")?;
     let see = Duration::from_secs(mob_steps::SEE_SECS);
     let (seen, husk) = mob_steps::poll(pair, true, "c_husk", Some("husk"), see, |_, m| !m.dead)?;
@@ -246,15 +248,17 @@ pub fn mob_visit(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     let hurt = mob_steps::poll_hurt(
         pair,
         "c_hurt",
+        "husk",
         100.0,
         Duration::from_secs(mob_steps::HURT_SECS),
     )?;
-    facts.keep("c_hurt", hurt);
+    facts.keep("c_hurt", hurt.clone());
     let shot = mob_steps::shoot(
         pair,
         "husk",
         husk.id,
         0.95,
+        &hurt,
         Duration::from_secs(mob_steps::KILL_SECS),
     )?;
     facts.keep("s_husk_shot", shot.host);

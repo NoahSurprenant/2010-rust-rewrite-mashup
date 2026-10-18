@@ -168,17 +168,18 @@ pub fn poll(
     }
 }
 
-/// Asks the client until its health is under `below` or `timeout` passes;
-/// the last answer.
+/// Asks the client (for its mobs of `kind`) until its health is under
+/// `below` or `timeout` passes; the last answer.
 pub fn poll_hurt(
     pair: &mut Pair,
     label: &str,
+    kind: &str,
     below: f64,
     timeout: Duration,
 ) -> Result<Event, String> {
     let start = Instant::now();
     loop {
-        let event = census(pair, true, label, Some("-"))?;
+        let event = census(pair, true, label, Some(kind))?;
         if health(&event).is_some_and(|h| h < below) || start.elapsed() > timeout {
             return Ok(event);
         }
@@ -232,21 +233,9 @@ pub struct Shot {
     pub bursts: u32,
 }
 
-/// The client shoots the mob `id` with the gun in hotbar slot 1: it aims
-/// at the mob's middle from its eye as both stand on the client, fires a
-/// short burst, and asks the host, until the host sees the mob die or
-/// `timeout` passes.
-pub fn shoot(
-    pair: &mut Pair,
-    kind: &str,
-    id: u64,
-    middle: f64,
-    timeout: Duration,
-) -> Result<Shot, String> {
-    let start = Instant::now();
-    let mut bursts = 0;
-    // A bullet gun, not the launcher or a grenade, which would take the
-    // client with the mob.
+/// The client raises a bullet gun (not the launcher or a grenade, which
+/// would take it with the mob): the first hotbar slot that holds one.
+pub fn draw_gun(pair: &mut Pair) -> Result<u32, String> {
     let held = census(pair, true, "c_guns", Some("-"))?;
     let slot = guns(&held)
         .first()
@@ -256,19 +245,40 @@ pub fn shoot(
         .as_mut()
         .ok_or("no client")?
         .send(&format!("key {slot}; wait 1.5s"))?;
+    Ok(slot)
+}
+
+/// The client shoots the mob `id` with the gun it holds (`draw_gun`),
+/// starting from `seen`, a census of its in which it has the mob: it aims at
+/// the mob's middle from its eye as both stand on the client, fires a burst
+/// and looks again, until it sees the mob dead or gone; then the host is
+/// asked. Again until the host sees the mob die or `timeout` passes.
+pub fn shoot(
+    pair: &mut Pair,
+    kind: &str,
+    id: u64,
+    middle: f64,
+    seen: &Event,
+    timeout: Duration,
+) -> Result<Shot, String> {
+    let start = Instant::now();
+    let mut bursts = 0;
+    let mut seen = seen.clone();
     loop {
-        let seen = census(pair, true, "c_aim", Some(kind))?;
-        if let (Some(eye), Some(mob)) = (eye(&seen), mobs(&seen).into_iter().find(|m| m.id == id)) {
+        while let (Some(eye), Some(mob)) = (
+            eye(&seen),
+            mobs(&seen).into_iter().find(|m| m.id == id && !m.dead),
+        ) {
+            if start.elapsed() > timeout {
+                break;
+            }
             let (yaw, pitch) = aim(eye, [mob.at[0], mob.at[1] + middle, mob.at[2]]);
-            pair.client.as_mut().ok_or("no client")?.send(&format!(
-                "look {yaw:.2} {pitch:.2}; wait 0.1s; press +attack 0.3"
-            ))?;
+            let script = format!(
+                "look {yaw:.2} {pitch:.2}; wait 0.1s; press +attack 0.6; wait 0.7s; mc mobs c_aim {kind}"
+            );
+            seen = pair.ask(true, &script, "c_aim", Duration::from_secs(30))?;
             bursts += 1;
         }
-        let at = Instant::now();
-        pair.until("the burst", Duration::from_secs(5), |_| {
-            at.elapsed() >= Duration::from_millis(900)
-        })?;
         let host = census(pair, false, "h_shot", Some(kind))?;
         let killed = mobs(&host)
             .into_iter()
@@ -281,6 +291,7 @@ pub fn shoot(
                 bursts,
             });
         }
+        seen = census(pair, true, "c_aim", Some(kind))?;
     }
 }
 

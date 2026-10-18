@@ -219,10 +219,13 @@ pub fn first_session(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
 /// porkchop where the client sees it (or picks it up).
 fn far_mobs(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     let client = pair.client.as_mut().ok_or("no client")?;
-    client.send(&format!(
-        "{}; wait 2s; mc summon husk 3 0 0",
-        mob_steps::arena(FAR)
-    ))?;
+    client.send(&format!("{}; wait 2s", mob_steps::arena(FAR)))?;
+    // A bullet gun up before the husk comes.
+    mob_steps::draw_gun(pair)?;
+    pair.client
+        .as_mut()
+        .ok_or("no client")?
+        .send("mc summon husk 3 0 0")?;
     let see = Duration::from_secs(mob_steps::SEE_SECS);
     let (seen, husk) = mob_steps::poll(pair, true, "c_husk", Some("husk"), see, |_, m| !m.dead)?;
     facts.keep("c_husk", seen);
@@ -240,12 +243,13 @@ fn far_mobs(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     let hurt = mob_steps::poll_hurt(
         pair,
         "c_hurt",
+        "husk",
         100.0,
         Duration::from_secs(mob_steps::HURT_SECS),
     )?;
-    facts.keep("c_hurt", hurt);
+    facts.keep("c_hurt", hurt.clone());
     let kill = Duration::from_secs(mob_steps::KILL_SECS);
-    let shot = mob_steps::shoot(pair, "husk", husk.id, 0.95, kill)?;
+    let shot = mob_steps::shoot(pair, "husk", husk.id, 0.95, &hurt, kill)?;
     facts.keep("h_husk_shot", shot.host);
     facts.notes.insert("husk_killed", shot.killed.to_string());
     facts.notes.insert("husk_bursts", shot.bursts.to_string());
@@ -254,9 +258,9 @@ fn far_mobs(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
         .ok_or("no client")?
         .send("mc summon pig 2 0 2")?;
     let (seen, pig) = mob_steps::poll(pair, true, "c_pig", Some("pig"), see, |_, m| !m.dead)?;
-    facts.keep("c_pig", seen);
+    facts.keep("c_pig", seen.clone());
     let pig = pig.ok_or("the client never saw the pig")?;
-    let shot = mob_steps::shoot(pair, "pig", pig.id, 0.45, kill)?;
+    let shot = mob_steps::shoot(pair, "pig", pig.id, 0.45, &seen, kill)?;
     facts.notes.insert("pig_killed", shot.killed.to_string());
     let drop = mob_steps::poll_drop(pair, "minecraft:porkchop", Duration::from_secs(SYNC_SECS))?;
     facts.notes.insert("pig_drop", drop);
