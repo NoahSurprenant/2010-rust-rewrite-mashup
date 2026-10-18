@@ -54,6 +54,21 @@ pub fn block_icon(
     let Some(elements) = elements.and_then(|value| value.as_array().cloned()) else {
         return Ok(None);
     };
+    raster_model(packs, &textures, &elements, gui.as_ref(), tints, icon_size)
+}
+
+/// Rasters a model's axis-aligned `elements` (JSON, as a block model has
+/// them) with its `textures` and its GUI `display`: rotation, scale and
+/// translation. A texture is sampled whole, or by its first frame when it is
+/// an animation strip.
+pub(crate) fn raster_model(
+    packs: &PackStack,
+    textures: &HashMap<String, String>,
+    elements: &[Value],
+    gui: Option<&Value>,
+    tints: &[[u8; 3]],
+    icon_size: usize,
+) -> Result<Option<RgbaImage>> {
     if elements.is_empty()
         || elements
             .iter()
@@ -61,11 +76,15 @@ pub fn block_icon(
     {
         return Ok(None);
     }
-    let rotation = gui.as_ref().and_then(|value| value.get("rotation"));
+    let rotation = gui.and_then(|value| value.get("rotation"));
     let x_angle = angle(rotation, 0).unwrap_or(30.0).to_radians();
     let y_angle = angle(rotation, 1).unwrap_or(225.0).to_radians();
+    let translation = gui.and_then(|value| value.get("translation"));
+    let offset = [
+        angle(translation, 0).unwrap_or(0.0),
+        angle(translation, 1).unwrap_or(0.0),
+    ];
     let scale = gui
-        .as_ref()
         .and_then(|value| value.get("scale"))
         .and_then(Value::as_array)
         .and_then(|values| values.first())
@@ -73,7 +92,7 @@ pub fn block_icon(
         .unwrap_or(0.625) as f32;
     let mut output = RgbaImage::new(icon_size as u32, icon_size as u32);
     let mut depth = vec![vec![f32::NEG_INFINITY; icon_size]; icon_size];
-    for element in &elements {
+    for element in elements {
         let Some((from, to)) = element_bounds(element) else {
             return Ok(None);
         };
@@ -92,7 +111,7 @@ pub fn block_icon(
             let Some(texture) = face
                 .get("texture")
                 .and_then(Value::as_str)
-                .and_then(|name| texture_id(name, &textures))
+                .and_then(|name| texture_id(name, textures))
             else {
                 continue;
             };
@@ -100,8 +119,8 @@ pub fn block_icon(
                 continue;
             };
             let source = image::load_from_memory(&bytes)?.to_rgba8();
-            let side = source.width().min(source.height());
-            if side == 0 {
+            let size = frame_size(&source);
+            if size.0 == 0 || size.1 == 0 {
                 continue;
             }
             let Some(bounds) = face_uv(face, name, from, to) else {
@@ -114,14 +133,14 @@ pub fn block_icon(
                 .copied()
                 .unwrap_or([255; 3]);
             let vertices =
-                corners.map(|point| transform(point, x_angle, y_angle, scale, icon_size));
+                corners.map(|point| transform(point, x_angle, y_angle, scale, offset, icon_size));
             let shade = item_diffuse_light(name, x_angle, y_angle);
             for triangle in [[0, 1, 2], [0, 2, 3]] {
                 raster_triangle(
                     &mut output,
                     &mut depth,
                     &source,
-                    side,
+                    size,
                     icon_size,
                     shade,
                     tint,
@@ -186,6 +205,17 @@ fn face_faces_camera(face: &str, x_angle: f32, y_angle: f32) -> bool {
     let (sin_y, cos_y) = y_angle.sin_cos();
     let rotated_z = -normal.x * sin_y + normal.z * cos_y;
     normal.y * x_angle.sin() + rotated_z * x_angle.cos() > 0.0
+}
+
+/// The part of a texture a face samples: all of it, or the first square
+/// frame of an animation strip.
+fn frame_size(source: &RgbaImage) -> (u32, u32) {
+    let (width, height) = source.dimensions();
+    if width > 0 && height > width && height % width == 0 {
+        (width, width)
+    } else {
+        (width, height)
+    }
 }
 
 fn angle(rotation: Option<&Value>, axis: usize) -> Option<f32> {
@@ -259,7 +289,14 @@ fn cuboid_faces(from: Point3, to: Point3) -> [(&'static str, [Point3; 4]); 6] {
     ]
 }
 
-fn transform(point: Point3, x_angle: f32, y_angle: f32, scale: f32, icon_size: usize) -> Point3 {
+fn transform(
+    point: Point3,
+    x_angle: f32,
+    y_angle: f32,
+    scale: f32,
+    offset: [f32; 2],
+    icon_size: usize,
+) -> Point3 {
     let [x, y, z] = point;
     let (sy, cy) = y_angle.sin_cos();
     let (sx, cx) = x_angle.sin_cos();
@@ -269,8 +306,8 @@ fn transform(point: Point3, x_angle: f32, y_angle: f32, scale: f32, icon_size: u
     let depth = y * sx + rotated_z * cx;
     let pixels_per_gui_unit = icon_size as f32 / 16.0;
     [
-        (8.0 + rotated_x * scale) * pixels_per_gui_unit,
-        (8.0 - rotated_y * scale) * pixels_per_gui_unit,
+        (8.0 + offset[0] + rotated_x * scale) * pixels_per_gui_unit,
+        (8.0 - offset[1] - rotated_y * scale) * pixels_per_gui_unit,
         depth,
     ]
 }
@@ -288,7 +325,7 @@ fn raster_triangle(
     output: &mut RgbaImage,
     depth: &mut [Vec<f32>],
     source: &RgbaImage,
-    side: u32,
+    (width, height): (u32, u32),
     icon_size: usize,
     shade: f32,
     tint: [u8; 3],
@@ -343,8 +380,8 @@ fn raster_triangle(
             let u = a * uvs[0][0] + b * uvs[1][0] + c * uvs[2][0];
             let v = a * uvs[0][1] + b * uvs[1][1] + c * uvs[2][1];
             let texel = source.get_pixel(
-                ((u * side as f32) as u32).min(side - 1),
-                ((v * side as f32) as u32).min(side - 1),
+                ((u * width as f32) as u32).min(width - 1),
+                ((v * height as f32) as u32).min(height - 1),
             );
             if texel[3] == 0 {
                 continue;

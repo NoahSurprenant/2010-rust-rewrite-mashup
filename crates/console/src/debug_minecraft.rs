@@ -278,7 +278,7 @@ fn state_line(label: &str, ui: &MinecraftUi, pm_flags: u32, menu: bool, origin: 
     let list =
         |stacks: &[Option<McStack>]| stacks.iter().map(stack_text).collect::<Vec<_>>().join(",");
     format!(
-        "minecraft-state: label={label} stance={stance} menu={menu} origin={:.0},{:.0},{:.0} view={:.0},{:.0} table_in_view={in_view} screen={screen} grid={} result={} cursor={} slots={} seed={} role={} feet={}",
+        "minecraft-state: label={label} stance={stance} menu={menu} origin={:.0},{:.0},{:.0} view={:.0},{:.0} table_in_view={in_view} screen={screen} grid={} result={} cursor={} slots={} seed={} role={} feet={} no_icon={}",
         origin[0],
         origin[1],
         origin[2],
@@ -293,5 +293,28 @@ fn state_line(label: &str, ui: &MinecraftUi, pm_flags: u32, menu: bool, origin: 
         ui.net_role,
         ui.feet
             .map_or_else(|| "-".to_owned(), |[x, y, z]| format!("{x},{y},{z}")),
+        no_icon(ui),
     )
+}
+
+/// The Minecraft items on the screen (slots, grid, result, cursor) the
+/// inventory has no icon for, comma-separated, or `-`: guns draw their own.
+fn no_icon(ui: &MinecraftUi) -> String {
+    let mut missing: Vec<&str> = Vec::new();
+    let shown = ui
+        .slots
+        .iter()
+        .chain(&ui.crafting)
+        .chain([&ui.result, &ui.cursor]);
+    for stack in shown.flatten() {
+        let id = stack.id.as_str();
+        if stack.weapon.is_none() && !ui.icon_rects.contains_key(id) && !missing.contains(&id) {
+            missing.push(id);
+        }
+    }
+    if missing.is_empty() {
+        "-".to_owned()
+    } else {
+        missing.join(",")
+    }
 }
