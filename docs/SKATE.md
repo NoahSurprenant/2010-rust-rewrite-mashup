@@ -62,6 +62,33 @@ Both folders are saved in `.env` next to `iw4l.exe`. Delete `.env` (and
 | controller | skate (Skate 3 flick-it controls) |
 | `~` | console: `skate on`, `skate off`, `skate status` |
 
+## Multiplayer
+
+Anyone in a room can skate: the host's player, a player who joined, and
+everyone on a dedicated server. Each skater needs its own Skate 3 data; the
+others see its skater and board in place of its MW2 body when they have the
+data too (without it they see the MW2 body where the skater is).
+
+- **Who simulates.** The skater's own game runs the Skate 3 simulation, as
+  it does alone, and sends its state about 20 times a second: where the
+  skater is, how fast it goes and its pose (35 bones and the board, some
+  400 bytes).
+- **What the host does.** It checks each state loosely (the player is alive,
+  got on where it stands, moves no faster than a skater can) and moves that
+  player there in the match, so MW2's shots, collisions and kill credit see
+  it where it is. A state that fails the check is ignored.
+- **What everyone else sees.** The host passes each skater's state on with
+  its snapshots; the others draw the skater 100 ms behind, between states.
+- **Dedicated servers** only check and pass states on. They run no skate
+  simulation and need no Skate 3 data.
+
+Bandwidth: about 8 KB/s up from each skater, and about 8 KB/s down to each
+other player for each skater.
+
+Console: `skate pad push|idle|stop` holds a controller from the console (for
+machines without one); `skate state <label>` prints one line about this
+game's skater, the skaters it draws and, on a host, every player's skating.
+
 ## Known issues
 
 - Dying while in skate mode leaves bodies piled up.
@@ -73,6 +100,7 @@ Both folders are saved in `.env` next to `iw4l.exe`. Delete `.env` (and
 |---|---|---|
 | skate simulation | [`skate/crates`](../skate/crates) | Skate 3 physics, animation graph and grind code from [SK8-ENGINE/skate-3-rust-engine](https://github.com/SK8-ENGINE/skate-3-rust-engine) at `cb79689`, run as a worker the soldier hands control to |
 | skate mode | [`crates/render_anim/src/skate.rs`](../crates/render_anim/src/skate.rs) | toggling, feeding MW2 map collision to the skate world, posing the soldier from the skater |
+| multiplayer | [`crates/net/src/skate.rs`](../crates/net/src/skate.rs) | the skater state on the wire, the host's check and relay, drawing other skaters between states |
 | grind rails | [`crates/render_anim/src/skate/rails.rs`](../crates/render_anim/src/skate/rails.rs) | finds grindable lips in any map's collision: walkable edges where the ground drops away and nothing rises, merged and chained into rails |
 | retarget | [`crates/render_anim/src/skate/rig.rs`](../crates/render_anim/src/skate/rig.rs) | maps Skate 3 bones onto the MW2 soldier skeleton |
 | board | [`crates/assets/src/skate_board.rs`](../crates/assets/src/skate_board.rs) | derives `board.json` and `rig.json` from the converted skater model on first run |

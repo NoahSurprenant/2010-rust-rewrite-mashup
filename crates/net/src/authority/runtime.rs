@@ -843,6 +843,7 @@ struct FanoutQueues<'w> {
     pending_playercard: ResMut<'w, crate::PendingPlayerCard>,
     pending_gamenotify: ResMut<'w, crate::PendingGameNotify>,
     pending_minecraft: ResMut<'w, crate::PendingMinecraftFrames>,
+    skaters: ResMut<'w, crate::SkaterRelay>,
     pending_scores: ResMut<'w, crate::PendingScoreboard>,
     world: ResMut<'w, AuthorityWorld>,
     local: Option<Res<'w, LocalPresentClient>>,
@@ -1077,6 +1078,7 @@ fn fanout_loopback(
             Some(&mut queues.pending_playercard),
             Some(&mut queues.pending_gamenotify),
             Some(&mut queues.pending_minecraft),
+            Some(&mut queues.skaters),
             Some(&reliable),
             false,
         ) {
@@ -1138,6 +1140,8 @@ pub fn register_listen_runtime(app: &mut App) {
         .init_resource::<crate::PendingPlayerCard>()
         .init_resource::<crate::PendingGameNotify>()
         .init_resource::<crate::PendingMinecraftFrames>()
+        .init_resource::<crate::SkaterRelay>()
+        .init_resource::<crate::SkateOutbox>()
         .init_resource::<crate::PendingScoreboard>()
         .init_resource::<FixedUpdateCensus>()
         .init_resource::<ListenFanoutCensus>()
@@ -1195,6 +1199,13 @@ pub fn register_listen_runtime(app: &mut App) {
         );
         crate::client::presentation::entities::register_authority_entities(app);
     }
+    app.add_systems(
+        FixedUpdate,
+        crate::skate::skate_authority
+            .in_set(AuthoritySet::Ingress)
+            .after(ingress_authority)
+            .run_if(authority_should_tick),
+    );
     app.init_resource::<AuthorityPhaseCensus>().add_systems(
         RunFixedMainLoop,
         (publish_fixed_census, publish_authority_phase_census)

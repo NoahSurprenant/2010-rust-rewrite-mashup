@@ -44,6 +44,10 @@ pub struct Frame {
     /// Minecraft bytes for this client (`PendingMinecraftFrames`); empty
     /// for none.
     pub minecraft: Vec<u8>,
+
+    /// Other players' skater states (`crate::skate::encode_frame`); empty
+    /// for none.
+    pub skaters: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -116,9 +120,25 @@ impl Frame {
         crate::svc_gamenotify::encode_svc_game_notifies(out, &self.svc_game_notifies);
         // Last, and only when there are any: a frame without them reads as
         // before.
-        if !self.minecraft.is_empty() && self.minecraft.len() <= crate::MAX_MINECRAFT_FRAME_BYTES {
-            out.put_u16(self.minecraft.len() as u16);
-            out.put_bytes(&self.minecraft);
+        let minecraft = if self.minecraft.len() <= crate::MAX_MINECRAFT_FRAME_BYTES {
+            self.minecraft.as_slice()
+        } else {
+            &[]
+        };
+        let skaters = if self.skaters.len() <= crate::skate::MAX_SKATER_FRAME_BYTES {
+            self.skaters.as_slice()
+        } else {
+            &[]
+        };
+        // Skaters follow the Minecraft bytes, which are then written even
+        // when there are none.
+        if !minecraft.is_empty() || !skaters.is_empty() {
+            out.put_u16(minecraft.len() as u16);
+            out.put_bytes(minecraft);
+        }
+        if !skaters.is_empty() {
+            out.put_u16(skaters.len() as u16);
+            out.put_bytes(skaters);
         }
         let svc = out.len() - mark;
         FrameSectionBytes {
@@ -170,6 +190,17 @@ impl Frame {
         } else {
             Vec::new()
         };
+        let skaters = if input.remaining() >= 2 {
+            let len = input.get_u16()? as usize;
+            if len > crate::skate::MAX_SKATER_FRAME_BYTES {
+                return Err(WireError::Malformed("skater frame too long"));
+            }
+            let mut bytes = vec![0u8; len];
+            input.get_bytes(&mut bytes)?;
+            bytes
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             tick,
             state_hash,
@@ -187,6 +218,7 @@ impl Frame {
             svc_hud_splashes,
             svc_game_notifies,
             minecraft,
+            skaters,
         })
     }
 
@@ -335,6 +367,7 @@ pub fn frame_from_acked_tick_with_reliable(
         svc_hud_splashes: Vec::new(),
         svc_game_notifies: Vec::new(),
         minecraft: Vec::new(),
+        skaters: Vec::new(),
     }
 }
 

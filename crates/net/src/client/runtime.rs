@@ -567,6 +567,10 @@ pub fn reconcile_prediction(
         if !tick.frame.minecraft.is_empty() {
             reliable.minecraft.frames.push(tick.frame.minecraft);
         }
+        if !tick.frame.skaters.is_empty() {
+            reliable.skaters.bytes += tick.frame.skaters.len() as u64;
+            reliable.skaters.frames.push(tick.frame.skaters);
+        }
     }
 }
 
@@ -592,6 +596,7 @@ pub struct ReliableInbound<'w> {
     scores: ResMut<'w, crate::Scoreboard>,
     signon: ResMut<'w, crate::SignonState>,
     minecraft: ResMut<'w, crate::MinecraftDownlink>,
+    skaters: ResMut<'w, crate::SkaterDownlink>,
     bridge: Option<Res<'w, crate::MasterBridge>>,
 }
 
@@ -1972,7 +1977,13 @@ pub fn register_client_runtime(app: &mut App) {
             sample_client_input.in_set(ClientSet::Input),
             predict_local_move.in_set(ClientSet::Predict),
             send_pending_commands.in_set(ClientSet::Send),
+            crate::skate::send_skate_uplink
+                .in_set(ClientSet::Send)
+                .after(send_pending_commands),
             publish_presented.in_set(ClientSet::Present),
+            crate::skate::update_remote_skaters
+                .in_set(ClientSet::Present)
+                .after(publish_presented),
         ),
     );
 }

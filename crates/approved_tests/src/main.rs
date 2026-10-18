@@ -14,6 +14,7 @@ mod scenarios {
     pub mod heavy_gameplay_lifecycle;
     pub mod minecraft_multiplayer;
     pub mod mob_steps;
+    pub mod skate_multiplayer;
 }
 
 use std::path::{Path, PathBuf};
@@ -26,6 +27,7 @@ use scenarios::crafting_table;
 use scenarios::dedicated_server;
 use scenarios::heavy_gameplay_lifecycle::{self as hgl, SCENARIO};
 use scenarios::minecraft_multiplayer;
+use scenarios::skate_multiplayer;
 
 #[derive(Clone, Copy, PartialEq)]
 enum CacheMode {
@@ -49,7 +51,7 @@ fn main() {
             eprintln!("{message}");
             eprintln!(
                 "usage: approved_tests heavy_gameplay_lifecycle [--seed N | --replay run.json] \
-                 [--cache cold|shared] [--bin path]\n       approved_tests crafting_table [--cache cold|shared] [--bin path]\n       approved_tests minecraft_multiplayer [--cache cold|shared] [--bin path]\n       approved_tests dedicated_server [--cache cold|shared] [--bin path]"
+                 [--cache cold|shared] [--bin path]\n       approved_tests crafting_table [--cache cold|shared] [--bin path]\n       approved_tests minecraft_multiplayer [--cache cold|shared] [--bin path]\n       approved_tests dedicated_server [--cache cold|shared] [--bin path]\n       approved_tests skate_multiplayer [--cache cold|shared] [--bin path]"
             );
             std::process::exit(2);
         }
@@ -62,13 +64,16 @@ fn main() {
         run_minecraft_multiplayer
     } else if args.scenario == dedicated_server::NAME {
         run_dedicated_server
+    } else if args.scenario == skate_multiplayer::NAME {
+        run_skate_multiplayer
     } else {
         eprintln!(
-            "approved scenarios: {}, {}, {}, {} (asked for {:?})",
+            "approved scenarios: {}, {}, {}, {}, {} (asked for {:?})",
             SCENARIO.name,
             crafting_table::NAME,
             minecraft_multiplayer::NAME,
             dedicated_server::NAME,
+            skate_multiplayer::NAME,
             args.scenario
         );
         std::process::exit(2);
@@ -476,13 +481,15 @@ fn open_duo(
     master: &duo::Master,
     dirs: &[PathBuf; 2],
     session: u32,
+    extra_env: &[(&str, String)],
 ) -> Result<duo::Pair, String> {
     use duo::field;
-    let env = [
+    let mut env = vec![
         ("IW4L_MASTER_ADDR", master.addr.clone()),
         ("IW4L_MASTER_SERVER_NAME", duo::SERVER_NAME.to_owned()),
         ("IW4L_MASTER_CA_CERT", master.ca.display().to_string()),
     ];
+    env.extend(extra_env.iter().cloned());
     let setup = format!(
         "set ui_mapname {}; set ui_gametype dm",
         minecraft_multiplayer::MAP
@@ -622,7 +629,7 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
     let mut peaks = Vec::new();
     let mut failure = None;
     for session in [1, 2] {
-        let mut pair = match open_duo(&bin, &master, &dirs, session) {
+        let mut pair = match open_duo(&bin, &master, &dirs, session, &[]) {
             Ok(pair) => pair,
             Err(e) => {
                 failure = Some(format!("session {session}: {e}"));
@@ -917,6 +924,212 @@ fn run_dedicated_server(root: &Path, args: &Args) -> Result<bool, String> {
         .iter()
         .map(|event| json!(event.fields))
         .collect::<Vec<_>>()
+        .into();
+    manifest["answers"] = json!(facts.notes);
+    manifest["result"] = if passed { "passed" } else { "failed" }.into();
+    if let Some(failure) = failure {
+        manifest["failure"] = failure.into();
+    } else if !failed.is_empty() {
+        manifest["failure"] = format!("checkpoints failed: {}", failed.join(", ")).into();
+    }
+    report::write(&run_dir, &manifest)?;
+    println!(
+        "{}: {}",
+        manifest["result"].as_str().unwrap_or("?"),
+        run_dir.join("run.json").display()
+    );
+    Ok(passed)
+}
+
+/// `skate_multiplayer`'s two rooms: a listen host and its client, then a
+/// dedicated server and a client. Memory peaks are kept even when a step
+/// fails.
+fn skate_sessions(
+    bin: &Path,
+    master: &duo::Master,
+    dirs: &[PathBuf; 3],
+    skate_assets: &str,
+    facts: &mut skate_multiplayer::Facts,
+    peaks: &mut Vec<Value>,
+) -> Result<(), String> {
+    use duo::field;
+    use skate_multiplayer as sk;
+    let skate = [("IW4L_SKATE_ASSETS", skate_assets.to_owned())];
+    let listen_dirs = [dirs[0].clone(), dirs[1].clone()];
+    let mut pair = open_duo(bin, master, &listen_dirs, 1, &skate)?;
+    let played = sk::listen_session(&mut pair, facts);
+    let closed = close_duo(&mut pair);
+    peaks.push(json!({
+        "room": "listen",
+        "host_peak_rss_mib": pair.host.peak_rss_kib / 1024,
+        "client_peak_rss_mib": pair.peak_client_kib / 1024,
+        "combined_peak_rss_mib": pair.peak_combined_kib / 1024,
+    }));
+    played.and(closed).map_err(|e| format!("listen room: {e}"))?;
+
+    let env = [
+        ("IW4L_MASTER_ADDR", master.addr.clone()),
+        ("IW4L_MASTER_SERVER_NAME", duo::SERVER_NAME.to_owned()),
+        ("IW4L_MASTER_CA_CERT", master.ca.display().to_string()),
+    ];
+    let mut server_env = env.to_vec();
+    server_env.push(("IW4L_MASTER_HOST_NAME", sk::ROOM.to_owned()));
+    server_env.push((
+        "IW4L_MINECRAFT_WORLDS",
+        dirs[2].join("minecraft-worlds").display().to_string(),
+    ));
+    let server = duo::Player::launch_with(
+        bin,
+        &dirs[2],
+        "server",
+        1,
+        &["dedicated", sk::MAP],
+        &server_env,
+    )?;
+    let mut pair = duo::Pair {
+        host: server,
+        client: None,
+        peak_combined_kib: 0,
+        peak_client_kib: 0,
+    };
+    let played = (|| {
+        let load = Duration::from_secs(sk::LOAD_SECS);
+        pair.until("the server's room in its match", load, |pair| {
+            let status = pair.host.status();
+            field(&status, "state") == Some("hosting") && field(&status, "in_match") == Some("true")
+        })?;
+        let room = field(&pair.host.status(), "room")
+            .ok_or("no room in the server's status")?
+            .to_owned();
+        pair.ask(false, "wait minecraft; skate state s_ready", "s_ready", load)?;
+        let mut client_env = env.to_vec();
+        client_env.extend(skate.iter().cloned());
+        pair.client = Some(duo::Player::launch(bin, &dirs[1], "client", 2, &client_env)?);
+        sk::dedicated_session(&mut pair, facts, &room)?;
+        dedicated_server::leave(&mut pair)?;
+        pair.host.terminate()
+    })();
+    let start = std::time::Instant::now();
+    while pair.host.exited().is_none() && start.elapsed() < Duration::from_secs(30) {
+        pair.sample();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    pair.host.pump();
+    peaks.push(json!({
+        "room": "dedicated",
+        "server_peak_rss_mib": pair.host.peak_rss_kib / 1024,
+        "client_peak_rss_mib": pair.peak_client_kib / 1024,
+        "combined_peak_rss_mib": pair.peak_combined_kib / 1024,
+    }));
+    played.map_err(|e| format!("dedicated room: {e}"))
+}
+
+fn run_skate_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
+    asset_transport::load_dotenv();
+    if args.seed.is_some() || args.replay.is_some() {
+        return Err("skate_multiplayer takes no --seed or --replay".into());
+    }
+    let master_bin = args
+        .bin
+        .with_file_name(format!("iw4l-master{}", std::env::consts::EXE_SUFFIX));
+    for bin in [&args.bin, &master_bin] {
+        if !bin.is_file() {
+            return Err(format!(
+                "{} is not built (cargo build --profile play -p launcher --bin iw4l -p iw4l-master)",
+                bin.display()
+            ));
+        }
+    }
+    let games = asset_transport::games_root_from_env()?;
+    let mw2_installed = asset_transport::list_mp_maps(&games)
+        .iter()
+        .any(|m| m.starts_with("iw4:"));
+    let skate_assets = std::env::var("IW4L_SKATE_ASSETS").ok().filter(|root| {
+        let root = Path::new(root);
+        root.join("rig.json").is_file() && root.join("board.json").is_file()
+    });
+    let run_id = format!("{}-{}", utc_stamp(), skate_multiplayer::NAME);
+    let run_dir = root.join("iw4l-artifacts/approved-tests").join(&run_id);
+    std::fs::create_dir_all(run_dir.parent().expect("has parent"))
+        .map_err(|e| format!("create run root: {e}"))?;
+    std::fs::create_dir(&run_dir).map_err(|e| format!("create {}: {e}", run_dir.display()))?;
+    let mut manifest = json!({
+        "scenario": skate_multiplayer::NAME,
+        "run_id": run_id,
+        "result": "running",
+        "build": report::build_facts(root, &args.bin),
+        "platform": report::platform_facts(),
+        "content": {
+            "games_root": games.0.display().to_string(),
+            "mw2_installed": mw2_installed,
+            "skate_assets": skate_assets.is_some(),
+        },
+        "map": skate_multiplayer::MAP,
+    });
+    let Some(skate_assets) = skate_assets.filter(|_| mw2_installed) else {
+        manifest["result"] = "blocked".into();
+        manifest["failure"] = "needs MW2 under the games root and the Skate 3 data (IW4L_SKATE_ASSETS with rig.json and board.json)".into();
+        report::write(&run_dir, &manifest)?;
+        return Ok(false);
+    };
+    let dirs = [
+        run_dir.join("host"),
+        run_dir.join("client"),
+        run_dir.join("server"),
+    ];
+    let mut caches = Vec::new();
+    for (dir, name) in dirs.iter().zip(["host", skate_multiplayer::CLIENT, "server"]) {
+        let profile = dir.join("iw4l-artifacts/profile");
+        std::fs::create_dir_all(&profile)
+            .map_err(|e| format!("create {}: {e}", profile.display()))?;
+        std::fs::write(profile.join("classes.txt"), skate_multiplayer::CLASSES)
+            .map_err(|e| format!("write the class file: {e}"))?;
+        std::fs::write(
+            dir.join("settings.cfg"),
+            format!("resolution=960x540\nfullscreen=false\nvsync=true\nplayer_name={name}\n"),
+        )
+        .map_err(|e| format!("write the settings: {e}"))?;
+        caches.push(prepare_cache(root, dir, args.cache)?);
+        share_minecraft_files(root, dir)?;
+    }
+    manifest["cache"] = caches.into();
+    let bin = stage_binary(&args.bin, &run_dir)?;
+    report::write(&run_dir, &manifest)?;
+    println!("run: {}", run_dir.display());
+
+    let master = duo::Master::start(&master_bin, &run_dir.join("master"))?;
+    let mut facts = skate_multiplayer::Facts::default();
+    let mut peaks = Vec::new();
+    let failure = skate_sessions(&bin, &master, &dirs, &skate_assets, &mut facts, &mut peaks).err();
+    drop(master);
+    for dir in &dirs {
+        keep_minecraft_files(root, dir);
+    }
+    manifest["memory"] = peaks.into();
+    manifest["bandwidth"] = json!(skate_multiplayer::bandwidth(&facts));
+    let checks = skate_multiplayer::judge(&facts);
+    for check in &checks {
+        match check.failures.as_slice() {
+            [] => println!("  pass  {}", check.label),
+            failures => println!("  FAIL  {}: {}", check.label, failures.join("; ")),
+        }
+    }
+    let failed: Vec<&str> = checks
+        .iter()
+        .filter(|c| !c.failures.is_empty())
+        .map(|c| c.label)
+        .collect();
+    let passed = failure.is_none() && failed.is_empty();
+    manifest["checks"] = checks
+        .iter()
+        .map(|c| json!({ "label": c.label, "failures": c.failures }))
+        .collect::<Vec<_>>()
+        .into();
+    manifest["lines"] = facts
+        .lines
+        .iter()
+        .map(|(label, event)| (label.clone(), json!(event.fields)))
+        .collect::<serde_json::Map<_, _>>()
         .into();
     manifest["answers"] = json!(facts.notes);
     manifest["result"] = if passed { "passed" } else { "failed" }.into();

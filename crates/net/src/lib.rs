@@ -9,6 +9,7 @@ pub mod role_matrix;
 pub mod schedule;
 pub mod session_core;
 pub mod signon;
+pub mod skate;
 pub mod svc_gamenotify;
 pub mod svc_playercard;
 pub mod svc_scores;
@@ -169,4 +170,8 @@ pub use transport::wire::{WireError, WireReader, WireWriter};
 
 pub use svc_script_audio::SvcScriptAudio;
 
-pub const PROTOCOL_VERSION: u32 = 94;
+pub use skate::{SkateOutbox, SkaterDownlink, SkaterRelay, SkaterState, SkaterTracks};
+
+/// 95: skating in multiplayer (`ClientPacket::Skate`, the snapshot's skater
+/// section).
+pub const PROTOCOL_VERSION: u32 = 95;

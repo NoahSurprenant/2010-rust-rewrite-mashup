@@ -370,6 +370,11 @@ pub(crate) fn send_to(
     if let Some(at) = remote.placed_at.take() {
         push(reliable, client, &HostMessage::Placed { at });
     }
+    // A joining player's inventory goes ahead of the edit history, which
+    // can take many seconds to send: it is theirs as soon as they arrive.
+    if remote.sent_inventory.is_none() {
+        send_inventory(reliable, client, remote);
+    }
     while !remote.corrections.is_empty() && has_room(reliable.queue(client)) {
         let fit = edits_that_fit(&remote.corrections);
         let corrections: Vec<_> = remote.corrections.drain(..fit).collect();
@@ -380,20 +385,7 @@ pub(crate) fn send_to(
         push(reliable, client, &HostMessage::Edits(batch));
         remote.cursor = next;
     }
-    let state = InventoryState::capture(&remote.inventory, remote.selected);
-    let current = (remote.applied, remote.table, state);
-    if remote.sent_inventory.as_ref() != Some(&current) && has_room(reliable.queue(client)) {
-        push(
-            reliable,
-            client,
-            &HostMessage::Inventory {
-                applied: current.0,
-                table: current.1,
-                state: current.2.clone(),
-            },
-        );
-        remote.sent_inventory = Some(current);
-    }
+    send_inventory(reliable, client, remote);
     remote.items_clock += dt;
     if remote.items_clock >= ITEMS_SECONDS
         && let Some(feet) = feet
@@ -434,6 +426,25 @@ pub(crate) fn send_to(
         remote.mob_clock = 0.0;
         remote.mob_frame_bytes = 0;
         remote.mob_row_bytes = 0;
+    }
+}
+
+/// The client's inventory, when it changed since it was last sent and its
+/// stream has room.
+fn send_inventory(reliable: &mut net::ReliableEventHub, client: sim::ClientId, remote: &mut Remote) {
+    let state = InventoryState::capture(&remote.inventory, remote.selected);
+    let current = (remote.applied, remote.table, state);
+    if remote.sent_inventory.as_ref() != Some(&current) && has_room(reliable.queue(client)) {
+        push(
+            reliable,
+            client,
+            &HostMessage::Inventory {
+                applied: current.0,
+                table: current.1,
+                state: current.2.clone(),
+            },
+        );
+        remote.sent_inventory = Some(current);
     }
 }
 

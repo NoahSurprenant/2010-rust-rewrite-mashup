@@ -107,8 +107,8 @@ pub struct Player {
     lines: mpsc::Receiver<(u128, String)>,
     log: std::fs::File,
     started: Instant,
-    /// Every `minecraft-state:`, `minecraft-block:` and `minecraft-mobs:`
-    /// line, by label.
+    /// Every `minecraft-state:`, `minecraft-block:`, `minecraft-mobs:` and
+    /// `skate-state:` line, by label.
     pub seen: BTreeMap<String, Event>,
     /// A dedicated server's `dedicated-players:` lines, in order.
     pub rosters: Vec<Event>,
@@ -155,6 +155,8 @@ impl Player {
             .env_remove("IW4L_MINECRAFT_SEED")
             .env_remove("IW4L_MINECRAFT_WORLD")
             .env_remove("IW4L_MINECRAFT_WORLDS")
+            // Skate 3 files only where a scenario hands them over.
+            .env_remove("IW4L_SKATE_ASSETS")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(file(&format!("child_stderr_{session}.txt"))?);
@@ -243,7 +245,12 @@ impl Player {
                 println!("[{:>7.1}s] {} -> {line}", at_ms as f64 / 1000.0, self.name);
                 self.mobnet.push(event);
             }
-            for prefix in ["minecraft-state:", "minecraft-block:", "minecraft-mobs:"] {
+            for prefix in [
+                "minecraft-state:",
+                "minecraft-block:",
+                "minecraft-mobs:",
+                "skate-state:",
+            ] {
                 if let Some(event) = parse(&line, prefix, at_ms) {
                     println!("[{:>7.1}s] {} -> {line}", at_ms as f64 / 1000.0, self.name);
                     if let Some(label) = event.get("label") {

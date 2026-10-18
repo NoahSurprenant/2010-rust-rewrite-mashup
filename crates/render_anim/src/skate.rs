@@ -281,10 +281,22 @@ fn preload_map(host: &mut Host, clip: Arc<asset_world::ClipCollision>) -> Result
     Ok(())
 }
 
-fn stop(host: &mut Host, mode: &mut SkateMode, authority: &mut net::AuthorityWorld) {
-    authority
-        .0
-        .set_external_motion(sim::ClientId(mode.client), false);
+fn stop(
+    host: &mut Host,
+    mode: &mut SkateMode,
+    authority: Option<&mut net::AuthorityWorld>,
+    outbox: &mut net::SkateOutbox,
+) {
+    if let Some(authority) = authority {
+        authority
+            .0
+            .set_external_motion(sim::ClientId(mode.client), false);
+    }
+    if mode.active || mode.entering {
+        // Everyone else stops drawing the board; the host gives the player
+        // its own movement back.
+        outbox.publish(net::SkaterState::off(mode.root.w_axis.truncate()));
+    }
     host.enter_requested = false;
     host.activating = false;
     host.epoch = host.epoch.wrapping_add(1);
@@ -296,13 +308,40 @@ fn stop(host: &mut Host, mode: &mut SkateMode, authority: &mut net::AuthorityWor
     mode.camera = None;
     mode.bones.clear();
     mode.status.clear();
+    mode.speed = 0.;
     diag::info!(World, "Skate mode stopped; map session retained");
 }
 
-fn present(mode: &mut SkateMode, p: Pose, authority: &mut net::AuthorityWorld) {
+fn present(
+    mode: &mut SkateMode,
+    p: Pose,
+    authority: Option<&mut net::AuthorityWorld>,
+    outbox: &mut net::SkateOutbox,
+    measure: bool,
+) {
     let b = collision::basis();
     let mut root = b * p.root * b.inverse();
     root.w_axis = collision::from_skate(p.root.w_axis.truncate()).extend(1.);
+    let velocity = collision::from_skate(p.velocity);
+    mode.speed = velocity.length();
+    if measure {
+        outbox.worst_error_mm = outbox
+            .worst_error_mm
+            .max(net::skate::round_trip_error_mm(&p.names, &p.bones));
+    }
+    // What everyone else needs to draw this skater, and the host to move
+    // its player: the root, the speed and the pose.
+    let (_, rotation, origin) = root.to_scale_rotation_translation();
+    outbox.publish(net::SkaterState {
+        seq: 0,
+        time_ms: 0,
+        active: true,
+        origin,
+        velocity,
+        rotation: rotation.normalize(),
+        label: p.state.clone(),
+        bones: net::skate::sample_bones(&p.names, &p.bones),
+    });
     mode.root = root;
     mode.bones = p.bones;
     mode.names = p.names;
@@ -317,10 +356,14 @@ fn present(mode: &mut SkateMode, p: Pose, authority: &mut net::AuthorityWorld) {
             fov,
         )
     });
-    authority.0.set_origin(
-        sim::ClientId(mode.client),
-        root.w_axis.truncate().to_array(),
-    );
+    // A listen host moves its own player here; a client's host does when the
+    // state reaches it.
+    if let Some(authority) = authority {
+        authority.0.set_origin(
+            sim::ClientId(mode.client),
+            root.w_axis.truncate().to_array(),
+        );
+    }
 }
 
 fn update(
@@ -334,10 +377,14 @@ fn update(
     mut mode: ResMut<SkateMode>,
     mut host: ResMut<Host>,
     (gamepads, active): (Query<&bevy::input::gamepad::Gamepad>, Option<Res<frame::ActivePad>>),
+    mut outbox: ResMut<net::SkateOutbox>,
+    dedicated: Option<Res<frame::DedicatedServer>>,
 ) {
-    let Some(authority) = authority.as_deref_mut() else {
+    // A dedicated server has no player of its own to skate.
+    if dedicated.is_some() {
         return;
-    };
+    }
+    let outbox = &mut *outbox;
     let aspect_ratio = windows
         .single()
         .map(|w| w.width() / w.height().max(1.))
@@ -349,7 +396,7 @@ fn update(
         .as_ref()
         .is_none_or(|a| clip.0.as_ref().is_some_and(|b| Arc::ptr_eq(a, b)));
     if (mode.active || host.enter_requested || host.activating) && (!alive || !same_map) {
-        stop(&mut host, &mut mode, authority);
+        stop(&mut host, &mut mode, authority.as_deref_mut(), outbox);
     }
     if !same_map {
         host.send = None;
@@ -376,7 +423,10 @@ fn update(
     // kind it is, converted to the Xbox layout the skate input expects.
     let pad = active.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
     host.pad_packet = host.pad_packet.wrapping_add(1);
-    let input = pad.map_or_else(InputFrame::neutral, |pad| pad_frame(pad, host.pad_packet));
+    let input = match mode.virtual_pad {
+        Some(v) => InputFrame::from_pad(v.buttons, v.triggers, v.left, v.right, host.pad_packet),
+        None => pad.map_or_else(InputFrame::neutral, |pad| pad_frame(pad, host.pad_packet)),
+    };
     mode.controller = input.controller();
     host.previous_buttons = input.buttons();
 
@@ -407,12 +457,15 @@ fn update(
                 mode.entering = false;
                 mode.active = true;
                 host.input_suspended = false;
-                authority.0.set_external_motion(local.0, true);
-                present(&mut mode, p, authority);
+                if let Some(authority) = authority.as_deref_mut() {
+                    authority.0.set_external_motion(local.0, true);
+                }
+                present(&mut mode, p, authority.as_deref_mut(), outbox, true);
                 diag::info!(World, "Skate activation from retained session: {ms}ms");
             }
             Reply::Pose(epoch, p) if epoch == host.epoch && mode.active => {
-                if p.tick / 120 != host.logged_tick / 120 {
+                let measure = p.tick / 120 != host.logged_tick / 120;
+                if measure {
                     diag::info!(
                         World,
                         "Skate tick={} speed={:.2} state={}",
@@ -422,10 +475,10 @@ fn update(
                     );
                     host.logged_tick = p.tick;
                 }
-                present(&mut mode, p, authority);
+                present(&mut mode, p, authority.as_deref_mut(), outbox, measure);
             }
             Reply::Error(e) => {
-                stop(&mut host, &mut mode, authority);
+                stop(&mut host, &mut mode, authority.as_deref_mut(), outbox);
                 host.send = None;
                 host.receive = None;
                 host.ready = false;
@@ -444,7 +497,7 @@ fn update(
     }
     if std::mem::take(&mut mode.toggle_requested) && alive {
         if mode.active || host.enter_requested || host.activating {
-            stop(&mut host, &mut mode, authority);
+            stop(&mut host, &mut mode, authority.as_deref_mut(), outbox);
             return;
         }
         if host.send.is_none() {
@@ -494,9 +547,17 @@ fn update(
             ))
             .is_err()
         {
-            stop(&mut host, &mut mode, authority);
+            stop(&mut host, &mut mode, authority.as_deref_mut(), outbox);
         }
     }
+}
+
+/// Another player on its board, drawn as its skater when this game can: it
+/// needs the Skate 3 rig and board (`IW4L_SKATE_ASSETS`); without them that
+/// player shows as its MW2 body.
+pub fn remote_pose(skaters: &frame::RemoteSkaters, client: u32) -> Option<&frame::SkaterPose> {
+    let skater = skaters.poses.get(&client)?;
+    (rig::reference().is_some() && assets::bot_model::local_skate_board().is_some()).then_some(skater)
 }
 
 /// A controller's state in XInput's layout, for the skate input.

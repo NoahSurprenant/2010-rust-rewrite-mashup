@@ -16,6 +16,7 @@ mod debug_minecraft;
 mod debug_move;
 mod debug_scalar;
 mod debug_script_mover;
+mod debug_skate;
 mod debug_sm;
 mod debug_smc;
 mod debug_view_proj;

@@ -858,8 +858,10 @@ fn update(
         }
     };
 
-    // Every spawn lands on the Minecraft spawn once its ground exists.
-    let alive = ps.pm_type == 0;
+    // Every spawn lands on the Minecraft spawn once its ground exists. Alive is the snapshot's
+    // lifecycle, not only the pose's type: before MW2's script spawns the player its pose is
+    // already a normal one, and a move made then is undone by the spawn that follows.
+    let alive = ps.pm_type == 0 && !dedicated && presented.alive_player(local.0).is_some();
     let spawn_chunk = ((origin[0].floor() as i32) >> 4, (origin[2].floor() as i32) >> 4);
     if alive && !*was_alive && world.scene.generated_chunk(spawn_chunk).is_some() {
         // Retried each frame until the authority has the player to move; a

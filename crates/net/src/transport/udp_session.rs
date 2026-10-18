@@ -159,6 +159,9 @@ pub struct UdpAuthorityHub {
     committed_admissions: Vec<CommittedAdmission>,
 
     denied: HashSet<master_protocol::MemberId>,
+
+    /// Skater states from clients (`ClientPacket::Skate`), not yet taken.
+    skate_inbound: Vec<(u32, Vec<u8>)>,
 }
 
 #[derive(Debug)]
@@ -325,6 +328,7 @@ impl UdpAuthorityHub {
             member_by_conn: HashMap::new(),
             committed_admissions: Vec::new(),
             denied: HashSet::new(),
+            skate_inbound: Vec::new(),
         }
     }
 
@@ -572,9 +576,38 @@ impl UdpAuthorityHub {
                         let _ = peer.baseline.ack(snapshot_seq);
                     }
                 }
+                ClientPacket::Skate {
+                    header,
+                    claimed_client,
+                    state,
+                } => {
+                    if self.peers.get(&header.connection) != Some(&from)
+                        || !header.applies_to_epoch(self.live_packet_epoch())
+                    {
+                        continue;
+                    }
+                    let relay = self.bootstrap.is_some();
+                    if !self
+                        .replication
+                        .get(&header.connection)
+                        .is_some_and(|peer| peer.admits_gameplay(relay))
+                    {
+                        continue;
+                    }
+                    let Ok(client) = self.connections.resolve(header.connection, claimed_client)
+                    else {
+                        continue;
+                    };
+                    self.skate_inbound.push((client, state));
+                }
             }
         }
         Ok(())
+    }
+
+    /// Skater states clients sent since the last call, by client.
+    pub fn take_skate_inbound(&mut self) -> Vec<(u32, Vec<u8>)> {
+        std::mem::take(&mut self.skate_inbound)
     }
 
     fn apply_admission_acks(&mut self) {
@@ -680,6 +713,7 @@ impl UdpAuthorityHub {
             None,
             None,
             None,
+            None,
             false,
         )
     }
@@ -695,6 +729,7 @@ impl UdpAuthorityHub {
         mut pending_playercard: Option<&mut crate::PendingPlayerCard>,
         mut pending_gamenotify: Option<&mut crate::PendingGameNotify>,
         mut pending_minecraft: Option<&mut crate::PendingMinecraftFrames>,
+        mut skaters: Option<&mut crate::SkaterRelay>,
         reliable: Option<&crate::ReliableEventHub>,
         scores_due: bool,
     ) -> Result<(), UdpSendError> {
@@ -794,6 +829,9 @@ impl UdpAuthorityHub {
             }
             if let Some(pending) = pending_minecraft.as_mut() {
                 frame.minecraft = pending.take_for(client);
+            }
+            if let Some(relay) = skaters.as_mut() {
+                frame.skaters = relay.frame_for(client.0);
             }
 
             frame
@@ -1324,6 +1362,29 @@ impl UdpClientLink {
             snapshot_seq,
         };
         self.send_bytes(&packet.to_bytes())
+    }
+
+    /// Sends this client's skater state (`crate::skate::SkaterState` bytes)
+    /// to the host, unreliably.
+    pub fn send_skate(&mut self, state: Vec<u8>) -> Result<usize, UdpSendError> {
+        let Some(connection) = self.connection else {
+            return Ok(0);
+        };
+        self.out_seq = self.out_seq.wrapping_add(1);
+        let packet = ClientPacket::Skate {
+            header: PacketHeader {
+                connection,
+                sequence: self.out_seq,
+                ack: self.in_ack,
+                epoch: self.match_epoch(),
+            },
+            claimed_client: self.assigned_client.map(|c| c.0).unwrap_or(0),
+            state,
+        }
+        .to_bytes();
+        let len = packet.len();
+        self.send_bytes(&packet)?;
+        Ok(len)
     }
 
     pub fn has_unsent_actions(&self, actions: &[ClientAction]) -> bool {
