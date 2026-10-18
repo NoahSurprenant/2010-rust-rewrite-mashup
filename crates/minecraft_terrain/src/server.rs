@@ -42,6 +42,10 @@ pub struct ServerSim {
     dormant: Vec<(Vec<CensusMob>, minecraftoss_core::nbt::Tag)>,
     /// Creeper blasts since the client last heard of them.
     explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
+    /// Mobs natural spawning made and mobs that despawned since the last
+    /// tick's output: type and feet.
+    spawned_log: Vec<(String, [f64; 3])>,
+    despawned_log: Vec<(String, [f64; 3])>,
     /// The player's `takeXpDelay`: ticks until it can take another orb.
     take_xp_delay: i32,
     /// The client was asked to close its trading screen.
@@ -207,6 +211,8 @@ impl ServerSim {
             shearing_loot: None,
             dormant: Vec::new(),
             explosions: Vec::new(),
+            spawned_log: Vec::new(),
+            despawned_log: Vec::new(),
             take_xp_delay: 0,
             merchant_closing: false,
         }
@@ -486,6 +492,9 @@ impl ServerSim {
     /// and block spawns until they despawn.
     fn take_spawned(&mut self) {
         for tag in std::mem::take(&mut self.level.spawned) {
+            if let Some(mob) = minecraftoss_world::natural_spawner::tick::census_of(&tag).into_iter().next() {
+                self.spawned_log.push((mob.kind, mob.pos));
+            }
             self.add_saved_entity(tag);
         }
     }
@@ -495,7 +504,19 @@ impl ServerSim {
         let feet: Vec<glam::DVec3> = players.iter().filter(|p| !p.spectator).map(|p| p.position).collect();
         let level = &self.level;
         let loaded = |p: glam::DVec3| level.chunk(ChunkPos::new((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4)).is_some();
-        self.mobs.check_despawn(&feet, difficulty == 0, &loaded);
+        let before = self.mobs.census();
+        if self.mobs.check_despawn(&feet, difficulty == 0, &loaded) > 0 {
+            // Nothing moved in between: the ones missing went.
+            let mut left: Vec<(&'static str, glam::DVec3)> = self.mobs.census().into_iter().map(|m| (m.kind, m.position)).collect();
+            for mob in before {
+                match left.iter().position(|&(kind, at)| kind == mob.kind && at == mob.position) {
+                    Some(i) => {
+                        left.swap_remove(i);
+                    }
+                    None => self.despawned_log.push((mob.kind.to_owned(), mob.position.to_array())),
+                }
+            }
+        }
         // Dormant monsters go in peaceful and beyond 128 blocks (they never
         // idle: they do not tick).
         self.dormant.retain(|(group, _)| {
@@ -925,6 +946,11 @@ pub struct Output {
     pub explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
     /// Sounds mobs made this tick.
     pub mob_sounds: Vec<minecraftoss_entities::world::MobSound>,
+    /// Mobs natural spawning made, and mobs that despawned: type and feet.
+    pub natural_spawns: Vec<(String, [f64; 3])>,
+    pub despawns: Vec<(String, [f64; 3])>,
+    /// Chunks the level holds.
+    pub level_chunks: usize,
     /// Items the player picked up: (entity ID, position, item, count, components).
     pub picked: Vec<(i32, [f64; 3], String, i32, Option<String>)>,
     /// What the other players picked up, by their key.
@@ -1188,6 +1214,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.potion_breaks.extend(sim.mobs.take_potion_breaks());
                     out.explosions.extend(sim.take_explosions());
                     out.mob_sounds.extend(sim.mobs.take_sounds());
+                    out.natural_spawns.append(&mut sim.spawned_log);
+                    out.despawns.append(&mut sim.despawned_log);
+                    out.level_chunks = sim.level.chunks().count();
                     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
                     out.mobs = Some(Box::new(sim.tracked_mobs_near(&input.tracking.0, input.tracking.1)));
                     let pickup_feet = input.pickup.as_ref().map(|(feet, _, _)| *feet);

@@ -15,7 +15,7 @@ use crate::{
     client_mobs::ClientMobs,
 };
 use glam::{EulerRot, Quat, Vec2, Vec3};
-use minecraftoss_entities::world::{PotionEntity, WitchEntity};
+use minecraftoss_entities::world::WitchEntity;
 use std::f32::consts::PI;
 
 /// Where a part sits in the model: its rotation and origin (pixels, y
@@ -168,22 +168,21 @@ pub fn append_witches<'a>(mesh: &mut ChunkMesh, witches: impl IntoIterator<Item 
     held
 }
 
-/// Appends each splash potion in flight as its item facing the camera
-/// (`ThrownItemRenderer`, the ground display: half a block, raised an
-/// eighth along the camera's up), the overlay tinted with its colour under
-/// the bottle.
-pub fn append_potions<'a>(mesh: &mut ChunkMesh, potions: impl IntoIterator<Item = (&'a PotionEntity, glam::DVec3)>, atlas: &Atlas, forward: Vec3, light: &SkyLight) {
+/// Appends each splash potion in flight (its colour, and where it is) as
+/// its item facing the camera (`ThrownItemRenderer`, the ground display:
+/// half a block, raised an eighth along the camera's up), the overlay tinted
+/// with its colour under the bottle.
+pub fn append_potions(mesh: &mut ChunkMesh, potions: impl IntoIterator<Item = (u32, glam::DVec3)>, atlas: &Atlas, forward: Vec3, light: &SkyLight) {
     let (Ok(overlay), Ok(bottle)) = (ResourceId::parse("minecraft:item/potion_overlay"), ResourceId::parse("minecraft:item/splash_potion")) else { return };
     if !atlas.contains(&overlay) || !atlas.contains(&bottle) {
         return;
     }
     let right = forward.cross(Vec3::Y).normalize_or_zero();
     let up = right.cross(forward).normalize_or_zero();
-    for (entity, at) in potions {
+    for (rgb, at) in potions {
         let position = at.as_vec3();
         let cell = (at.x.floor() as i32, at.y.floor() as i32, at.z.floor() as i32);
         let (sky, block) = (light.get(cell) as f32, light.get_block(cell) as f32);
-        let rgb = entity.potion.potion.color();
         let tint = [((rgb >> 16) & 255) as f32 / 255.0, ((rgb >> 8) & 255) as f32 / 255.0, (rgb & 255) as f32 / 255.0, 1.0];
         let center = position + up * 0.125;
         for (layer, color, nudge) in [(&overlay, tint, 0.0_f32), (&bottle, [1.0; 4], 0.002)] {
