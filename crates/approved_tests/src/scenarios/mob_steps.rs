@@ -142,6 +142,13 @@ pub fn census(
     pair.ask(client, &script, label, Duration::from_secs(30))
 }
 
+/// Whether `mob` is alive within the arena around the player of a census
+/// (eight blocks of its eye): one summoned there, not one of the level's own
+/// further off.
+pub fn summoned(census: &Event, mob: &Mob) -> bool {
+    !mob.dead && eye(census).is_some_and(|eye| apart(eye, mob.at) < 8.0)
+}
+
 /// Asks until a listed mob passes `want` or `timeout` passes: the last
 /// answer, and the mob if one passed.
 pub fn poll(
@@ -336,6 +343,19 @@ mod tests {
         let none = event("label=c mobs=- items=-");
         assert!(mobs(&none).is_empty());
         assert!(items(&none).is_empty());
+    }
+
+    #[test]
+    fn only_a_mob_in_the_arena_counts_as_summoned() {
+        let e = event(
+            "label=c eye=320.50,62.67,0.50 mobs=pig:101:304.24,4.00,69.78:10.0:alive;pig:151:322.50,61.00,2.50:10.0:alive;pig:9:321.00,61.00,0.00:0.0:dead",
+        );
+        let picked: Vec<u64> = mobs(&e)
+            .iter()
+            .filter(|m| summoned(&e, m))
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(picked, [151]);
     }
 
     #[test]

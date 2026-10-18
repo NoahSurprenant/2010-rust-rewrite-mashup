@@ -227,7 +227,8 @@ fn far_mobs(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
         .ok_or("no client")?
         .send("mc summon husk 3 0 0")?;
     let see = Duration::from_secs(mob_steps::SEE_SECS);
-    let (seen, husk) = mob_steps::poll(pair, true, "c_husk", Some("husk"), see, |_, m| !m.dead)?;
+    let (seen, husk) =
+        mob_steps::poll(pair, true, "c_husk", Some("husk"), see, mob_steps::summoned)?;
     facts.keep("c_husk", seen);
     let husk = husk.ok_or("the client never saw the husk")?;
     facts.notes.insert("husk_id", husk.id.to_string());
@@ -257,7 +258,7 @@ fn far_mobs(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
         .as_mut()
         .ok_or("no client")?
         .send("mc summon pig 2 0 2")?;
-    let (seen, pig) = mob_steps::poll(pair, true, "c_pig", Some("pig"), see, |_, m| !m.dead)?;
+    let (seen, pig) = mob_steps::poll(pair, true, "c_pig", Some("pig"), see, mob_steps::summoned)?;
     facts.keep("c_pig", seen.clone());
     let pig = pig.ok_or("the client never saw the pig")?;
     let shot = mob_steps::shoot(pair, "pig", pig.id, 0.45, &seen, kill)?;

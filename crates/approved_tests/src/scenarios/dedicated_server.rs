@@ -239,7 +239,8 @@ pub fn mob_visit(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     mob_steps::draw_gun(pair)?;
     client(pair)?.send("mc summon husk 3 0 0")?;
     let see = Duration::from_secs(mob_steps::SEE_SECS);
-    let (seen, husk) = mob_steps::poll(pair, true, "c_husk", Some("husk"), see, |_, m| !m.dead)?;
+    let (seen, husk) =
+        mob_steps::poll(pair, true, "c_husk", Some("husk"), see, mob_steps::summoned)?;
     facts.keep("c_husk", seen);
     let husk = husk.ok_or("the client never saw the husk")?;
     facts.notes.insert("husk_id", husk.id.to_string());
