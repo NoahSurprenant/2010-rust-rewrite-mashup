@@ -26,6 +26,8 @@ jobs:
       # The Minecraft map's multiplayer wire and save formats, and its mobs'.
       - run: cargo test -p minecraft_terrain --lib multiplayer
       - run: cargo test -p minecraft_terrain --lib mob_sync
+      # Inventory icons, the `minecraft:special` ones (chests, heads) included.
+      - run: cargo test -p minecraft_terrain --lib icon
 
   # The approved crafting_table scenario plays the real game on the
   # Minecraft map, so it needs the owner's MW2 files, which only the

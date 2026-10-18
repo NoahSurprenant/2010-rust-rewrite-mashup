@@ -46,6 +46,8 @@ pub enum Expect {
     Grid(&'static str, usize),
     /// Whether the crosshair is on a crafting table in reach.
     TableInView(bool),
+    /// The inventory draws this item's icon (it is not in `no_icon`).
+    Icon(&'static str),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -90,6 +92,10 @@ pub const STEPS: &[Step] = &[
             Expect::Grid("-", 1),
             Expect::Result("minecraft:chest*1"),
             Expect::Slot(PLANKS, "minecraft:oak_planks*8"),
+            // A chest's item model is `minecraft:special` (a block
+            // entity's renderer): its icon is drawn from the chest's boxes.
+            Expect::Icon("minecraft:chest"),
+            Expect::Icon("minecraft:oak_planks"),
         ],
     },
     Step {
@@ -293,6 +299,11 @@ fn failure(state: &Event, expect: &Expect) -> Option<String> {
             (field("table_in_view") != "-") == *in_view,
             format!("table_in_view={in_view}"),
             field("table_in_view"),
+        ),
+        Expect::Icon(id) => (
+            !list(state, "no_icon").iter().any(|missing| missing == id),
+            format!("an icon for {id}"),
+            format!("no_icon={}", field("no_icon")),
         ),
     };
     (!held).then(|| format!("want {want}, got {got}"))
@@ -565,6 +576,26 @@ mod tests {
             .find(|c| c.label == "chest_recipe")
             .unwrap();
         assert_eq!(check.failures, ["want result=minecraft:chest*1, got -"]);
+    }
+
+    #[test]
+    fn a_chest_with_no_icon_fails() {
+        let mut states = passing_states();
+        let i = states
+            .iter()
+            .position(|s| s.get("label") == Some("chest_recipe"))
+            .unwrap();
+        states[i]
+            .fields
+            .insert("no_icon".into(), "minecraft:chest".into());
+        let check = judge(&states)
+            .into_iter()
+            .find(|c| c.label == "chest_recipe")
+            .unwrap();
+        assert_eq!(
+            check.failures,
+            ["want an icon for minecraft:chest, got no_icon=minecraft:chest"]
+        );
     }
 
     #[test]

@@ -17,6 +17,14 @@ pub fn item_icon(packs: &PackStack, key: &str, icon_size: usize) -> Result<Optio
         .map(|value| item_model_tints(packs, &value["model"]))
         .transpose()?
         .unwrap_or_default();
+    // A block entity's look (a chest, a banner), which vanilla draws with a
+    // special renderer rather than a model.
+    let special = definition
+        .as_ref()
+        .and_then(|value| crate::special_icon::special_model(&value["model"]));
+    if let (None, Some(special)) = (model, special) {
+        return crate::special_icon::special_icon(packs, special, icon_size);
+    }
     if let Some(icon) = model
         .map(|model| crate::item_icon::block_icon(packs, model, &tints, icon_size))
         .transpose()?
