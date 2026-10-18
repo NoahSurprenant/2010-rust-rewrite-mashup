@@ -308,6 +308,7 @@ fn stop(
     mode.camera = None;
     mode.bones.clear();
     mode.status.clear();
+    mode.speed = 0.;
     diag::info!(World, "Skate mode stopped; map session retained");
 }
 
