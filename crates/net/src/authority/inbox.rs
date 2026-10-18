@@ -472,12 +472,22 @@ impl ClientActionInbox {
         self.overflowed.clear();
     }
 
-    pub fn gather(&mut self) -> Vec<(ClientId, sim::ClientAction)> {
-        let mut out = self.pending.clone();
-        for (id, action) in &out {
+    /// Every action to take this tick, each with whether a remote peer sent
+    /// it (rather than this game's own console, menus or bots).
+    pub fn gather(&mut self) -> Vec<(ClientId, sim::ClientAction, bool)> {
+        let mut out: Vec<_> = self
+            .pending
+            .iter()
+            .map(|&(id, action)| (id, action, false))
+            .collect();
+        for (id, action, _) in &out {
             self.mark_dispatched(*id, sim::action_request_id(action));
         }
-        out.append(&mut self.received);
+        out.extend(
+            self.received
+                .drain(..)
+                .map(|(id, action)| (id, action, true)),
+        );
         out
     }
 }

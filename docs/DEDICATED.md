@@ -18,6 +18,14 @@ holds one of the slots) and `IW4L_MASTER_PASSWORD` as for any host. Its log is i
 the match changes. `IW4L_CONSOLE_STDIN=1` takes console commands on stdin
 (`mc state`, `mc block`, `mc set` work with no player).
 
+**Debug commands** (`mc give`, `mc clear`, `mc fill`, `mc set`, `mc summon`,
+`give`, `tp`, `kill`, `damage`, `force_spawn`, `admin transfer`, ...) change
+the world for whoever runs them, so a host takes them only from its own
+console, its bots and the players whose **player key** is on its admin list
+("Player keys and admins" below). A refused command changes nothing; the
+host prints `debug-refused: client=… who="<name> <key, short>" command=…` and
+the player is told on its HUD (and its stdout, `host-message: …`).
+
 It runs one match for the life of its room. SIGTERM (or Ctrl-C) saves and
 exits with 0; a room the master lost (the master restarted, the network
 dropped) or a match that ended exits with 1, for a supervisor to start it
@@ -25,12 +33,54 @@ again, and the new room has a new id.
 
 **The Minecraft map** keeps its world in `minecraft-worlds/<name>/` beside
 `settings.cfg`, or under `IW4L_MINECRAFT_WORLDS` (`IW4L_MINECRAFT_WORLD`
-names it): seed, block changes and every player's inventory by player name.
+names it): seed, block changes and every player's inventory by player key.
 It is saved every ten seconds when something changed, when a player leaves
 and on SIGTERM. Terrain is generated around each connected player, and the
 world's spawn and the first player's surroundings run the mobs and items.
 Minecraft's files are fetched from Mojang with `curl` on the first start into
 `iw4l-artifacts/minecraft-26.3` in the working directory.
+
+## Player keys and admins
+
+Every game keeps a key pair in `player.key` beside its `settings.cfg`
+(`iw4l-artifacts\player.key` in the Windows folder, `~/.config/iw4l/player.key`
+on Linux, or `IW4L_PLAYER_KEY`), made on its first run. The private half never
+leaves the machine: on joining a room the game signs that room's id and the
+member id the master gave it for this join, and the host checks the
+signature, so a key cannot be borrowed or replayed. The key's **fingerprint**
+(SHA-256 of the public key, 64 hex digits) is who the player is to every
+host: `whoami` on the console prints it, and a host logs every join as
+`player joined: name=<name> key=<fingerprint>` (in the dedicated server's
+log, so `kubectl logs` and Loki have it). A game without a valid proof plays
+as a **guest** (`key=guest`): never an admin, and its inventory is not kept.
+
+**Admins** are listed by fingerprint: `IW4L_ADMIN_KEYS=<fingerprint>,...` (the
+Helm chart's `adminKeys`). The listen host's own player always is one; with
+no list, no other player is. On the host's console, `admins` shows the list
+and `admins set <fingerprint,...|->` replaces it until the next start.
+
+**Inventories** are kept by key in the world's `players.json`, with the name
+each key last played under and when it was first and last seen. Two players
+with the same name keep separate inventories. An inventory kept by name from
+before player keys is claimed, once, by the first key that joins under that
+name.
+
+**A lost key cannot be recovered**: the file is the only copy. Back up
+`player.key` (it is small; keep it private: anyone with it is you to every
+host). A player who lost theirs gets a new key on the next start; to give
+them back what they had:
+
+- `whoami` on their console prints the new fingerprint; or the host's log
+  shows it on their next join (`player joined: name=… key=…`).
+- On the host's console (the dedicated server's: `IW4L_CONSOLE_STDIN=1`, or
+  an admin's own console, which asks the host), `admin transfer <old
+  fingerprint|player name> <new fingerprint>` moves their kept inventory
+  (and a place on the admin list given at runtime) to the new key. A name
+  works when exactly one key last played under it; otherwise name the old
+  fingerprint (the join lines have it). Neither key may be in the game. It
+  prints `admin-transfer: … result=ok from=… to=… name=… inventory=…`.
+- An admin of a dedicated server who lost their key: put the new fingerprint
+  in `IW4L_ADMIN_KEYS` (the chart's `adminKeys`) and restart, then transfer.
 
 ## Docker
 

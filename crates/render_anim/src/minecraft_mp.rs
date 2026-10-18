@@ -73,6 +73,9 @@ impl NetRole {
 /// One of the host's clients.
 pub(crate) struct Remote {
     pub name: String,
+    /// The player key it proved, which its inventory is kept under; none
+    /// for a guest, whose inventory is not kept.
+    pub key: Option<String>,
     pub inventory: Inventory,
     pub selected: usize,
     /// The crafting table it has open.
@@ -134,12 +137,14 @@ pub(crate) struct Host {
     /// The kept world's directory, when this world is kept.
     pub save: Option<PathBuf>,
     pub log: EditLog,
-    /// Each player's inventory as last saved or left, by name.
-    pub players: BTreeMap<String, InventoryState>,
+    /// Each player as last saved or left, by player key
+    /// (`minecraft_terrain::multiplayer::Players`).
+    pub players: minecraft_terrain::multiplayer::Players,
     /// The clients in the world, by client number.
     pub remotes: BTreeMap<u32, Remote>,
-    /// The host's own name once known, and whether its inventory came back.
-    pub local_name: Option<String>,
+    /// The host's own player key and name once known (its inventory then
+    /// came back); none on a dedicated server.
+    pub local: Option<(String, String)>,
     since_save: f64,
     /// Something changed since the last save.
     pub dirty: bool,
@@ -222,7 +227,7 @@ impl Host {
             log,
             players,
             remotes: BTreeMap::new(),
-            local_name: None,
+            local: None,
             since_save: 0.0,
             dirty: false,
         }
@@ -234,23 +239,31 @@ impl Host {
         self.dirty = true;
     }
 
-    /// The saved inventory of the player called `name`, if any.
-    pub(crate) fn inventory_of(&self, name: &str) -> Option<&InventoryState> {
-        self.players.get(name)
+    /// A player joining with the key `key` under `name`: its kept inventory,
+    /// if any (an inventory kept under its name from before player keys is
+    /// claimed by the first key that joins with the name).
+    pub(crate) fn join(&mut self, key: &str, name: &str) -> Option<InventoryState> {
+        self.dirty = true;
+        self.players.join(key, name, unix_now())
     }
 
     /// Keeps a player's inventory (without its guns, which a match gives
-    /// anew) under its name.
-    pub(crate) fn keep_inventory(&mut self, name: &str, inventory: &Inventory, selected: usize) {
-        if name.is_empty() {
-            return;
-        }
+    /// anew) under its key.
+    pub(crate) fn keep_inventory(&mut self, key: &str, name: &str, inventory: &Inventory, selected: usize) {
         let state =
             InventoryState::capture(inventory, selected).without(|s| s.id.starts_with("iw4:"));
-        if self.players.get(name) != Some(&state) {
-            self.players.insert(name.to_owned(), state);
+        if self.players.keep(key, name, state, unix_now()) {
             self.dirty = true;
         }
+    }
+
+    /// The keys of the players in the game now: a transfer leaves them be.
+    pub(crate) fn keys_in_game(&self) -> Vec<String> {
+        self.local
+            .iter()
+            .map(|(key, _)| key.clone())
+            .chain(self.remotes.values().filter_map(|remote| remote.key.clone()))
+            .collect()
     }
 
     /// Writes the kept world, if this one is kept.
@@ -296,12 +309,14 @@ impl Host {
 impl Remote {
     pub(crate) fn new(
         name: String,
+        key: Option<String>,
         mut inventory: Inventory,
         saved: Option<&InventoryState>,
     ) -> Self {
         let selected = saved.map_or(0, |state| state.restore(&mut inventory));
         Self {
             name,
+            key,
             inventory,
             selected: selected.min(frame::minecraft_ui::MC_HOTBAR - 1),
             table: None,
@@ -673,4 +688,76 @@ pub(crate) fn wire_click(click: &frame::McClick) -> Option<Click> {
         },
         frame::McClick::Close => Click::Close,
     })
+}
+
+/// Now, in Unix seconds, for a player's first and last seen.
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+/// The host's clients whose inventories are kept (not guests): key, name,
+/// inventory and hotbar slot.
+pub(crate) fn kept_remotes(host: &Host) -> Vec<(String, String, Inventory, usize)> {
+    host.remotes
+        .values()
+        .filter_map(|remote| {
+            let key = remote.key.clone()?;
+            Some((key, remote.name.clone(), remote.inventory.clone(), remote.selected))
+        })
+        .collect()
+}
+
+/// An `admin transfer` (the host's console, or an admin's): the record of
+/// `from` (a key, or the name a key last played under) moved to the key
+/// `to`, and `from`'s place on the admin list with it. Neither key may be in
+/// the game. The line it prints: `admin-transfer: label=… result=ok from=…
+/// to=… name=… inventory=… admin=…` or `… result=refused reason="…"`.
+pub(crate) fn admin_transfer(
+    host: &mut Host,
+    admins: Option<&mut net::DebugAdmins>,
+    from: &str,
+    to: &str,
+    label: Option<&str>,
+) -> String {
+    let label = label.unwrap_or("-");
+    let result = (|| {
+        let in_game = host.keys_in_game();
+        if in_game.iter().any(|key| key == to) {
+            return Err("the new key is in the game: transfer once it has left".to_owned());
+        }
+        let old = if minecraft_terrain::multiplayer::is_fingerprint(from) {
+            Some(from.to_owned())
+        } else {
+            match host.players.keys_named(from).as_slice() {
+                [one] => Some(one.clone()),
+                _ => None,
+            }
+        };
+        if old.as_ref().is_some_and(|old| in_game.contains(old)) {
+            return Err("that player is in the game: transfer once it has left".to_owned());
+        }
+        let done = host.players.transfer(from, to, unix_now())?;
+        host.dirty = true;
+        host.save_now();
+        let admin = match (done.from.as_deref(), admins) {
+            (Some(old), Some(admins)) => admins.replace(old, to),
+            _ => false,
+        };
+        Ok(format!(
+            "from={} to={} name=\"{}\" inventory={} admin={admin}",
+            done.from.as_deref().unwrap_or("-"),
+            done.to,
+            done.name,
+            done.inventory
+        ))
+    })();
+    match result {
+        Ok(detail) => format!("admin-transfer: label={label} result=ok {detail}"),
+        Err(reason) => format!(
+            "admin-transfer: label={label} result=refused reason=\"{}\"",
+            reason.replace('"', "'")
+        ),
+    }
 }

@@ -95,6 +95,7 @@ impl Plugin for ConsolePlugin {
             .init_resource::<crate::user_settings::PendingMenuBinding>()
             .init_resource::<crate::user_settings::UserSettingsPersistence>()
             .add_message::<ConsoleCommand>()
+            .add_message::<net::ActionRefused>()
             .add_message::<frame::TestControllerRumble>()
             .add_systems(
                 Startup,
@@ -134,6 +135,11 @@ impl Plugin for ConsolePlugin {
                     .after(InputSystems)
                     .after(InputFocusSystems::Dispatch),
             )
+            // A refused `tp` stops the console waiting for its pose.
+            .add_systems(
+                Update,
+                crate::debug_move::release_refused_move.before(dispatch_console_command),
+            )
             .add_systems(
                 Update,
                 (
@@ -172,6 +178,7 @@ impl Plugin for ConsolePlugin {
                             crate::debug_draw_method::route_debug_draw_method_commands,
                             crate::debug_minecraft::route_debug_minecraft_commands,
                             crate::debug_skate::route_skate_commands,
+                            crate::debug_admins::route_admins_commands,
                         ),
                         crate::debug_view_proj::route_view_proj_commands,
                         (

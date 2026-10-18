@@ -53,6 +53,21 @@ tests:
       - contains: { path: 'spec.template.spec.containers[0].env', content: { name: IW4L_MASTER_PASSWORD, valueFrom: { secretKeyRef: { name: room, key: pw } } } }
       - contains: { path: 'spec.template.spec.containers[0].env', content: { name: IW4L_MINECRAFT_WORLD, value: home } }
 
+  - it: takes debug commands from the player keys it lists, none by default (the first test)
+    set:
+      adminKeys:
+        - 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+        - FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210
+    asserts:
+      - contains: { path: 'spec.template.spec.containers[0].env', content: { name: IW4L_ADMIN_KEYS, value: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef,FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210" } }
+
+  - it: refuses an admin that is not a key fingerprint
+    set:
+      adminKeys: [noah]
+    asserts:
+      - failedTemplate:
+          errorPattern: "adminKeys"
+
   - it: puts extraEnv after the chart's variables, so it can override them
     set:
       extraEnv: [{ name: IW4L_MASTER_SERVER_NAME, value: iw4l-dev }]

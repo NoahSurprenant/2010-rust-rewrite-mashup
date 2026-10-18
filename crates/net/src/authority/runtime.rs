@@ -612,6 +612,38 @@ fn ingress_authority(
     }
 }
 
+/// The host's admin list and what a refusal needs.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct DebugGate<'w> {
+    admins: Option<Res<'w, crate::DebugAdmins>>,
+    identities: Option<Res<'w, crate::PlayerIdentities>>,
+    world: Option<Res<'w, AuthorityWorld>>,
+    notify: Option<ResMut<'w, crate::PendingGameNotify>>,
+}
+
+impl DebugGate<'_> {
+    /// Who the player is (name and key), when it may not run debug commands
+    /// here: its proved key is not on the admin list.
+    fn refuses(&self, client: ClientId) -> Option<String> {
+        let Some(identities) = self.identities.as_deref() else {
+            return Some(format!("client {}", client.0));
+        };
+        if self
+            .admins
+            .as_ref()
+            .is_some_and(|admins| admins.allows(identities, client))
+        {
+            return None;
+        }
+        let name = self
+            .world
+            .as_ref()
+            .map(|world| crate::client_name_string(&world.0, client))
+            .unwrap_or_default();
+        Some(crate::authority::admins::who(identities, &name, client))
+    }
+}
+
 fn gather_authority_input(
     clock: Res<AuthorityClock>,
     mut inbox: ResMut<ClientCommandInbox>,
@@ -626,6 +658,7 @@ fn gather_authority_input(
     mut pending_acks: ResMut<PendingAcks>,
     trace: Option<ResMut<AuthorityPhaseTrace>>,
     dedicated: Option<Res<frame::DedicatedServer>>,
+    mut debug: DebugGate,
 ) {
     push_phase(trace, "Gather");
     backlog
@@ -642,14 +675,33 @@ fn gather_authority_input(
             .map(|client| (client, "ActionQueueOverflow: outcome unknown".to_owned())),
     );
     let mut actions = Vec::new();
-    for (client, action) in action_inbox.gather() {
+    for (client, action, from_peer) in action_inbox.gather() {
         if dedicated.is_some() && local.as_ref().is_some_and(|local| local.0 == client) {
             action_inbox.retire(client, sim::action_request_id(&action));
             continue;
         }
         let request_id = sim::action_request_id(&action);
         match ledger.admit(client, &action) {
-            crate::ActionAdmission::Fresh => actions.push((client, action)),
+            crate::ActionAdmission::Fresh => {
+                // A remote player's debug command needs the admin list; the
+                // host's own console and bots never come from a peer.
+                if from_peer
+                    && let Some(command) = sim::debug_action_name(&action)
+                    && let Some(name) = debug.refuses(client)
+                {
+                    crate::refuse_debug(
+                        &mut reliable,
+                        debug.notify.as_deref_mut(),
+                        client,
+                        &name,
+                        command,
+                    );
+                    ledger.record(client, action, crate::ActionVerdict::Refused);
+                    reliable.push_outcome(client, request_id, crate::ActionVerdict::Refused);
+                    continue;
+                }
+                actions.push((client, action));
+            }
             crate::ActionAdmission::Pending => {}
             crate::ActionAdmission::Repeat(verdict) => {
                 reliable.push_outcome(client, request_id, verdict);
@@ -1149,7 +1201,8 @@ pub fn register_listen_runtime(app: &mut App) {
         .init_resource::<DumpGiveLog>()
         .init_resource::<DumpConfigurationChangeLog>()
         .init_resource::<LastAuthorityRoster>()
-        .init_resource::<PendingConnectionFaults>();
+        .init_resource::<PendingConnectionFaults>()
+        .insert_resource(crate::DebugAdmins::from_env());
     let role = *app.world().resource::<RuntimeRole>();
     if role != RuntimeRole::Dedicated {
         app.add_systems(

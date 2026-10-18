@@ -97,6 +97,9 @@ pub struct MinecraftUi {
     /// Blocks the console asks about, relative to the world's spawn block,
     /// each with its label (`mc block`).
     pub probes: Vec<(String, [i32; 3])>,
+    /// The console's `admin transfer`s: from (a key or a name), to (a key)
+    /// and an optional label.
+    pub transfers: Vec<(String, String, Option<String>)>,
     /// Mobs the console summons: kind and where, in blocks from the
     /// player's feet (`mc summon`).
     pub summon: Vec<(String, [f64; 3])>,

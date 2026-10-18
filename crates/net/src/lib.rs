@@ -1,6 +1,7 @@
 pub mod authority;
 pub mod client;
 pub mod gaps;
+pub mod identity;
 mod observe;
 pub mod plugin;
 pub mod policy;
@@ -21,6 +22,7 @@ pub mod transport;
 pub use authority::actions::{
     ActionAdmission, ActionRequestIds, ClientActionLedger, MAX_REMEMBERED_ACTIONS_PER_CLIENT,
 };
+pub use authority::admins::{ADMINS_ENV, DebugAdmins, refusal_text, refuse_debug};
 pub use authority::inbox::{
     AUTHORITY_HZ, AUTHORITY_MS, ActionEnqueueError, AuthorityClock, ClientActionInbox,
     ClientCommandInbox, GatheredCommands, MAX_PENDING_ACTIONS_PER_CLIENT, MAX_REDUNDANT_CMDS,
@@ -77,16 +79,17 @@ pub use client::proxy::{
 };
 pub use client::realtime::ClientRealtime;
 pub use client::runtime::{
-    ClientClock, ClientCmdTemplate, ClientPhaseTrace, ClientPredictionState, ClientReliableAck,
-    ClockTick, LastAdoptedSnapshot, LocationCursor, PendingClientSends, PendingPelletFx,
-    PendingPresentedEntityEvents, ReceivedTicks, ReliableControlEvent, RemoteProxyState,
-    WeaponSelect, advance_cg_frame_clock, advance_cls_realtime, arm_listen_prediction,
-    cycle_weapon_select, follow_held_weapon_select, listen_prediction_needs_content,
-    predict_local_move, publish_presented, receive_ticks, reconcile_prediction,
-    register_client_runtime, register_listen_prediction_arm, sample_client_input,
-    send_pending_commands,
+    ActionRefused, ClientClock, ClientCmdTemplate, ClientPhaseTrace, ClientPredictionState,
+    ClientReliableAck, ClockTick, LastAdoptedSnapshot, LocationCursor, PendingClientSends,
+    PendingPelletFx, PendingPresentedEntityEvents, ReceivedTicks, ReliableControlEvent,
+    RemoteProxyState, WeaponSelect, advance_cg_frame_clock, advance_cls_realtime,
+    arm_listen_prediction, cycle_weapon_select, follow_held_weapon_select,
+    listen_prediction_needs_content, predict_local_move, publish_presented, receive_ticks,
+    reconcile_prediction, register_client_runtime, register_listen_prediction_arm,
+    sample_client_input, send_pending_commands,
 };
 pub use gaps::{NetGap, NetGapCause, NetIdentityGaps, ScriptNotify};
+pub use identity::{LocalPlayerKey, PlayerIdentities, PlayerIdentity};
 pub use plugin::NetPlugin;
 pub use policy::seat::{
     ActiveKillcams, KillcamSession, SeatSample, apply_seat_to_snapshot, killcam_seconds_to_ms,
@@ -175,4 +178,4 @@ pub use skate::{SkateOutbox, SkaterDownlink, SkaterRelay, SkaterState, SkaterTra
 /// 96: the snapshot's Minecraft mob section carries the level's sounds,
 /// splashes and blasts, arrows and potions in flight, and the player's
 /// status effects.
-pub const PROTOCOL_VERSION: u32 = 96;
+pub const PROTOCOL_VERSION: u32 = 97;

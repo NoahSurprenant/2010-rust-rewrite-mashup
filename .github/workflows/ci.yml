@@ -150,6 +150,12 @@ jobs:
           echo "XDG_CONFIG_HOME=$RUNNER_TEMP/config" >> "$GITHUB_ENV"
       - run: cargo build --profile play -p launcher --bin iw4l
       - run: cargo build --profile play -p approved_tests -p iw4l-master
+      - name: player key and admin unit tests (player_key, net identity and admins, console debug_admins)
+        run: |
+          cargo test --profile play -p player_key
+          cargo test --profile play -p net --lib identity
+          cargo test --profile play -p net --lib admins
+          cargo test --profile play -p console --lib debug_admins
       - name: dedicated_server
         run: scripts/headless-display.sh target/play/approved_tests dedicated_server
       - if: always()

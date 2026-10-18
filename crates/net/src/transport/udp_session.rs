@@ -162,6 +162,9 @@ pub struct UdpAuthorityHub {
 
     /// Skater states from clients (`ClientPacket::Skate`), not yet taken.
     skate_inbound: Vec<(u32, Vec<u8>)>,
+    /// Player key proofs the peers sent since the last call: the member each
+    /// came from, its client and the proof.
+    identity_inbound: Vec<(MemberId, ClientId, player_key::PlayerProof)>,
 }
 
 #[derive(Debug)]
@@ -329,6 +332,7 @@ impl UdpAuthorityHub {
             committed_admissions: Vec::new(),
             denied: HashSet::new(),
             skate_inbound: Vec::new(),
+            identity_inbound: Vec::new(),
         }
     }
 
@@ -372,6 +376,17 @@ impl UdpAuthorityHub {
             .iter()
             .filter(|(_, peer)| peer.admits_gameplay(true))
             .filter_map(|(conn, _)| self.connections.client_of(*conn).map(ClientId))
+            .collect();
+        clients.sort_by_key(|c| c.0);
+        clients
+    }
+
+    /// Every client a peer's connection holds, admitted or still joining.
+    pub fn enrolled_clients(&self) -> Vec<ClientId> {
+        let mut clients: Vec<ClientId> = self
+            .peers
+            .keys()
+            .filter_map(|conn| self.connections.client_of(*conn).map(ClientId))
             .collect();
         clients.sort_by_key(|c| c.0);
         clients
@@ -600,6 +615,17 @@ impl UdpAuthorityHub {
                     };
                     self.skate_inbound.push((client, state));
                 }
+                ClientPacket::Identity { header, proof } => {
+                    // On the control stream only, from the member the
+                    // connection belongs to.
+                    if !control || self.peers.get(&header.connection) != Some(&from) {
+                        continue;
+                    }
+                    let Ok(client) = self.connections.resolve(header.connection, 0) else {
+                        continue;
+                    };
+                    self.identity_inbound.push((from, ClientId(client), proof));
+                }
             }
         }
         Ok(())
@@ -608,6 +634,11 @@ impl UdpAuthorityHub {
     /// Skater states clients sent since the last call, by client.
     pub fn take_skate_inbound(&mut self) -> Vec<(u32, Vec<u8>)> {
         std::mem::take(&mut self.skate_inbound)
+    }
+
+    /// Player key proofs the peers sent since the last call.
+    pub fn take_identity_inbound(&mut self) -> Vec<(MemberId, ClientId, player_key::PlayerProof)> {
+        std::mem::take(&mut self.identity_inbound)
     }
 
     fn apply_admission_acks(&mut self) {
@@ -1362,6 +1393,28 @@ impl UdpClientLink {
             snapshot_seq,
         };
         self.send_bytes(&packet.to_bytes())
+    }
+
+    /// Sends this player's key proof to the host on the control stream; false
+    /// before the host has accepted this client.
+    pub fn send_identity(&mut self, proof: player_key::PlayerProof) -> Result<bool, UdpSendError> {
+        let Some(connection) = self.connection else {
+            return Ok(false);
+        };
+        self.out_seq = self.out_seq.wrapping_add(1);
+        let packet = ClientPacket::Identity {
+            header: PacketHeader {
+                connection,
+                sequence: self.out_seq,
+                ack: self.in_ack,
+                epoch: self.match_epoch(),
+            },
+            proof,
+        };
+        self.relay
+            .push_control_outbound(MemberId([0; 16]), packet.to_bytes())
+            .map_err(relay_send_error)?;
+        Ok(true)
     }
 
     /// Sends this client's skater state (`crate::skate::SkaterState` bytes)

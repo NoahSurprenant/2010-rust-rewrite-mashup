@@ -42,6 +42,14 @@ Controller
   On the Minecraft map:   RT mine, LT place, D-pad left/right hotbar,
                           Y swaps the first two hotbar slots
 
+Your player key
+  player.key in the iw4l-artifacts folder is who you are to every server:
+  your inventory there is kept by it, and admins are listed by it. Type
+  whoami in the console (the key under Esc) to see its fingerprint, which a
+  server owner needs to make you an admin. Back the file up and keep it
+  private: it cannot be recovered, and anyone with it is you. Lost it? A
+  server's admin can move what you had to your new key (admin transfer).
+
 Start over
   Delete the .env file next to iw4l.exe and run it again.
   The Skate 3 data it extracted is in the skate-data folder.

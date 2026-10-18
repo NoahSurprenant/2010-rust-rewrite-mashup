@@ -53,6 +53,14 @@ room:
     existingSecret: ""
     key: password
 
+# The players allowed debug commands on the server (IW4L_ADMIN_KEYS): `mc give`, `mc clear`,
+# `mc fill`, `mc set`, `mc summon`, `give`, `tp`, `kill`, `damage`, `admin transfer` and the like. By
+# player key: each game keeps a key pair in player.key beside its settings.cfg and proves it on
+# joining; its fingerprint (64 hex digits) is what the console's `whoami` prints, and what the
+# server logs on every join (`player joined: name=... key=...`). Empty: no player may; a refused
+# command is logged and the player told. docs/DEDICATED.md, "Player keys and admins".
+adminKeys: []
+
 # The Minecraft map's kept world.
 minecraft:
   # IW4L_MINECRAFT_WORLD: the world's name, a folder of /data/minecraft-worlds. Empty: the game's,

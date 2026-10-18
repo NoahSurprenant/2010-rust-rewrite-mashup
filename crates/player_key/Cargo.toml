@@ -1,0 +1,13 @@
+[package]
+name = "player_key"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "A player's key: an Ed25519 key pair each game keeps, whose fingerprint is the player's identity on a host."
+
+[dependencies]
+ring = "0.17"
+sha2.workspace = true
+
+[lints]
+workspace = true

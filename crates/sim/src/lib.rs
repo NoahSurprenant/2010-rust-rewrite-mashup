@@ -92,7 +92,7 @@ pub use identities::{
 pub use input::{
     ActionRequestId, ClassId, ClientAction, MENU_RESPONSE_BYTES, MINECRAFT_INTENT_BYTES,
     MinecraftIntent, SpawnPick, TickInput,
-    action_request_id, menu_response_field, menu_response_text,
+    action_request_id, debug_action_name, menu_response_field, menu_response_text,
 };
 pub use mantle_xanim::MantleXAnimBind;
 pub use match_state::{

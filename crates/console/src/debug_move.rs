@@ -47,6 +47,9 @@ pub(crate) fn spawn_showpos_hud(commands: &mut Commands, font: Handle<Font>) {
 
 pub(crate) fn register_debug_move_commands(registry: &mut ConsoleRegistry) {
     registry.register(crate::CommandSpec::new("skate").usage(crate::debug_skate::USAGE));
+    registry.register(crate::CommandSpec::new("admins").usage(crate::debug_admins::ADMINS_USAGE));
+    registry.register(crate::CommandSpec::new("admin").usage(crate::debug_admins::ADMIN_USAGE));
+    registry.register(crate::CommandSpec::new("whoami").usage(crate::debug_admins::WHOAMI_USAGE));
     if registry.resolve("showpos").is_none() {
         registry.register(
             crate::CommandSpec::new("showpos")
@@ -809,4 +812,21 @@ pub(crate) fn update_skate_overlay(mode:Res<frame::SkateMode>,mut hud:Query<(&mu
         else if mode.controller.is_none() {"SKATE | Connect a controller | J: return to MW2".into()}
         else {"SKATE | Original controller controls | Start: pause | J: return to MW2".into()};
     }
+}
+
+/// A `move` (`tp`) the host refused never reaches its pose: the console
+/// stops waiting for it rather than hold its queue until the timeout.
+pub(crate) fn release_refused_move(
+    mut refused: MessageReader<net::ActionRefused>,
+    mut dispatch: ResMut<ConsoleDispatch>,
+    mut console: ResMut<ConsoleState>,
+    settings: Res<ConsoleSettings>,
+) {
+    if refused.read().count() == 0 || dispatch.wait_move.is_none() {
+        return;
+    }
+    dispatch.wait_move = None;
+    let msg = "move: refused by the host".to_owned();
+    diag::info!(Console, "{msg}");
+    console.echo(msg, settings.log_capacity);
 }

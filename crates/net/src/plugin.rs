@@ -105,6 +105,7 @@ impl Plugin for NetPlugin {
                     .after(frame::SessionSwapApplied),
             );
         }
+        crate::identity::register(app, self.role);
         crate::observe::register(app);
         app.insert_resource(crate::DeferHostWorldReady::from_env())
             .insert_resource(crate::DeferBootstrapApplied::from_env());

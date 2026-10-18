@@ -580,6 +580,10 @@ pub(crate) struct MinecraftNet<'w, 's> {
     bridge: Option<Res<'w, net::MasterBridge>>,
     identity: Option<Res<'w, frame::LaunchIdentity>>,
     dedicated: Option<Res<'w, frame::DedicatedServer>>,
+    admins: Option<ResMut<'w, net::DebugAdmins>>,
+    notify: Option<ResMut<'w, net::PendingGameNotify>>,
+    identities: Option<Res<'w, net::PlayerIdentities>>,
+    local_key: Option<Res<'w, net::LocalPlayerKey>>,
 }
 
 /// A console block box as world blocks: corners relative to `base`.
@@ -1062,15 +1066,20 @@ fn update(
     // what they ask.
     if let (NetRole::Host(host), Some(authority)) = (&mut *net_role, authority.as_mut()) {
         let authority = &mut authority.0;
-        if host.local_name.is_none() {
+        // The host's own player, by its own key (a dedicated server has
+        // neither).
+        if host.local.is_none()
+            && !dedicated
+            && let Some(key) = net.local_key.as_ref().map(|key| key.0.fingerprint())
+        {
             let name = net::client_name_string(authority, local.0);
             if !name.is_empty() {
-                if let (Some(state), Some(entities)) = (host.inventory_of(&name), entities.as_mut()) {
+                if let (Some(state), Some(entities)) = (host.join(&key, &name), entities.as_mut()) {
                     let selected = state.restore(&mut entities.inventory);
                     entities.selected = selected.min(frame::minecraft_ui::MC_HOTBAR - 1);
                     diag::info!(World, "Minecraft: the inventory of `{name}` restored");
                 }
-                host.local_name = Some(name);
+                host.local = Some((key, name));
             }
         }
         let clients: Vec<u32> = net
@@ -1097,8 +1106,13 @@ fn update(
                         entities.unload_chunk(minecraftoss_core::ChunkPos::new(pos.0, pos.1));
                     }
                 }
-                host.keep_inventory(&remote.name, &remote.inventory, remote.selected);
-                diag::info!(World, "Minecraft: `{}` left; inventory kept", remote.name);
+                match remote.key.as_deref() {
+                    Some(key) => {
+                        host.keep_inventory(key, &remote.name, &remote.inventory, remote.selected);
+                        diag::info!(World, "Minecraft: `{}` left; inventory kept", remote.name);
+                    }
+                    None => diag::info!(World, "Minecraft: `{}` (a guest) left; nothing kept", remote.name),
+                }
                 host.save_now();
             }
         }
@@ -1111,9 +1125,16 @@ fn update(
                 if name.is_empty() {
                     continue;
                 }
+                // Its key decides its inventory: none until its proof is in.
+                let key = match net.identities.as_ref().map(|ids| ids.of(sim::ClientId(id))) {
+                    Some(net::PlayerIdentity::Key(key)) => Some(key),
+                    Some(net::PlayerIdentity::Guest) => None,
+                    Some(net::PlayerIdentity::Pending) | None => continue,
+                };
+                let saved = key.as_deref().and_then(|key| host.join(key, &name));
                 let mut inventory = minecraftoss_player::inventory::Inventory::default();
                 inventory.recipes = entities.inventory.recipes.clone();
-                let remote = crate::minecraft_mp::Remote::new(name.clone(), inventory, host.inventory_of(&name));
+                let remote = crate::minecraft_mp::Remote::new(name.clone(), key, inventory, saved.as_ref());
                 diag::info!(
                     World,
                     "Minecraft: `{name}` joined as client {id}; {} block changes to send",
@@ -1269,6 +1290,7 @@ fn update(
             }
         }
         let cheats = authority.cheats_enabled();
+        let mut transfers = Vec::new();
         for (client, request_id, bytes) in sim::voxel::take_intents() {
             let Some(remote) = host.remotes.get_mut(&client) else {
                 continue;
@@ -1281,6 +1303,29 @@ fn update(
                     continue;
                 }
             };
+            // The console's cheats only from the host's admins. A refused
+            // one still counts as applied, so the client takes back the
+            // inventory it predicted.
+            if let Some(command) = intent.debug_name() {
+                if !cheats {
+                    continue;
+                }
+                let allowed = match (net.admins.as_ref(), net.identities.as_ref()) {
+                    (Some(admins), Some(identities)) => admins.allows(identities, sim::ClientId(client)),
+                    _ => false,
+                };
+                if !allowed {
+                    let name = net::client_name_string(authority, sim::ClientId(client));
+                    let who = net.identities.as_ref().map_or_else(
+                        || name.clone(),
+                        |identities| net::authority::admins::who(identities, &name, sim::ClientId(client)),
+                    );
+                    if let Some(reliable) = net.reliable.as_mut() {
+                        net::refuse_debug(reliable, net.notify.as_deref_mut(), sim::ClientId(client), &who, command);
+                    }
+                    continue;
+                }
+            }
             let Some(their) = authority.player(sim::ClientId(client)).copied() else {
                 continue;
             };
@@ -1411,12 +1456,28 @@ fn update(
                         entities.summon(&kind, at);
                     }
                 }
+                // An admin's `admin transfer`, done once the intents are.
+                Intent::Transfer { from, to } => transfers.push((client, from, to)),
                 Intent::Give { .. } | Intent::Clear | Intent::Fill { .. } | Intent::Summon { .. } => {}
             }
             thrown.extend(remote.inventory.take_pending_drops());
             let thrown = crate::minecraft_inventory::keep_guns(&mut remote.inventory, thrown, remote.selected);
             if let Some(entities) = entities.as_mut() {
                 crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
+            }
+        }
+        for (client, from, to) in transfers {
+            let from = match from {
+                minecraft_terrain::multiplayer::TransferFrom::Key(key) => minecraft_terrain::multiplayer::fingerprint_hex(&key),
+                minecraft_terrain::multiplayer::TransferFrom::Name(name) => name,
+            };
+            let to = minecraft_terrain::multiplayer::fingerprint_hex(&to);
+            let line = crate::minecraft_mp::admin_transfer(host, net.admins.as_deref_mut(), &from, &to, None);
+            diag::info!(World, "{line} (asked by client {client})");
+            println!("{line}");
+            if let (Some(reliable), Some(notify)) = (net.reliable.as_mut(), net.notify.as_mut()) {
+                let row = notify.plain_print(format!("{}{line}", sim::HUD_STRING_PLAIN));
+                reliable.queue_mut(sim::ClientId(client)).push(net::ReliableRow::Notify(row));
             }
         }
         // Who picks items up this tick besides the host's own player.
@@ -2091,16 +2152,11 @@ fn update(
             let block = minecraft_terrain::scene::Scene::block(&world.scene, pos).map(block_text);
             host.record(pos, block);
         }
-        if let (Some(entities), Some(name)) = (entities.as_ref(), host.local_name.clone()) {
-            host.keep_inventory(&name, &entities.inventory, entities.selected);
+        if let (Some(entities), Some((key, name))) = (entities.as_ref(), host.local.clone()) {
+            host.keep_inventory(&key, &name, &entities.inventory, entities.selected);
         }
-        let remotes: Vec<(String, minecraftoss_player::inventory::Inventory, usize)> = host
-            .remotes
-            .values()
-            .map(|remote| (remote.name.clone(), remote.inventory.clone(), remote.selected))
-            .collect();
-        for (name, inventory, selected) in remotes {
-            host.keep_inventory(&name, &inventory, selected);
+        for (key, name, inventory, selected) in crate::minecraft_mp::kept_remotes(host) {
+            host.keep_inventory(&key, &name, &inventory, selected);
         }
         if let Some(reliable) = net.reliable.as_mut() {
             let items = entities
@@ -2139,6 +2195,29 @@ fn update(
             }
         }
         host.autosave(dt);
+    }
+    // The console's `admin transfer`: done here on a host, asked of the host
+    // on a client (which it does for an admin only).
+    for (from, to, label) in std::mem::take(&mut ui.transfers) {
+        let label_text = label.clone().unwrap_or_else(|| "-".to_owned());
+        let line = match &mut *net_role {
+            NetRole::Host(host) => crate::minecraft_mp::admin_transfer(host, net.admins.as_deref_mut(), &from, &to, label.as_deref()),
+            NetRole::Client(client) => {
+                let from_wire = match minecraft_terrain::multiplayer::fingerprint_bytes(&from) {
+                    Some(key) => minecraft_terrain::multiplayer::TransferFrom::Key(key),
+                    None => minecraft_terrain::multiplayer::TransferFrom::Name(from.clone()),
+                };
+                match minecraft_terrain::multiplayer::fingerprint_bytes(&to) {
+                    Some(to) if client.send(net.inbox.as_deref_mut(), net.ids.as_deref_mut(), local.0, &Intent::Transfer { from: from_wire, to }) => {
+                        format!("admin-transfer: label={label_text} result=asked")
+                    }
+                    _ => format!("admin-transfer: label={label_text} result=refused reason=\"not sent\""),
+                }
+            }
+            NetRole::None => format!("admin-transfer: label={label_text} result=refused reason=\"no Minecraft world here\""),
+        };
+        diag::info!(Console, "{line}");
+        println!("{line}");
     }
     // The console's block probes, from the world's spawn block.
     for (label, at) in std::mem::take(&mut ui.probes) {
@@ -2463,12 +2542,11 @@ fn keep_world(runtime: &mut Runtime) {
     if runtime.world.is_none() {
         return;
     }
-    if let (Some(entities), Some(name)) = (runtime.entities.as_ref(), host.local_name.clone()) {
-        host.keep_inventory(&name, &entities.inventory, entities.selected);
+    if let (Some(entities), Some((key, name))) = (runtime.entities.as_ref(), host.local.clone()) {
+        host.keep_inventory(&key, &name, &entities.inventory, entities.selected);
     }
-    let remotes: Vec<_> = host.remotes.values().map(|r| (r.name.clone(), r.inventory.clone(), r.selected)).collect();
-    for (name, inventory, selected) in remotes {
-        host.keep_inventory(&name, &inventory, selected);
+    for (key, name, inventory, selected) in crate::minecraft_mp::kept_remotes(host) {
+        host.keep_inventory(&key, &name, &inventory, selected);
     }
     host.save_now();
 }

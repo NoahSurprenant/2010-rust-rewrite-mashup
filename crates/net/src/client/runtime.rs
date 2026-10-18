@@ -577,6 +577,14 @@ pub fn reconcile_prediction(
 #[derive(bevy::prelude::Message, Clone, Copy, Debug)]
 pub struct ReliableControlEvent(pub sim::SimEvent);
 
+/// The host refused one of this game's actions (a debug command from a
+/// player not on its admin list, a give it could not make): whatever waits
+/// on its effect stops waiting.
+#[derive(bevy::prelude::Message, Clone, Copy, Debug)]
+pub struct ActionRefused {
+    pub request_id: sim::ActionRequestId,
+}
+
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct SvcFrameWriters<'w> {
     sound: MessageWriter<'w, crate::SvcLocalSound>,
@@ -593,6 +601,7 @@ pub struct ReliableInbound<'w> {
     ack: ResMut<'w, ClientReliableAck>,
     events: MessageWriter<'w, ReliableControlEvent>,
     svc: SvcFrameWriters<'w>,
+    refused: MessageWriter<'w, ActionRefused>,
     scores: ResMut<'w, crate::Scoreboard>,
     signon: ResMut<'w, crate::SignonState>,
     minecraft: ResMut<'w, crate::MinecraftDownlink>,
@@ -682,7 +691,13 @@ impl ReliableInbound<'_> {
                             self.fail("ActionOutcomeUnknown: request expired");
                             return;
                         }
-                        crate::ActionVerdict::Applied | crate::ActionVerdict::Refused => {}
+                        crate::ActionVerdict::Refused => {
+                            diag::info!(Net, "the host refused action request {request_id}");
+                            self.refused.write(ActionRefused {
+                                request_id: *request_id,
+                            });
+                        }
+                        crate::ActionVerdict::Applied => {}
                     }
                     self.actions.retire(local, *request_id);
                 }
@@ -1924,6 +1939,7 @@ pub fn register_client_runtime(app: &mut App) {
         .init_resource::<ClientReliableAck>()
         .init_resource::<GameplaySendPacer>()
         .add_message::<ReliableControlEvent>()
+        .add_message::<ActionRefused>()
         .add_message::<frame::MatchInstalled>()
         .add_message::<frame::MatchTornDown>()
         .init_resource::<RemoteProxyState>()
@@ -1985,7 +2001,27 @@ pub fn register_client_runtime(app: &mut App) {
                 .in_set(ClientSet::Present)
                 .after(publish_presented),
         ),
+    )
+    .add_systems(
+        Update,
+        log_host_messages
+            .in_set(ClientSet::Receive)
+            .after(receive_ticks),
     );
+}
+
+/// What a host says to this player in plain text (a refused debug command,
+/// say), on stdout as `host-message: <text>` beside its HUD line.
+fn log_host_messages(mut notifies: MessageReader<crate::SvcGameNotify>) {
+    for cmd in notifies.read() {
+        if cmd.tag != crate::SVC_PRINT {
+            continue;
+        }
+        if let Some(text) = cmd.key.strip_prefix(sim::HUD_STRING_PLAIN) {
+            diag::info!(Net, "host message: {text}");
+            println!("host-message: {text}");
+        }
+    }
 }
 
 pub fn register_listen_prediction_arm(app: &mut App) {
