@@ -806,6 +806,33 @@ pub(crate) fn route(
             dvars.set(&format!("ui_browser_{row}_{key}"), value);
         }
     }
+    // The focused room's whole name, which its cell may cut.
+    let focused = services
+        .menus
+        .as_ref()
+        .and_then(|menus| menus.focused_item_in("find_lobbies"))
+        .and_then(|index| catalog.as_ref()?.get("find_lobbies")?.items.get(index))
+        .and_then(|item| item.name.strip_prefix("row"))
+        .and_then(|row| row.parse::<usize>().ok())
+        .and_then(|row| state.adverts.get(row));
+    dvars.set(
+        "ui_browser_subtitle",
+        browser_subtitle(focused.map(|advert| advert.name.as_str())),
+    );
+}
+
+/// The browser's line over its list: the focused room's host in full (a
+/// dedicated server's room name, up to 48 bytes), or what the list is.
+fn browser_subtitle(host: Option<&str>) -> String {
+    match host {
+        Some(host) => format!(
+            "Host: {}",
+            host.chars()
+                .filter(|ch| !ch.is_control())
+                .collect::<String>()
+        ),
+        None => "Join a player-hosted lobby".into(),
+    }
 }
 
 fn browser_cell(text: &str, limit: usize) -> String {
@@ -836,4 +863,19 @@ fn map_pages(maps: &ui::MenuMapList) -> Vec<(usize, usize, String)> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod browser_tests {
+    use super::*;
+
+    #[test]
+    fn the_focused_room_s_host_shows_in_full_over_the_list() {
+        let name = "Home Minecraft: survival, mobs on, be nice";
+        assert_eq!(browser_subtitle(Some(name)), format!("Host: {name}"));
+        // The cell cuts it.
+        assert_eq!(browser_cell(name, 22), "Home Minecraft: sur...");
+        assert_eq!(browser_subtitle(Some("a\u{7}b")), "Host: ab");
+        assert_eq!(browser_subtitle(None), "Join a player-hosted lobby");
+    }
 }

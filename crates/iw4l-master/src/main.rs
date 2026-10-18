@@ -1534,7 +1534,7 @@ fn normalize_player_name(name: &str) -> String {
         .trim()
         .chars()
         .filter(|c| !c.is_control())
-        .take(16)
+        .take(master_protocol::MAX_KEPT_PLAYER_NAME_CHARS)
         .collect();
     if name.is_empty() {
         "Player".into()

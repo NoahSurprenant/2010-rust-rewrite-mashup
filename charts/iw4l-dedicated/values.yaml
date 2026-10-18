@@ -41,8 +41,9 @@ master:
 
 # The room, as players see it in the menu's server browser.
 room:
-  # IW4L_MASTER_HOST_NAME: at most 48 bytes; the browser shows the first 16 characters, so keep
-  # what tells rooms apart within them. Empty: the game's, "Dedicated server".
+  # IW4L_MASTER_HOST_NAME: at most 48 bytes, listed whole (with a master built from this release
+  # or later; older ones cut it to 16 characters). The browser's column shows 22 characters and the
+  # line above the list the focused room's whole name. Empty: the game's, "Dedicated server".
   name: ""
   # IW4L_MASTER_MAX_PLAYERS: the room's capacity, 2 to 18, the server's own slot included. 0: the
   # game's, 18.

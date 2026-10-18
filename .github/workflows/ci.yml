@@ -30,6 +30,8 @@ jobs:
       - run: cargo test -p minecraft_terrain --lib icon
       # The update manifest a GitHub release publishes and the launcher reads.
       - run: cargo test -p updater
+      # How the master lists a room (a dedicated server by its whole name).
+      - run: cargo test -p master_protocol
 
   # The approved crafting_table scenario plays the real game on the
   # Minecraft map, so it needs the owner's MW2 files, which only the
