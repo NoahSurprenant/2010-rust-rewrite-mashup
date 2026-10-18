@@ -91,6 +91,30 @@ fn set(at: [i32; 3], block: &str) -> String {
     )
 }
 
+/// `mc set` lines for a closed stone room from the block `feet` along +X,
+/// three blocks long, three wide and two high inside, its far wall the
+/// stone the client places against: the client walks and places on no block
+/// of the seed's, and no sand, gravel, water or lava gets in.
+fn corridor(feet: [i32; 3]) -> String {
+    let [x, y, z] = feet;
+    let fill = |from: [i32; 3], to: [i32; 3], block: &str| {
+        format!(
+            "mc set {} {} {} {} {} {} {block}",
+            from[0], from[1], from[2], to[0], to[1], to[2]
+        )
+    };
+    [
+        fill([x - 1, y - 1, z - 2], [x + 4, y - 1, z + 2], "stone"),
+        fill([x - 1, y + 2, z - 2], [x + 4, y + 2, z + 2], "stone"),
+        fill([x - 1, y, z - 2], [x + 4, y + 1, z - 2], "stone"),
+        fill([x - 1, y, z + 2], [x + 4, y + 1, z + 2], "stone"),
+        fill([x - 1, y, z - 1], [x - 1, y + 1, z + 1], "stone"),
+        fill([x + 3, y, z - 1], [x + 4, y + 1, z + 1], "stone"),
+        fill([x, y, z - 1], [x + 2, y + 1, z + 1], "air"),
+    ]
+    .join("; ")
+}
+
 /// The first session: the lobby is up and the match started; everything
 /// both games are asked, in order. Stops at the first step that cannot go
 /// on (a missing answer); the judge says what failed.
@@ -128,25 +152,10 @@ pub fn first_session(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     // The client places planks by hand against a stone three blocks along
     // +X from its feet, with planks its host gave it.
     let feet = feet(&client).ok_or("c_ready has no feet")?;
-    let stone = add(feet, [3, 0, 0]);
     let plank = add(feet, [2, 0, 0]);
-    // A stone floor under the way to the plank, so the client walks onto its
-    // drop rather than off whatever ground the seed gave it.
     let script = format!(
-        "{}; mc set {} {} {} {} {} {} stone; mc set {} {} {} {} {} {} air; mc clear; mc give oak_planks 4; wait 2s; mc state c_given",
-        set(stone, "stone"),
-        feet[0],
-        feet[1] - 1,
-        feet[2],
-        feet[0] + 3,
-        feet[1] - 1,
-        feet[2],
-        feet[0] + 1,
-        feet[1],
-        feet[2],
-        feet[0] + 2,
-        feet[1] + 1,
-        feet[2]
+        "{}; mc clear; mc give oak_planks 4; wait 2s; mc state c_given",
+        corridor(feet)
     );
     let given = pair.ask(true, &script, "c_given", step)?;
     let given = facts.keep("c_given", given);

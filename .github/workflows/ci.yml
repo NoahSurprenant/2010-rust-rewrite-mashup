@@ -110,6 +110,10 @@ jobs:
           echo "XDG_CONFIG_HOME=$RUNNER_TEMP/config" >> "$GITHUB_ENV"
       - run: cargo build --profile play -p launcher --bin iw4l
       - run: cargo build --profile play -p approved_tests -p iw4l-master
+      # The host's command inbox: a client whose clock runs ahead of a host
+      # that lost time is taken a command a tick, not retired.
+      - name: net inbox unit tests
+        run: cargo test --profile play -p net --lib authority::inbox
       - name: minecraft_multiplayer
         run: scripts/headless-display.sh target/play/approved_tests minecraft_multiplayer
       - if: always()

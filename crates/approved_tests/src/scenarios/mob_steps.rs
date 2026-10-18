@@ -634,12 +634,50 @@ pub fn beyond_the_gun(
         )?;
         notes.insert("witch_killed", shot.killed.to_string());
     }
-    // Where the host's mobs live around the client.
-    let range = pair.ask(false, "mc mobrange s_range", "s_range", step)?;
+    // Where the host's mobs live around the client. Natural spawning there
+    // is the seed's ground and chance, so each side is asked until a mob
+    // lives beyond 48 blocks of the client.
+    let range = until_one(
+        pair,
+        false,
+        "mc mobrange s_range",
+        "s_range",
+        "band48_128",
+        step,
+    )?;
     lines.insert("s_range".into(), range);
-    let far_mobs = census(pair, true, "c_far_mobs", None)?;
+    let far_mobs = until_one(pair, true, "mc mobs c_far_mobs", "c_far_mobs", "far", step)?;
     lines.insert("c_far_mobs".into(), far_mobs);
     Ok(())
+}
+
+/// How long `beyond_the_gun` asks for mobs far from the client.
+pub const RANGE_SECS: u64 = 90;
+
+/// Asks `script` for the line `label` until its `key` counts one or more or
+/// `RANGE_SECS` pass: the last answer either way.
+fn until_one(
+    pair: &mut Pair,
+    client: bool,
+    script: &str,
+    label: &str,
+    key: &str,
+    step: Duration,
+) -> Result<Event, String> {
+    let start = Instant::now();
+    loop {
+        let answer = pair.ask(client, script, label, step)?;
+        if number(&answer, key).is_some_and(|n| n >= 1.0)
+            || start.elapsed() > Duration::from_secs(RANGE_SECS)
+        {
+            return Ok(answer);
+        }
+        let pause = Instant::now();
+        while pause.elapsed() < Duration::from_secs(2) {
+            pair.sample();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
 }
 
 /// What `beyond_the_gun` must show, checkpoint by checkpoint.

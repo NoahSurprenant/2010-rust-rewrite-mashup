@@ -41,6 +41,13 @@ pub const MAX_COMMAND_STALL_MS: i32 = 1000;
 
 pub const MAX_COMMANDS_PER_PEER_PER_FRAME: usize = 32;
 
+/// How long the next command in sequence may wait only because it is dated
+/// after this authority's clock before it is taken anyway, one a tick, at the
+/// authority's time. A peer's clock runs ahead when this authority lost time
+/// (a frame longer than the fixed step catches up): the peer cannot step its
+/// clock back, and its commands would otherwise wait until the stall faults it.
+pub const FUTURE_HEAD_REBASE_MS: i32 = 250;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputBacklogFault {
     QueueCount { queued: usize },
@@ -108,6 +115,8 @@ pub struct ClientCommandInbox {
     last_acked_seq: HashMap<ClientId, u32>,
 
     blocked_head: HashMap<ClientId, (CmdSeq, i32)>,
+
+    rebasing: std::collections::HashSet<ClientId>,
 }
 
 impl ClientCommandInbox {
@@ -160,6 +169,7 @@ impl ClientCommandInbox {
         self.last_consumed.clear();
         self.last_acked_seq.clear();
         self.blocked_head.clear();
+        self.rebasing.clear();
     }
 
     pub fn retire_client(&mut self, id: ClientId) {
@@ -167,6 +177,7 @@ impl ClientCommandInbox {
         self.last_consumed.remove(&id);
         self.last_acked_seq.remove(&id);
         self.blocked_head.remove(&id);
+        self.rebasing.remove(&id);
     }
 
     pub fn pending(&self, id: ClientId) -> usize {
@@ -261,6 +272,11 @@ impl ClientCommandInbox {
                 .copied()
                 .unwrap_or(0)
                 .wrapping_add(1);
+            let mut rebase = self.rebasing.contains(&id)
+                || self.blocked_head.get(&id).is_some_and(|&(head, since)| {
+                    head.0 == expected && time_ms.saturating_sub(since) >= FUTURE_HEAD_REBASE_MS
+                });
+            let mut rebased = false;
             let take = self
                 .queued
                 .get(&id)
@@ -269,8 +285,15 @@ impl ClientCommandInbox {
                         .iter()
                         .take_while(|(seq, cmd, _)| {
                             if let Some(seq) = seq {
-                                if seq.0 != expected || cmd.server_time > time_ms {
+                                if seq.0 != expected {
                                     return false;
+                                }
+                                if cmd.server_time > time_ms {
+                                    if !rebase {
+                                        return false;
+                                    }
+                                    rebase = false;
+                                    rebased = true;
                                 }
                                 expected = expected.wrapping_add(1);
                             }
@@ -306,11 +329,17 @@ impl ClientCommandInbox {
                 }
                 continue;
             }
+            let caught_up = self.queued.get(&id).is_none_or(VecDeque::is_empty);
+            if rebased && !caught_up {
+                self.rebasing.insert(id);
+            } else if caught_up || drained.iter().any(|(seq, _, _)| seq.is_some()) {
+                self.rebasing.remove(&id);
+            }
             self.blocked_head.remove(&id);
             let mut ack = None;
             for (seq, mut cmd, sample) in drained {
                 cmd.server_time = if seq.is_some() {
-                    cmd.server_time
+                    cmd.server_time.min(time_ms)
                 } else {
                     time_ms
                 };
@@ -511,4 +540,111 @@ pub fn run_fixed_authority_stream(
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PEER: ClientId = ClientId(1);
+
+    fn cmd(server_time: i32) -> UserCmd {
+        UserCmd {
+            server_time,
+            ..UserCmd::default()
+        }
+    }
+
+    /// One authority tick: the commands it took for `PEER` and any fault.
+    fn tick(inbox: &mut ClientCommandInbox, time_ms: i32) -> (Vec<i32>, Vec<InputBacklogFault>) {
+        let out = inbox.take_for_tick(time_ms);
+        let taken = out
+            .cmds
+            .iter()
+            .filter(|(id, _)| *id == PEER)
+            .map(|(_, cmd)| cmd.server_time)
+            .collect();
+        let faults = out.backlog_faults.iter().map(|(_, f)| *f).collect();
+        (taken, faults)
+    }
+
+    #[test]
+    fn a_peer_whose_clock_runs_ahead_is_taken_a_command_a_tick_not_retired() {
+        let mut inbox = ClientCommandInbox::default();
+        let ahead = 1500;
+        let mut taken_per_tick = Vec::new();
+        for n in 1..=120u32 {
+            let time_ms = n as i32 * AUTHORITY_MS;
+            inbox.push(PEER, Some(CmdSeq(n)), cmd(time_ms + ahead), None);
+            let (taken, faults) = tick(&mut inbox, time_ms);
+            assert!(faults.is_empty(), "tick {n}: {faults:?}");
+            assert!(taken.iter().all(|&t| t <= time_ms), "tick {n}: {taken:?}");
+            taken_per_tick.push(taken.len());
+        }
+        let waited = taken_per_tick.iter().take_while(|&&n| n == 0).count() as i32;
+        assert!(waited * AUTHORITY_MS <= FUTURE_HEAD_REBASE_MS + AUTHORITY_MS);
+        assert!(taken_per_tick[waited as usize..].iter().all(|&n| n == 1));
+        assert!(inbox.pending(PEER) <= (waited + 1) as usize);
+        assert_eq!(
+            inbox.last_acked_seq(PEER),
+            Some(CmdSeq(120 - waited as u32))
+        );
+    }
+
+    #[test]
+    fn a_command_dated_a_tick_ahead_waits_for_its_tick() {
+        let mut inbox = ClientCommandInbox::default();
+        inbox.push(PEER, Some(CmdSeq(1)), cmd(100), None);
+        assert_eq!(tick(&mut inbox, 100).0, vec![100]);
+        inbox.push(PEER, Some(CmdSeq(2)), cmd(150), None);
+        assert!(tick(&mut inbox, 100).0.iter().all(|&t| t != 150));
+        assert_eq!(tick(&mut inbox, 150).0, vec![150]);
+    }
+
+    #[test]
+    fn once_the_peer_s_clock_is_back_its_commands_wait_for_their_tick_again() {
+        let mut inbox = ClientCommandInbox::default();
+        let mut seq = 0;
+        let mut time_ms = 0;
+        for _ in 0..20 {
+            time_ms += AUTHORITY_MS;
+            seq += 1;
+            inbox.push(PEER, Some(CmdSeq(seq)), cmd(time_ms + 1000), None);
+            tick(&mut inbox, time_ms);
+        }
+        // The peer's clock holds while the authority's catches up with it.
+        for _ in 0..40 {
+            time_ms += AUTHORITY_MS;
+            assert!(tick(&mut inbox, time_ms).1.is_empty());
+        }
+        assert_eq!(inbox.pending(PEER), 0);
+        time_ms += AUTHORITY_MS;
+        seq = inbox.last_acked_seq(PEER).map_or(0, |s| s.0) + 1;
+        inbox.push(PEER, Some(CmdSeq(seq)), cmd(time_ms + AUTHORITY_MS), None);
+        assert!(
+            tick(&mut inbox, time_ms)
+                .0
+                .iter()
+                .all(|&t| t != time_ms + AUTHORITY_MS)
+        );
+        assert_eq!(
+            tick(&mut inbox, time_ms + AUTHORITY_MS).0,
+            vec![time_ms + AUTHORITY_MS]
+        );
+    }
+
+    #[test]
+    fn a_command_that_never_comes_still_retires_the_peer() {
+        let mut inbox = ClientCommandInbox::default();
+        let mut faults = Vec::new();
+        for n in 2..=40u32 {
+            let time_ms = n as i32 * AUTHORITY_MS;
+            inbox.push(PEER, Some(CmdSeq(n)), cmd(time_ms), None);
+            faults.extend(tick(&mut inbox, time_ms).1);
+            if !faults.is_empty() {
+                break;
+            }
+        }
+        assert!(!faults.is_empty());
+    }
 }
