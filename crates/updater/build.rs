@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=IW4L_UPDATER_CA_CERT");
+    // The update URL a release build names for itself (src/main.rs).
+    println!("cargo:rerun-if-env-changed=IW4L_DEFAULT_UPDATE_URL");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
     let ca_out = out.join("iw4l-ca.pem");
     match std::env::var_os("IW4L_UPDATER_CA_CERT") {

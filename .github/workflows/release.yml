@@ -7,11 +7,17 @@ name: Release
 # is always the newest build.
 #
 # Nothing here needs a secret or a server. The archive is upstream's
-# layout: iw4l.exe, the Skate 3 converter, licences, README.txt. No .env,
-# update URL, master address or CA ships: iw4l.exe writes .env itself on
-# first launch (crates/launcher/src/first_run.rs) and plays offline.
-# iw4launcher (the updater) is not built; without an update server of our
-# own it has nothing to fetch.
+# layout: iw4l.exe, the Skate 3 converter, licences, README.txt, plus
+# iw4launcher.exe. No .env, master address or CA ships: iw4l.exe writes .env
+# itself on first launch (crates/launcher/src/first_run.rs).
+#
+# Updates: both executables are built with this repository's newest release
+# as their update URL (IW4L_DEFAULT_UPDATE_URL). iw4l.exe hands its start to
+# iw4launcher.exe, which reads releases/latest/download/manifest.json (each
+# file by SHA-256 and size, written and checked by iw4l-update-manifest),
+# fetches what differs from GitHub over the public web PKI, checks it, and
+# starts the game. Each release publishes manifest.json, iw4l.exe.zst and
+# iw4launcher.exe beside the zip. docs/WINDOWS.md.
 on:
   push:
     branches: [main]
@@ -42,6 +48,10 @@ jobs:
     env:
       TARGET: x86_64-pc-windows-msvc
       IW4L_GIT_HASH: ${{ github.sha }}
+      # The update URL both executables name for themselves (crates/updater),
+      # for main's releases only: a pull request's build would replace itself
+      # with the newest release.
+      IW4L_DEFAULT_UPDATE_URL: ${{ github.event_name != 'pull_request' && format('{0}/{1}/releases/latest/download', github.server_url, github.repository) || '' }}
     steps:
       - uses: actions/checkout@v5
       - name: Toolchain
@@ -65,7 +75,7 @@ jobs:
         with:
           shared-key: windows-play
           cache-on-failure: true
-      - run: cargo xwin build --profile play --locked --target "$TARGET" -p launcher --bin iw4l
+      - run: cargo xwin build --profile play --locked --target "$TARGET" -p launcher --bin iw4l -p updater --bin iw4launcher
       - if: always() && steps.xwin.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
@@ -83,7 +93,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: iw4l-exe
-          path: target/x86_64-pc-windows-msvc/play/iw4l.exe
+          path: |
+            target/x86_64-pc-windows-msvc/play/iw4l.exe
+            target/x86_64-pc-windows-msvc/play/iw4launcher.exe
           if-no-files-found: error
           retention-days: 3
 
@@ -153,11 +165,29 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: update-manifest
+      # The update a release publishes beside the zip: the game zstd-packed,
+      # the launcher, and the manifest naming each by hash, checked as the
+      # launcher checks it (crates/updater, iw4l-update-manifest).
+      - name: Update manifest
+        run: |
+          mkdir -p update
+          cp artifacts/iw4l-exe/iw4l.exe artifacts/iw4l-exe/iw4launcher.exe update/
+          zstd -q -19 -T0 update/iw4l.exe -o update/iw4l.exe.zst
+          cargo run -q --locked -p updater --bin iw4l-update-manifest -- write \
+            --git "$GITHUB_SHA" --build "$GITHUB_RUN_NUMBER" --dir update --out update/manifest.json
+          cargo run -q --locked -p updater --bin iw4l-update-manifest -- check --dir update update/manifest.json
+          cat update/manifest.json
+          rm update/iw4l.exe
+          ls -l update
       - name: Assemble
         run: |
           dir="$RUNNER_TEMP/$PACKAGE"
           mkdir -p "$dir/skate/licenses"
           cp artifacts/iw4l-exe/iw4l.exe "$dir/"
+          cp artifacts/iw4l-exe/iw4launcher.exe "$dir/"
           cp artifacts/skate-converter/iw4l-skate-convert.exe "$dir/skate/"
           cp artifacts/skate-converter/licenses/*.txt "$dir/skate/licenses/"
           # xtask/src/release.rs LEGAL_FILES: iw4l.exe has both fonts compiled in.
@@ -176,6 +206,7 @@ jobs:
           $PACKAGE/OFL-Oxanium.txt
           $PACKAGE/README.txt
           $PACKAGE/iw4l.exe
+          $PACKAGE/iw4launcher.exe
           $PACKAGE/skate/iw4l-skate-convert.exe
           $PACKAGE/skate/licenses/CustomEngineLayer.txt
           $PACKAGE/skate/licenses/NumPy.txt
@@ -190,6 +221,12 @@ jobs:
         with:
           name: windows-zip
           path: release/${{ env.PACKAGE }}-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: update
+          path: update/
           if-no-files-found: error
           retention-days: 7
 
@@ -209,6 +246,10 @@ jobs:
         with:
           name: windows-zip
           path: release
+      - uses: actions/download-artifact@v4
+        with:
+          name: update
+          path: update
       - name: Publish
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -228,12 +269,13 @@ jobs:
                 --jq '"- \(.commit.message | split("\n")[0]) (\(.sha[0:7]))"'
             fi
             echo
-            echo "**Setup**: extract the zip into its own folder (not Program Files) and run \`iw4l.exe\`. Updating? Extract over your old folder to keep your setup and settings. No game files are included; see the [README](https://github.com/$GH_REPO#readme)."
+            echo "**Setup**: extract the zip into its own folder (not Program Files) and run \`iw4l.exe\`. It updates itself: each start fetches the newest build (checked by SHA-256) before playing, and \`IW4L_UPDATE=0\` in \`.env\` turns that off. A folder without \`iw4launcher.exe\` (an older build) does not: extract this zip over it once (your setup and settings stay). No game files are included; see the [README](https://github.com/$GH_REPO#readme)."
             echo
             echo "Build: $RUN_URL"
             echo
             echo "SHA-256 \`$(sha256sum "$zip" | cut -d' ' -f1)\`"
           } > notes.md
           cat notes.md
-          gh release create "$tag" "$zip" --target "$GITHUB_SHA" --latest \
+          gh release create "$tag" "$zip" update/manifest.json update/iw4l.exe.zst update/iw4launcher.exe \
+            --target "$GITHUB_SHA" --latest \
             --title "Build $GITHUB_RUN_NUMBER (${GITHUB_SHA:0:7})" --notes-file notes.md

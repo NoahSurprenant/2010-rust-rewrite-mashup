@@ -3,11 +3,16 @@ name = "updater"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "Small HTTPS updater that installs and launches the Windows game binary."
+description = "Small HTTPS updater that installs and launches the Windows game binary, and the manifest it reads."
 
 [[bin]]
 name = "iw4launcher"
 path = "src/main.rs"
+
+# Writes and checks the manifest a GitHub release publishes (release.yml).
+[[bin]]
+name = "iw4l-update-manifest"
+path = "src/bin/update_manifest.rs"
 
 [dependencies]
 rustls = { version = "0.23.31", default-features = false, features = ["ring", "std"] }
@@ -17,6 +22,9 @@ serde_json.workspace = true
 sha2.workspace = true
 zstd = { version = "0.13", default-features = false }
 dotenvy.workspace = true
+master_protocol.workspace = true
+# The public web PKI, for a launcher built without a CA of its own (GitHub).
+webpki-root-certs = "1"
 
 [lints]
 workspace = true
