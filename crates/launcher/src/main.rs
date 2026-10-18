@@ -17,6 +17,7 @@ fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(windows)]
     {
+        hand_to_launcher(&args);
         // Also for a shortcut that names a map, so it works on first launch.
         first_run::prepare().unwrap_or_else(|e| first_run::fail(&e));
         if args.is_empty() {
@@ -29,6 +30,42 @@ fn main() {
         bootstrap::parse_cli(args.into_iter()).unwrap_or_else(|e| diag::exit_launch_error(&e));
     let games = games_root_from_env().unwrap_or_else(|e| diag::exit_launch_error(&e));
     bootstrap::launch(games, artifacts, mode, acceptance);
+}
+
+/// A release build that updates itself (this fork's, built with
+/// `IW4L_DEFAULT_UPDATE_URL`) starts through `iw4launcher.exe` beside it,
+/// which fetches a newer build first and starts this one again with the same
+/// arguments (`IW4L_LAUNCHER=1`). `IW4L_UPDATE=0`, or no launcher beside
+/// it, starts the game here.
+#[cfg(windows)]
+fn hand_to_launcher(args: &[String]) {
+    if option_env!("IW4L_DEFAULT_UPDATE_URL").is_none_or(|url| url.trim().is_empty())
+        || std::env::var_os("IW4L_LAUNCHER").is_some()
+        || std::env::var("IW4L_UPDATE").is_ok_and(|value| {
+            let value = value.trim();
+            value.is_empty() || value == "0" || value.eq_ignore_ascii_case("false")
+        })
+    {
+        return;
+    }
+    let Ok(dir) = std::env::current_dir() else {
+        return;
+    };
+    let launcher = dir.join("iw4launcher.exe");
+    if !launcher.is_file() {
+        return;
+    }
+    match std::process::Command::new(&launcher)
+        .args(args)
+        .current_dir(&dir)
+        .spawn()
+    {
+        Ok(_) => std::process::exit(0),
+        Err(error) => eprintln!(
+            "[iw4l] could not start {}: {error}; starting here",
+            launcher.display()
+        ),
+    }
 }
 
 fn prepare_process_root() -> Result<(), String> {

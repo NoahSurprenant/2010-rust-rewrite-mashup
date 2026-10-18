@@ -28,6 +28,8 @@ jobs:
       - run: cargo test -p minecraft_terrain --lib mob_sync
       # Inventory icons, the `minecraft:special` ones (chests, heads) included.
       - run: cargo test -p minecraft_terrain --lib icon
+      # The update manifest a GitHub release publishes and the launcher reads.
+      - run: cargo test -p updater
 
   # The approved crafting_table scenario plays the real game on the
   # Minecraft map, so it needs the owner's MW2 files, which only the

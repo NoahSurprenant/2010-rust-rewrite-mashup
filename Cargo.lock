@@ -6686,11 +6686,13 @@ name = "updater"
 version = "0.1.0"
 dependencies = [
  "dotenvy",
+ "master_protocol",
  "rustls",
  "rustls-pemfile",
  "serde",
  "serde_json",
  "sha2",
+ "webpki-root-certs",
  "zstd",
 ]
 

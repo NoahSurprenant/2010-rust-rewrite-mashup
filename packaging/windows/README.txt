@@ -42,6 +42,12 @@ Controller
   On the Minecraft map:   RT mine, LT place, D-pad left/right hotbar,
                           Y swaps the first two hotbar slots
 
+Updates
+  iw4l.exe updates itself: each start checks this fork's newest release on
+  GitHub and fetches what changed (iw4launcher.exe does it, then starts the
+  game; every file is checked by its SHA-256). Offline, the build you have
+  plays. To turn it off, add the line IW4L_UPDATE=0 to the .env file.
+
 Your player key
   player.key in the iw4l-artifacts folder is who you are to every server:
   your inventory there is kept by it, and admins are listed by it. Type
