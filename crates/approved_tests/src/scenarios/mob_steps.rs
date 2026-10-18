@@ -363,9 +363,10 @@ pub fn number(event: &Event, key: &str) -> Option<f64> {
 }
 
 /// The map point (36 units a block) over the middle of the block `at` (from
-/// the world's spawn block), a little above its top.
+/// the world's spawn block), a little above its top: map origin is the
+/// middle of the spawn block.
 pub fn block_centre_map(at: [i32; 3]) -> [i32; 3] {
-    [at[0] * 36 + 18, -(at[2] * 36 + 18), (at[1] + 1) * 36 + 18]
+    [at[0] * 36, -at[2] * 36, (at[1] + 1) * 36 + 18]
 }
 
 /// `mc set` lines for a pen two blocks along +X from the block `feet` (from
@@ -571,8 +572,14 @@ pub fn beyond_the_gun(
     lines.insert("h_knifed".into(), blows.host);
     notes.insert("knife_killed", blows.killed.to_string());
     notes.insert("knife_blows", blows.blows.to_string());
-    // A pig in a pen beside the client, and its fists.
-    let feet = [far[0], far[1] + 1, far[2]];
+    // A pig in a pen beside the client, back in the middle, and its fists.
+    pair.client
+        .as_mut()
+        .ok_or("no client")?
+        .send(&format!("tp {x} {y} {z}; wait 3s"))?;
+    let here = census(pair, true, "c_centre", Some("-"))?;
+    let eye = eye(&here).ok_or("no eye in `c_centre`")?;
+    let feet = [eye[0].floor() as i32, far[1] + 1, eye[2].floor() as i32];
     let state = pair.ask(
         true,
         &format!("{}; wait 2s; mc state c_hand", pen(feet)),
@@ -584,12 +591,16 @@ pub fn beyond_the_gun(
         .copied()
         .ok_or("no empty hotbar slot on the client")?;
     lines.insert("c_hand".into(), state);
-    pair.client
-        .as_mut()
-        .ok_or("no client")?
-        .send("mc summon pig 2 0 0")?;
+    let cell = [f64::from(feet[0] + 2) + 0.5, f64::from(feet[2]) + 0.5];
+    pair.client.as_mut().ok_or("no client")?.send(&format!(
+        "mc summon pig {:.2} 0 {:.2}",
+        cell[0] - eye[0],
+        cell[1] - eye[2]
+    ))?;
     let (seen, pig) = poll(pair, true, "c_pen_pig", Some("pig"), see, |event, mob| {
-        summoned(event, mob) && (mob.at[0] - f64::from(far[0] + 2)).abs() < 1.0
+        summoned(event, mob)
+            && (mob.at[0] - cell[0]).abs() < 0.6
+            && (mob.at[2] - cell[1]).abs() < 0.6
     })?;
     lines.insert("c_pen_pig".into(), seen);
     let pig = pig.ok_or("the client never saw the pig in its pen")?;
@@ -930,7 +941,7 @@ mod tests {
             lines,
             "mc set 321 61 -1 323 62 1 stone; mc set 322 61 0 322 62 0 air"
         );
-        assert_eq!(block_centre_map([320, 60, 0]), [11538, -18, 2214]);
+        assert_eq!(block_centre_map([320, 60, 0]), [11520, 0, 2214]);
     }
 
     #[test]
