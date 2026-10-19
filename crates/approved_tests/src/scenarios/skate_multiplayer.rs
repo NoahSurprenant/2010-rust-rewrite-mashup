@@ -1,16 +1,4 @@
-//! `skate    let at = Instant::now();
-    pair.until("pushing", Duration::from_secs(PUSH_SECS + 5), |_| {
-        at.elapsed() >= Duration::from_secs(PUSH_SECS)
-    })?;
-    let mut event = state(pair, client, pushing)?;
-    while number(&event, "sent") < PUSH_STATES && at.elapsed() < Duration::from_secs(PUSH_MAX_SECS) {
-        let pause = Instant::now();
-        pair.until("pushing on", Duration::from_secs(5), |_| {
-            pause.elapsed() >= Duration::from_secs(2)
-        })?;
-        event = state(pair, client, pushing)?;
-    }
-    Ok(facts.keep(pushing, event))multiplayer` — owner-approved. This file is the one place its
+//! `skate_multiplayer` — owner-approved. This file is the one place its
 //! steps and what each checkpoint must show live.
 //!
 //! Skating with other players on the Minecraft map, through a master of the
