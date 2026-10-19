@@ -108,30 +108,20 @@ pub fn apart(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 /// Summons `kind` through the host at `offset` (blocks from the client's
 /// feet, `"dx dy dz"`) and asks the client until it sees it there
-/// (`summoned`). A dedicated server sometimes loses a summon: the mob is in
-/// its world for a moment and then gone, and the client never sees it
-/// (runs 39235178267, 39240931444, 39252005739; an open gap). So the summon
-/// is made again, three times at most, each given a third of `see`; how
-/// many it took is returned for the run's record.
+/// (`summoned`), or `see` passes. Once: a summon the client never sees is a
+/// failure, not a retry.
 pub fn summon_seen(
     pair: &mut Pair,
     kind: &str,
     offset: &str,
     label: &str,
     see: Duration,
-) -> Result<(Event, Option<Mob>, u32), String> {
-    let mut summons = 0;
-    loop {
-        summons += 1;
-        pair.client
-            .as_mut()
-            .ok_or("no client")?
-            .send(&format!("mc summon {kind} {offset}"))?;
-        let (seen, mob) = poll(pair, true, label, Some(kind), see / 3, summoned)?;
-        if mob.is_some() || summons == 3 {
-            return Ok((seen, mob, summons));
-        }
-    }
+) -> Result<(Event, Option<Mob>), String> {
+    pair.client
+        .as_mut()
+        .ok_or("no client")?
+        .send(&format!("mc summon {kind} {offset}"))?;
+    poll(pair, true, label, Some(kind), see, summoned)
 }
 
 /// Asks the host until the arena around `centre` has its floor at its four
@@ -509,9 +499,7 @@ pub fn knife(
 /// The client punches the mob `id` with an empty hand (hotbar `slot`, from
 /// 1): it looks at the mob's `middle` and clicks, a blow every 0.7 s (past
 /// the mob's half second of invulnerability), until the host sees it die
-/// or `timeout` passes. A mob knocked out of its pen and out of a fist's
-/// reach (runs 39228628595 and 39252005739: the pig left it with 1-2
-/// health) is followed: the client stands on the block beside it.
+/// or `timeout` passes.
 pub fn punch(
     pair: &mut Pair,
     kind: &str,
@@ -532,27 +520,16 @@ pub fn punch(
             eye(&seen),
             mobs(&seen).into_iter().find(|m| m.id == id && !m.dead),
         ) {
-            let target = [mob.at[0], mob.at[1] + middle, mob.at[2]];
-            if apart(eye, target) > 2.8 {
-                // The block under the mob, one along -X: stand there.
-                let under = mob.at.map(|v| v.floor() as i32);
-                let [x, y, z] = block_centre_map([under[0] - 1, under[1] - 1, under[2]]);
-                pair.client
-                    .as_mut()
-                    .ok_or("no client")?
-                    .send(&format!("tp {x} {y} {z}; wait 2s"))?;
-            } else {
-                let (yaw, pitch) = aim(eye, target);
-                pair.ask(
-                    true,
-                    &format!(
-                        "look {yaw:.2} {pitch:.2}; wait 0.1s; key mouse1 0; wait 0.6s; mc mobs c_punched {kind}"
-                    ),
-                    "c_punched",
-                    Duration::from_secs(60),
-                )?;
-                blows += 1;
-            }
+            let (yaw, pitch) = aim(eye, [mob.at[0], mob.at[1] + middle, mob.at[2]]);
+            pair.ask(
+                true,
+                &format!(
+                    "look {yaw:.2} {pitch:.2}; wait 0.1s; key mouse1 0; wait 0.6s; mc mobs c_punched {kind}"
+                ),
+                "c_punched",
+                Duration::from_secs(60),
+            )?;
+            blows += 1;
         }
         let (host, killed) = host_saw_death(pair, kind, id)?;
         if killed || start.elapsed() > timeout {
@@ -685,8 +662,7 @@ pub fn beyond_the_gun(
     notes.insert("punch_killed", blows.killed.to_string());
     notes.insert("punch_blows", blows.blows.to_string());
     // A witch across the arena: its potion and the effect.
-    let (_, _, summons) = summon_seen(pair, "witch", "-3 0 -3", "c_witch_seen", see)?;
-    notes.insert("witch_summons", summons.to_string());
+    summon_seen(pair, "witch", "-3 0 -3", "c_witch_seen", see)?;
     let potion = poll_potion(pair, "c_witch", Duration::from_secs(WITCH_SECS))?;
     lines.insert("c_witch".into(), potion.clone());
     draw_gun(pair)?;

@@ -388,8 +388,7 @@ pub fn mob_visit(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     mob_steps::draw_gun(pair)?;
     mob_steps::arena_floor(pair, FAR, Duration::from_secs(mob_steps::SEE_SECS))?;
     let see = Duration::from_secs(mob_steps::SEE_SECS);
-    let (seen, husk, summons) = mob_steps::summon_seen(pair, "husk", "3 0 0", "c_husk", see)?;
-    facts.notes.insert("husk_summons", summons.to_string());
+    let (seen, husk) = mob_steps::summon_seen(pair, "husk", "3 0 0", "c_husk", see)?;
     facts.keep("c_husk", seen);
     let husk = husk.ok_or("the client never saw the husk")?;
     facts.notes.insert("husk_id", husk.id.to_string());
