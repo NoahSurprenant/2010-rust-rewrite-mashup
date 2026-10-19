@@ -8,6 +8,7 @@ mod master_pin;
 mod report;
 mod runner;
 mod scenario;
+mod world;
 mod scenarios {
     pub mod crafting_table;
     pub mod dedicated_server;
@@ -37,7 +38,12 @@ enum CacheMode {
 
 struct Args {
     scenario: String,
+    /// `--seed N`: the scenario seed of heavy_gameplay_lifecycle (a u64),
+    /// or the Minecraft world seed of the scenarios on the Minecraft map.
     seed: Option<u64>,
+    mc_seed: Option<i64>,
+    /// `--spawn "x y z"`: where a Minecraft world's first player stands.
+    spawn: Option<String>,
     replay: Option<PathBuf>,
     cache: CacheMode,
     bin: PathBuf,
@@ -53,7 +59,7 @@ fn main() {
             eprintln!("{message}");
             eprintln!(
                 "usage: approved_tests heavy_gameplay_lifecycle [--seed N | --replay run.json] \
-                 [--cache cold|shared] [--bin path]\n       approved_tests crafting_table [--cache cold|shared] [--bin path]\n       approved_tests minecraft_multiplayer [--part world|mobs] [--cache cold|shared] [--bin path]\n       approved_tests dedicated_server [--part visits|mobs] [--cache cold|shared] [--bin path]\n       approved_tests skate_multiplayer [--part listen|dedicated] [--cache cold|shared] [--bin path]"
+                 [--cache cold|shared] [--bin path]\n       approved_tests crafting_table [WORLD] [--cache cold|shared] [--bin path]\n       approved_tests minecraft_multiplayer [--part world|mobs] [WORLD] [--cache cold|shared] [--bin path]\n       approved_tests dedicated_server [--part visits|mobs] [WORLD] [--cache cold|shared] [--bin path]\n       approved_tests skate_multiplayer [--part listen|dedicated] [WORLD] [--cache cold|shared] [--bin path]\n  WORLD: [--seed N [--spawn \"x y z\"] | --replay run.json], the Minecraft world (default: seed 12345 at its fixed spawn)"
             );
             std::process::exit(2);
         }
@@ -110,6 +116,8 @@ fn parse_args(root: &Path) -> Result<Args, String> {
     let mut args = Args {
         scenario,
         seed: None,
+        mc_seed: None,
+        spawn: None,
         replay: None,
         cache: CacheMode::Cold,
         bin: root.join("target/play/iw4l"),
@@ -120,11 +128,13 @@ fn parse_args(root: &Path) -> Result<Args, String> {
         match flag.as_str() {
             "--seed" => {
                 let raw = value()?;
-                args.seed = Some(
-                    raw.parse()
-                        .map_err(|_| format!("--seed {raw}: not a u64"))?,
-                );
+                args.seed = raw.parse().ok();
+                args.mc_seed = raw.parse().ok();
+                if args.seed.is_none() && args.mc_seed.is_none() {
+                    return Err(format!("--seed {raw}: not a number"));
+                }
             }
+            "--spawn" => args.spawn = Some(value()?),
             "--replay" => args.replay = Some(PathBuf::from(value()?)),
             "--cache" => {
                 args.cache = match value()?.as_str() {
@@ -138,7 +148,8 @@ fn parse_args(root: &Path) -> Result<Args, String> {
             other => return Err(format!("unknown flag {other}")),
         }
     }
-    if args.seed.is_some() && args.replay.is_some() {
+    let picked = args.seed.is_some() || args.mc_seed.is_some() || args.spawn.is_some();
+    if picked && args.replay.is_some() {
         return Err("--seed and --replay are exclusive: a replay keeps its own".into());
     }
     Ok(args)
@@ -235,6 +246,11 @@ fn resolve_scenes(
 fn run(root: &Path, args: &Args) -> Result<bool, String> {
     asset_transport::load_dotenv();
     scenario::Part::of(&[], args.part.as_deref())?;
+    if args.spawn.is_some() || (args.mc_seed.is_some() && args.seed.is_none()) {
+        return Err(
+            "heavy_gameplay_lifecycle: --seed is a u64, and it has no Minecraft spawn".into(),
+        );
+    }
     let replay = args.replay.as_deref().map(read_replay).transpose()?;
     let seed = replay
         .as_ref()
@@ -375,12 +391,18 @@ fn run(root: &Path, args: &Args) -> Result<bool, String> {
     Ok(passed)
 }
 
+/// The Minecraft world a scenario on the Minecraft map plays (`world`).
+fn minecraft_world(args: &Args) -> Result<world::World, String> {
+    if args.seed.is_some() && args.mc_seed.is_none() {
+        return Err("--seed: a Minecraft seed is an i64".into());
+    }
+    world::World::from_args(args.mc_seed, args.spawn.as_deref(), args.replay.as_deref())
+}
+
 fn run_crafting_table(root: &Path, args: &Args) -> Result<bool, String> {
     asset_transport::load_dotenv();
     scenario::Part::of(&[], args.part.as_deref())?;
-    if args.seed.is_some() || args.replay.is_some() {
-        return Err("crafting_table runs at its fixed world seed: no --seed or --replay".into());
-    }
+    let world = minecraft_world(args)?;
     if !args.bin.is_file() {
         return Err(format!(
             "{} is not built (make approved builds it)",
@@ -413,7 +435,7 @@ fn run_crafting_table(root: &Path, args: &Args) -> Result<bool, String> {
         "platform": report::platform_facts(),
         "content": { "games_root": games.0.display().to_string(), "mw2_installed": mw2_installed },
         "map": crafting_table::MAP,
-        "minecraft_seed": crafting_table::SEED,
+        "minecraft_world": world.facts(false),
         "timeouts_secs": { "phase": crafting_table::PHASE_TIMEOUT_SECS, "quit": crafting_table::QUIT_TIMEOUT_SECS },
         "script": script,
     });
@@ -439,7 +461,7 @@ fn run_crafting_table(root: &Path, args: &Args) -> Result<bool, String> {
         bin: &bin,
         cwd: &run_dir,
         args: child_args,
-        env: vec![("IW4L_MINECRAFT_SEED", crafting_table::SEED.into())],
+        env: world.env(false),
         phase_timeout: Duration::from_secs(crafting_table::PHASE_TIMEOUT_SECS),
         quit_timeout: Duration::from_secs(crafting_table::QUIT_TIMEOUT_SECS),
     });
@@ -575,11 +597,9 @@ fn close_duo(pair: &mut duo::Pair) -> Result<(), String> {
 fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
     asset_transport::load_dotenv();
     let part = scenario::Part::of(minecraft_multiplayer::PARTS, args.part.as_deref())?;
-    if args.seed.is_some() || args.replay.is_some() {
-        return Err(
-            "minecraft_multiplayer takes no --seed or --replay: the host picks the seed".into(),
-        );
-    }
+    let world = minecraft_world(args)?;
+    // Mobs only for the part that checks them.
+    let mobs = part.plays(minecraft_multiplayer::MOBS);
     let master_bin = args
         .bin
         .with_file_name(format!("iw4l-master{}", std::env::consts::EXE_SUFFIX));
@@ -613,6 +633,7 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
         "platform": report::platform_facts(),
         "content": { "games_root": games.0.display().to_string(), "mw2_installed": mw2_installed },
         "map": minecraft_multiplayer::MAP,
+        "minecraft_world": world.facts(mobs),
         "view_distance": std::env::var("IW4L_MINECRAFT_VIEW_DISTANCE").ok(),
     });
     if !mw2_installed {
@@ -656,7 +677,7 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
         &[1]
     };
     for &session in sessions {
-        let mut pair = match open_duo(&bin, &master, &dirs, session, &[]) {
+        let mut pair = match open_duo(&bin, &master, &dirs, session, &world.env(mobs)) {
             Ok(pair) => pair,
             Err(e) => {
                 failure = Some(format!("session {session}: {e}"));
@@ -742,12 +763,15 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
 /// The dedicated server's two lives, each with the client's visits, every
 /// step in `dedicated_server`. Rosters and memory peaks are kept even when
 /// a step fails.
+/// `world`: the settings of the world the server makes.
+#[allow(clippy::too_many_arguments)]
 fn dedicated_sessions(
     bin: &Path,
     master_bin: &Path,
     master: &duo::Master,
     dirs: &[PathBuf; 2],
     part: scenario::Part,
+    world: &[(&'static str, String)],
     facts: &mut dedicated_server::Facts,
     peaks: &mut Vec<Value>,
 ) -> Result<(), String> {
@@ -760,6 +784,7 @@ fn dedicated_sessions(
     let mut server_env = env.to_vec();
     server_env.push(("IW4L_MASTER_HOST_NAME", ds::ROOM.to_owned()));
     server_env.push(duo::admins_env());
+    server_env.extend(world.iter().cloned());
     server_env.push((
         "IW4L_MINECRAFT_WORLDS",
         dirs[0].join("minecraft-worlds").display().to_string(),
@@ -850,11 +875,9 @@ fn dedicated_sessions(
 fn run_dedicated_server(root: &Path, args: &Args) -> Result<bool, String> {
     asset_transport::load_dotenv();
     let part = scenario::Part::of(dedicated_server::PARTS, args.part.as_deref())?;
-    if args.seed.is_some() || args.replay.is_some() {
-        return Err(
-            "dedicated_server takes no --seed or --replay: the server picks the seed".into(),
-        );
-    }
+    let world = minecraft_world(args)?;
+    // Mobs only for the part that checks them.
+    let mobs = part.plays(dedicated_server::MOBS);
     let master_bin = args
         .bin
         .with_file_name(format!("iw4l-master{}", std::env::consts::EXE_SUFFIX));
@@ -884,6 +907,7 @@ fn run_dedicated_server(root: &Path, args: &Args) -> Result<bool, String> {
         "platform": report::platform_facts(),
         "content": { "games_root": games.0.display().to_string(), "mw2_installed": mw2_installed },
         "map": dedicated_server::MAP,
+        "minecraft_world": world.facts(mobs),
     });
     if !mw2_installed {
         manifest["result"] = "blocked".into();
@@ -924,6 +948,7 @@ fn run_dedicated_server(root: &Path, args: &Args) -> Result<bool, String> {
         &master,
         &dirs,
         part,
+        &world.env(mobs),
         &mut facts,
         &mut peaks,
     )
@@ -1004,12 +1029,15 @@ fn run_dedicated_server(root: &Path, args: &Args) -> Result<bool, String> {
 /// `skate_multiplayer`'s two rooms: a listen host and its client, then a
 /// dedicated server and a client. Memory peaks are kept even when a step
 /// fails.
+/// `world`: the settings of the world each host makes.
+#[allow(clippy::too_many_arguments)]
 fn skate_sessions(
     bin: &Path,
     master: &duo::Master,
     dirs: &[PathBuf; 3],
     skate_assets: &str,
     part: scenario::Part,
+    world: &[(&'static str, String)],
     facts: &mut skate_multiplayer::Facts,
     peaks: &mut Vec<Value>,
 ) -> Result<(), String> {
@@ -1018,7 +1046,9 @@ fn skate_sessions(
     let skate = [("IW4L_SKATE_ASSETS", skate_assets.to_owned())];
     if part.plays(sk::LISTEN) {
         let listen_dirs = [dirs[0].clone(), dirs[1].clone()];
-        let mut pair = open_duo(bin, master, &listen_dirs, 1, &skate)?;
+        let mut listen_env = skate.to_vec();
+        listen_env.extend(world.iter().cloned());
+        let mut pair = open_duo(bin, master, &listen_dirs, 1, &listen_env)?;
         let played = sk::listen_session(&mut pair, facts);
         let closed = close_duo(&mut pair);
         peaks.push(json!({
@@ -1043,6 +1073,7 @@ fn skate_sessions(
     let mut server_env = env.to_vec();
     server_env.push(("IW4L_MASTER_HOST_NAME", sk::ROOM.to_owned()));
     server_env.push(duo::admins_env());
+    server_env.extend(world.iter().cloned());
     server_env.push((
         "IW4L_MINECRAFT_WORLDS",
         dirs[2].join("minecraft-worlds").display().to_string(),
@@ -1096,9 +1127,7 @@ fn skate_sessions(
 fn run_skate_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
     asset_transport::load_dotenv();
     let part = scenario::Part::of(skate_multiplayer::PARTS, args.part.as_deref())?;
-    if args.seed.is_some() || args.replay.is_some() {
-        return Err("skate_multiplayer takes no --seed or --replay".into());
-    }
+    let world = minecraft_world(args)?;
     let master_bin = args
         .bin
         .with_file_name(format!("iw4l-master{}", std::env::consts::EXE_SUFFIX));
@@ -1136,6 +1165,7 @@ fn run_skate_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
             "skate_assets": skate_assets.is_some(),
         },
         "map": skate_multiplayer::MAP,
+        "minecraft_world": world.facts(false),
     });
     let Some(skate_assets) = skate_assets.filter(|_| mw2_installed) else {
         manifest["result"] = "blocked".into();
@@ -1180,6 +1210,7 @@ fn run_skate_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
         &dirs,
         &skate_assets,
         part,
+        &world.env(false),
         &mut facts,
         &mut peaks,
     )

@@ -187,6 +187,8 @@ impl Player {
             .env_remove("IW4L_MASTER_JOIN")
             .env_remove("IW4L_MASTER_HOST_NAME")
             .env_remove("IW4L_MINECRAFT_SEED")
+            .env_remove("IW4L_MINECRAFT_SPAWN")
+            .env_remove("IW4L_MINECRAFT_MOBS")
             .env_remove("IW4L_MINECRAFT_WORLD")
             .env_remove("IW4L_MINECRAFT_WORLDS")
             // No admins but where a scenario names them; each game's own key.

@@ -40,6 +40,13 @@ and on SIGTERM. Terrain is generated around each connected player, and the
 world's spawn and the first player's surroundings run the mobs and items.
 Minecraft's files are fetched from Mojang with `curl` on the first start into
 `iw4l-artifacts/minecraft-26.3` in the working directory.
+For tests, the world takes settings from the environment:
+`IW4L_MINECRAFT_SEED` (an i64; random when unset), `IW4L_MINECRAFT_SPAWN="x y
+z"` (the first player's feet in Minecraft block coordinates, where the map's
+origin sits, instead of vanilla's spot picked at random near the world spawn)
+and `IW4L_MINECRAFT_MOBS=off` (no natural spawning and no creatures from chunk
+generation: only summoned mobs, in any world). A kept world keeps its
+seed and spawn. The approved scenarios set all three (`crates/approved_tests/README.md`).
 
 ## Player keys and admins
 

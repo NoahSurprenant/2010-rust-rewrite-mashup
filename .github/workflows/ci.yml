@@ -93,6 +93,9 @@ jobs:
       # ahead of a long edit log.
       - name: Minecraft host stream unit tests (render_anim minecraft_mp)
         run: cargo test --profile play -p render_anim --lib minecraft_mp
+      # The Minecraft map's test settings (IW4L_MINECRAFT_SPAWN, IW4L_MINECRAFT_MOBS).
+      - name: Minecraft test settings unit tests (render_anim minecraft_settings)
+        run: cargo test --profile play -p render_anim --lib minecraft_settings
       - name: player key and admin unit tests (player_key, net identity and admins, console debug_admins)
         run: |
           cargo test --profile play -p player_key

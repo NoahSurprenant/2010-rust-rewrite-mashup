@@ -16,7 +16,6 @@ use crate::runner::Event;
 
 pub const NAME: &str = "crafting_table";
 pub const MAP: &str = "minecraft:overworld";
-pub const SEED: &str = "12345";
 pub const PHASE_TIMEOUT_SECS: u64 = 600;
 pub const QUIT_TIMEOUT_SECS: u64 = 60;
 

@@ -261,7 +261,11 @@ fn load(seed: i64, world: Option<std::path::PathBuf>, origin: Option<[f64; 3]>, 
     if !draws {
         stream.without_drawing();
     }
-    let origin = origin.unwrap_or({
+    let origin = origin.unwrap_or_else(|| {
+        if let Some(spawn) = crate::minecraft_settings::spawn() {
+            diag::info!(World, "Minecraft spawn: {spawn:?}, set by {}", crate::minecraft_settings::SPAWN_ENV);
+            return spawn;
+        }
         let (x, y, z) = stream.player_spawn;
         [x, y, z]
     });

@@ -77,6 +77,25 @@ a part). With no `--part` the whole scenario runs, as before. `IW4L_REPO_ROOT`
 points the runner at a checkout other than the one it was built in (CI builds
 it on GitHub's runners and plays on the in-cluster one).
 
+The scenarios on the Minecraft map (`crafting_table`, `minecraft_multiplayer`,
+`dedicated_server`, `skate_multiplayer`) play one fixed world (`src/world.rs`):
+seed 12345, its first player at `90.5 130 -30.5` (feet, Minecraft block
+coordinates; a client three blocks along +Z), so every run plays the same
+ground from the same spot. Mobs come of themselves only in the parts that check
+them (`minecraft_multiplayer --part mobs`, `dedicated_server --part mobs`, and
+the whole of either); elsewhere the hosts start with `IW4L_MINECRAFT_MOBS=off`
+(no natural spawns, no creatures from chunk generation; `mc summon` still
+works), and the mob steps summon what they check but the spawn range, which is
+about natural spawning. `run.json` keeps the world (`minecraft_world`: seed,
+spawn, mobs). Another world on purpose: `--seed N` (any i64; at that seed the
+game picks its own spawn unless `--spawn "x y z"` names one); the same world as
+a run: `--replay <run>/run.json`.
+
+```sh
+make approved SCENARIO=minecraft_multiplayer ARGS='--part world --seed -42 --spawn "0.5 80 0.5"'
+make approved SCENARIO=dedicated_server ARGS='--replay iw4l-artifacts/approved-tests/<run>/run.json'
+```
+
 The runner builds nothing; `make approved` builds `target/play/iw4l` (and `target/play/iw4l-master`, which `minecraft_multiplayer`, `dedicated_server` and `skate_multiplayer` run) first.
 Each run owns one directory, `iw4l-artifacts/approved-tests/<run-id>/`. The
 game is started with that directory as its working directory, so everything

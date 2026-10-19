@@ -265,6 +265,9 @@ fn world_steps(pair: &mut Pair, facts: &mut Facts, client: &Event) -> Result<(),
     {
         picked = pair.ask(true, "wait 1s; mc state c_picked", "c_picked", step)?;
     }
+    // How long past the first ask it took, for the run's record: on a
+    // machine that keeps up it is 0.
+    facts.notes.insert("c_picked_after_secs", start.elapsed().as_secs().to_string());
     if slots(&picked).get(planks).map(String::as_str) != Some("minecraft:oak_planks*4") {
         // Not picked up: what lies on the ground, as each side sees it, for
         // the run's record.
