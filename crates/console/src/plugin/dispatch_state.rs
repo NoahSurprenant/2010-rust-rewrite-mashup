@@ -78,7 +78,11 @@ pub struct WaitMovePose {
     pub angles: [f32; 3],
 }
 
-pub(super) const WAIT_WORLD_TIMEOUT_SECS: f32 = 120.0;
+/// As long as a host may take to load its own match
+/// (`net::session_core::LOADING_DEADLINE_MS`): a `wait world` that gave up
+/// sooner would drop the rest of a script whose host was still loading.
+pub(super) const WAIT_WORLD_TIMEOUT_SECS: f32 =
+    (net::session_core::LOADING_DEADLINE_MS / 1000) as f32;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum WaitKind {
