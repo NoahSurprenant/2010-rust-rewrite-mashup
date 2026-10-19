@@ -17,7 +17,15 @@ whole name (a master older than this cuts it to 16 characters), with `IW4L_MASTE
 holds one of the slots) and `IW4L_MASTER_PASSWORD` as for any host. Its log is its stdout, and
 `dedicated-players: count=N clients=… names=…` is printed whenever who is in
 the match changes. `IW4L_CONSOLE_STDIN=1` takes console commands on stdin
-(`mc state`, `mc block`, `mc set` work with no player).
+(`mc state`, `mc block`, `mc set` work with no player), and `IW4L_CONSOLE_SOCKET=<path>`
+on a Unix socket there (mode 0600, the server's user only; the image and the Helm chart set
+`/tmp/iw4l-console.sock`): `iw4l dedicated-console "<command>"` on the same machine sends one
+command and prints what the console printed for it, for a server with no terminal:
+
+```bash
+kubectl exec -n iw4l-dedicated deploy/iw4l-dedicated -- iw4l dedicated-console whoami
+docker exec iw4l-dedicated iw4l dedicated-console admins
+```
 
 **Debug commands** (`mc give`, `mc clear`, `mc fill`, `mc set`, `mc summon`,
 `give`, `tp`, `kill`, `damage`, `force_spawn`, `admin transfer`, ...) change
@@ -81,8 +89,8 @@ them back what they had:
 
 - `whoami` on their console prints the new fingerprint; or the host's log
   shows it on their next join (`player joined: name=… key=…`).
-- On the host's console (the dedicated server's: `IW4L_CONSOLE_STDIN=1`, or
-  an admin's own console, which asks the host), `admin transfer <old
+- On the host's console (the dedicated server's: `iw4l dedicated-console`
+  above, or `IW4L_CONSOLE_STDIN=1`; or an admin's own console, which asks the host), `admin transfer <old
   fingerprint|player name> <new fingerprint>` moves their kept inventory
   (and a place on the admin list given at runtime) to the new key. A name
   works when exactly one key last played under it; otherwise name the old

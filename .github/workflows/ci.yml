@@ -99,12 +99,13 @@ jobs:
         run: |
           cargo test --profile play -p render_anim --lib minecraft_settings
           cargo test --profile play -p render_anim --lib minecraft_world::tests
-      - name: player key and admin unit tests (player_key, net identity and admins, console debug_admins)
+      - name: player key, admin and console socket unit tests (player_key, net identity and admins, console debug_admins and control)
         run: |
           cargo test --profile play -p player_key
           cargo test --profile play -p net --lib identity
           cargo test --profile play -p net --lib admins
           cargo test --profile play -p console --lib debug_admins
+          cargo test --profile play -p console --lib control
       - name: skate unit tests (net::skate, console skate)
         run: |
           cargo test --profile play -p net --lib skate

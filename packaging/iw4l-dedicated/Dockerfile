@@ -41,6 +41,7 @@ ENV IW4L_GAMES=/games \
     IW4L_SETTINGS_PATH=/data/settings.cfg \
     IW4L_MINECRAFT_WORLDS=/data/minecraft-worlds \
     IW4L_SOUND=off \
+    IW4L_CONSOLE_SOCKET=/tmp/iw4l-console.sock \
     HOME=/data
 WORKDIR /data
 USER 65532:65532

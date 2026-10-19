@@ -87,9 +87,24 @@ a rollout or a node drain keeps it. Deleting the claim starts a new world.
 | `minecraft.world` | `IW4L_MINECRAFT_WORLD` |
 | `adminKeys` | `IW4L_ADMIN_KEYS`: the player keys (fingerprints, as `whoami` prints them) allowed debug commands (`mc give`, `mc fill`, `mc summon`, `tp`, `admin transfer`, ...); empty, none |
 
-Always set: `IW4L_MASTER_STATUS_FILE=/tmp/master.status`, which the probe reads. The image sets
+Always set: `IW4L_MASTER_STATUS_FILE=/tmp/master.status`, which the probe reads, and
+`IW4L_CONSOLE_SOCKET=/tmp/iw4l-console.sock`, the server's console (below). The image sets
 `IW4L_GAMES=/games` and the paths under `/data`. Any other setting goes in `extraEnv`, which comes
 last and so overrides the chart's.
+
+## The console
+
+The server takes console commands (`whoami`, `admins`, `admins set`, `admin transfer`, `mc state`,
+...) on a Unix socket in the pod's own `/tmp` (mode 0600, its user only; no port, nothing on the
+network). `iw4l dedicated-console` sends one command and prints what it printed:
+
+```bash
+kubectl exec -n iw4l-dedicated deploy/iw4l-dedicated -- iw4l dedicated-console admins
+kubectl exec -n iw4l-dedicated deploy/iw4l-dedicated -- iw4l dedicated-console "admin transfer <old> <new>"
+```
+
+Whoever may `kubectl exec` into the pod is the server's owner: the console's debug commands are
+never refused.
 
 ## Networking
 

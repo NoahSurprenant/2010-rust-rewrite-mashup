@@ -9,6 +9,10 @@ mod first_run;
 static PROCESS_ALLOCATOR: diag::ProcessCountingAllocator = diag::ProcessCountingAllocator;
 
 fn main() {
+    let mut cli = std::env::args().skip(1);
+    if cli.next().as_deref() == Some("dedicated-console") {
+        dedicated_console(cli.collect::<Vec<_>>().join(" "));
+    }
     bootstrap::bench::arm();
     prepare_process_root().unwrap_or_else(|e| {
         diag::exit_launch_error(&e);
@@ -89,4 +93,26 @@ fn prepare_process_root() -> Result<(), String> {
 fn announce_log(path: PathBuf) {
     diag::announce_log_stdout(&path, diag::latest_log_path().as_deref());
     diag::info!(Launch, "log: {}", path.display());
+}
+
+/// `iw4l dedicated-console "<command>"`: one command to the console of the
+/// dedicated server on this machine (its `IW4L_CONSOLE_SOCKET`), its answer
+/// printed; exits with 1 when no server answers.
+fn dedicated_console(command: String) -> ! {
+    let path = console::control::socket_path();
+    match console::control::ask(&path, &command) {
+        Ok(answer) => {
+            print!("{answer}");
+            std::process::exit(0)
+        }
+        Err(e) => {
+            eprintln!(
+                "dedicated-console: {}: {e} (a dedicated server started with {}={} answers there)",
+                path.display(),
+                console::control::SOCKET_ENV,
+                path.display()
+            );
+            std::process::exit(1)
+        }
+    }
 }

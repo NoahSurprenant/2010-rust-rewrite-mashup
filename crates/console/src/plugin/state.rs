@@ -65,7 +65,9 @@ pub struct ConsoleState {
 
 impl ConsoleState {
     pub fn echo(&mut self, line: impl Into<String>, capacity: usize) {
-        self.log.push(line.into());
+        let line = line.into();
+        diag::tap_line(&line);
+        self.log.push(line);
         if self.log.len() > capacity {
             let drop = self.log.len() - capacity;
             self.log.drain(0..drop);

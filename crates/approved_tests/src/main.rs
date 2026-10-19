@@ -789,6 +789,9 @@ fn dedicated_sessions(
         "IW4L_MINECRAFT_WORLDS",
         dirs[0].join("minecraft-worlds").display().to_string(),
     ));
+    // A Unix socket's path is at most 107 bytes: the run directory is too deep.
+    let socket = std::env::temp_dir().join(format!("iw4l-approved-{}.sock", std::process::id()));
+    server_env.push(("IW4L_CONSOLE_SOCKET", socket.display().to_string()));
     let list = || {
         let out = std::process::Command::new(master_bin)
             .args([
@@ -835,6 +838,7 @@ fn dedicated_sessions(
                 ds::stop(&mut pair, facts, "stop1")
             } else if life == 1 {
                 let room = ds::server_ready(&mut pair, facts, "s_ready")?;
+                ds::console_socket(bin, &socket, 1, facts)?;
                 ds::measure(&mut pair, facts, "no_client")?;
                 pair.client = Some(client(1)?);
                 ds::first_visit(&mut pair, facts, &room)?;
@@ -850,6 +854,7 @@ fn dedicated_sessions(
                 ds::stop(&mut pair, facts, "stop1")
             } else {
                 let room = ds::server_ready(&mut pair, facts, "s2_ready")?;
+                ds::console_socket(bin, &socket, 2, facts)?;
                 pair.client = Some(client(3)?);
                 ds::revisit(&mut pair, facts, &room, 3)?;
                 ds::leave(&mut pair)?;
