@@ -504,6 +504,14 @@ fn chunk_collision(
     ids
 }
 
+/// The positions the host's log changed in chunk `pos`, each once.
+fn logged_in(
+    log: &minecraft_terrain::multiplayer::EditLog,
+    pos: (i32, i32),
+) -> std::collections::BTreeSet<(i32, i32, i32)> {
+    log.entries().iter().map(|(at, _)| *at).filter(|at| (at.0 >> 4, at.2 >> 4) == pos).collect()
+}
+
 /// One more stream holds a chunk; true for the first.
 fn hold(holders: &mut HashMap<(i32, i32), u32>, pos: (i32, i32)) -> bool {
     let count = holders.entry(pos).or_default();
@@ -972,6 +980,13 @@ fn update(
             for pos in early {
                 entities.placed(&world.scene, pos);
             }
+            // And a host's logged ones: a client's collision may have laid
+            // the edits that waited for this chunk into the scene already.
+            if let NetRole::Host(host) = &*net_role {
+                for at in logged_in(&host.log, (chunk.pos.x, chunk.pos.z)) {
+                    entities.placed(&world.scene, at);
+                }
+            }
         }
         sim::voxel::set_chunk(
             chunk.pos.x,
@@ -1224,15 +1239,13 @@ fn update(
                     }
                     if let Some(entities) = entities.as_mut() {
                         entities.load_chunk(&chunk);
-                        let edited: std::collections::BTreeSet<(i32, i32, i32)> = host
-                            .log
-                            .entries()
-                            .iter()
-                            .map(|(at, _)| *at)
-                            .filter(|at| (at.0 >> 4, at.2 >> 4) == pos)
-                            .collect();
-                        for at in edited {
-                            entities.placed(&world.scene, at);
+                        // The log's changes, as the scene has them: only once the
+                        // scene has the chunk (read before, they would be air);
+                        // until then they come with it, below.
+                        if world.scene.generated_chunk(pos).is_some() {
+                            for at in logged_in(&host.log, pos) {
+                                entities.placed(&world.scene, at);
+                            }
                         }
                     }
                 }
@@ -1263,6 +1276,16 @@ fn update(
                     world.scene.insert_chunk(chunk.clone());
                     for (at, block) in deferred.remove(&pos).unwrap_or_default() {
                         world.scene.set(at, block);
+                    }
+                    // A mobs' level that took this chunk before the scene had it
+                    // has the log's changes now: its mobs stood on air where a
+                    // client's platform was, and walked through a pen's walls.
+                    if level_holders.contains_key(&pos)
+                        && let Some(entities) = entities.as_mut()
+                    {
+                        for at in logged_in(&host.log, pos) {
+                            entities.placed(&world.scene, at);
+                        }
                     }
                 }
                 let (min_y, height) = (chunk.min_y(), chunk.height());
@@ -2153,7 +2176,17 @@ fn update(
         changed.sort_unstable();
         changed.dedup();
         for pos in changed {
-            let block = minecraft_terrain::scene::Scene::block(&world.scene, pos).map(block_text);
+            // A block set in a chunk not generated yet waits in `deferred`;
+            // the scene would answer air for it.
+            let chunk = (pos.0 >> 4, pos.2 >> 4);
+            let waiting = deferred
+                .get(&chunk)
+                .filter(|_| world.scene.generated_chunk(chunk).is_none())
+                .and_then(|edits| edits.iter().rev().find(|(at, _)| *at == pos));
+            let block = match waiting {
+                Some((_, block)) => block.as_ref().map(block_text),
+                None => minecraft_terrain::scene::Scene::block(&world.scene, pos).map(block_text),
+            };
             host.record(pos, block);
         }
         if let (Some(entities), Some((key, name))) = (entities.as_ref(), host.local.clone()) {
@@ -2592,5 +2625,24 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
         view.clouds = None;
         view.light_volume = None;
         view.generation += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_chunk_s_logged_changes_are_each_position_once() {
+        let mut log = minecraft_terrain::multiplayer::EditLog::default();
+        log.push((322, 61, 0), Some("minecraft:stone".into()));
+        log.push((322, 61, 0), None);
+        log.push((321, 62, -1), Some("minecraft:stone".into()));
+        log.push((336, 61, 0), Some("minecraft:stone".into()));
+        let chunk20: Vec<_> = logged_in(&log, (20, 0)).into_iter().collect();
+        assert_eq!(chunk20, [(322, 61, 0)]);
+        let chunk20_back: Vec<_> = logged_in(&log, (20, -1)).into_iter().collect();
+        assert_eq!(chunk20_back, [(321, 62, -1)]);
+        assert_eq!(logged_in(&log, (21, 0)).len(), 1);
     }
 }
