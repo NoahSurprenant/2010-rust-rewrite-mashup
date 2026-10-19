@@ -259,7 +259,11 @@ pub fn draw_gun(pair: &mut Pair) -> Result<u32, String> {
 /// starting from `seen`, a census of its in which it has the mob: it aims at
 /// the mob's middle from its eye as both stand on the client, fires a burst
 /// and looks again, until it sees the mob dead or gone; then the host is
-/// asked. Again until the host sees the mob die or `timeout` passes.
+/// asked. Again until the host sees the mob die or `timeout` passes. A
+/// burst is 1.5 s: a game that draws 3 to 4 frames a second fires only a
+/// few shots in it, and between two bursts (a census away) a husk beside
+/// the client strikes; with 0.6 s bursts one killed the client before it
+/// killed the husk (run 39228628595, dedicated_server mobs).
 pub fn shoot(
     pair: &mut Pair,
     kind: &str,
@@ -281,7 +285,7 @@ pub fn shoot(
             }
             let (yaw, pitch) = aim(eye, [mob.at[0], mob.at[1] + middle, mob.at[2]]);
             let script = format!(
-                "look {yaw:.2} {pitch:.2}; wait 0.1s; press +attack 0.6; wait 0.7s; mc mobs c_aim {kind}"
+                "look {yaw:.2} {pitch:.2}; wait 0.1s; press +attack 1.5; wait 1.6s; mc mobs c_aim {kind}"
             );
             seen = pair.ask(true, &script, "c_aim", Duration::from_secs(60))?;
             bursts += 1;
@@ -371,7 +375,9 @@ pub fn block_centre_map(at: [i32; 3]) -> [i32; 3] {
 
 /// `mc set` lines for a pen two blocks along +X from the block `feet` (from
 /// the world's spawn block): one block across and two high inside stone,
-/// so a mob in it cannot run from a fist that reaches through the stone.
+/// roofed, so a mob in it cannot run from a fist that reaches through the
+/// stone, nor be knocked out over the top (run 39228628595's pig was, by
+/// the blows that had taken it to 2 health).
 pub fn pen(feet: [i32; 3]) -> String {
     let [x, y, z] = feet;
     [
@@ -380,7 +386,7 @@ pub fn pen(feet: [i32; 3]) -> String {
             x + 1,
             z - 1,
             x + 3,
-            y + 1,
+            y + 2,
             z + 1
         ),
         format!("mc set {} {y} {z} {} {} {z} air", x + 2, x + 2, y + 1),
@@ -977,7 +983,7 @@ mod tests {
         let lines = pen([320, 61, 0]);
         assert_eq!(
             lines,
-            "mc set 321 61 -1 323 62 1 stone; mc set 322 61 0 322 62 0 air"
+            "mc set 321 61 -1 323 63 1 stone; mc set 322 61 0 322 62 0 air"
         );
         assert_eq!(block_centre_map([320, 60, 0]), [11520, 0, 2214]);
     }

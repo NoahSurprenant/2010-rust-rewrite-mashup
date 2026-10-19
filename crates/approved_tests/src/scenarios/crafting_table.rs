@@ -1,9 +1,10 @@
 //! `crafting_table` — owner-approved. This file is the one place its data
 //! lives: the arena, the inputs, and what each checkpoint must show.
 //!
-//! On the Minecraft map, at a fixed world seed, the player builds a small
-//! arena (stone floor, cleared air under a stone roof, a crafting table three
-//! blocks along +X, which is where MW2 yaw 0 looks), then: opens the table with E, crafts a
+//! On the Minecraft map, in the fixed world (`crate::world`: seed and
+//! spawn, no mobs), the player builds a small arena (stone floor, cleared
+//! air, a crafting table three blocks along +X, which is where MW2 yaw 0
+//! looks), then: opens the table with E, crafts a
 //! chest on its 3x3 grid, leaves a plank in the grid and closes with Escape
 //! (the plank comes back, no MW2 menu opens), opens it with E holding a gun,
 //! finds that a right click with a gun aims instead, opens it with a right
@@ -59,7 +60,6 @@ pub enum Screen {
 pub const STEPS: &[Step] = &[
     Step {
         commands: "wait world; spawn 0; force_match_start; wait minecraft; wait 1s; \
-                   mc fill -1 4 -2 4 4 2 stone; \
                    mc fill -1 0 -2 4 3 2 air; mc fill -1 -1 -2 4 -1 2 stone; \
                    mc fill 3 0 0 3 0 0 crafting_table; wait 2s; \
                    mc clear; mc give oak_planks 16; wait 1s; look 0 23; wait 1s",
