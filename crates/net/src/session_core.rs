@@ -53,7 +53,11 @@ pub(crate) fn format_session_transition(
     )
 }
 
-pub const LOADING_DEADLINE_MS: u64 = 120_000;
+/// How long a host may take to load its own match before it gives the room
+/// up. It is there to free a room whose host is stuck, not to time a slow
+/// machine: on 2 CPUs a host that compiles its world's shaders cold, while
+/// its client does the same, needs more than 120 s.
+pub const LOADING_DEADLINE_MS: u64 = 300_000;
 pub const RUNNING_SILENCE_MS: u64 = 60_000;
 pub const PEER_ADMISSION_DEADLINE_MS: u64 = 30_000;
 
@@ -1245,5 +1249,18 @@ pub fn state_is_newer(applied: Option<(u32, u64)>, revision: u64, epoch: u32) ->
         Some((_, prev_rev)) => {
             revision != prev_rev && revision.wrapping_sub(prev_rev) < (1_u64 << 63)
         }
+    }
+}
+
+#[cfg(test)]
+mod progress_watch_tests {
+    use super::*;
+
+    #[test]
+    fn a_slow_host_load_is_not_a_stuck_one() {
+        let mut watch = ProgressWatch::default();
+        watch.set_phase(ProgressPhase::Loading, 1_000);
+        assert!(!watch.expired(1_000 + 150_000), "150 s of loading is allowed");
+        assert!(watch.expired(1_000 + LOADING_DEADLINE_MS));
     }
 }

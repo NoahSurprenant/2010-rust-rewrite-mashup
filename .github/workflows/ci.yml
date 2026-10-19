@@ -86,6 +86,9 @@ jobs:
       # that lost time is taken a command a tick, not retired.
       - name: net inbox unit tests
         run: cargo test --profile play -p net --lib authority::inbox
+      # A host's own load deadline, long enough for a slow machine.
+      - name: net host load deadline unit test
+        run: cargo test --profile play -p net --lib session_core::progress_watch_tests
       # What a host sends a client of its Minecraft world: the mobs near it
       # ahead of a long edit log.
       - name: Minecraft host stream unit tests (render_anim minecraft_mp)
