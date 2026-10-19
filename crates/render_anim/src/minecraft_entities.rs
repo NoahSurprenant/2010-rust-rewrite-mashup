@@ -68,6 +68,8 @@ pub(crate) struct Entities {
     loot: Option<LootBook>,
     loot_sequences: HashMap<String, XoroshiroRandom>,
     seed: i64,
+    /// Whether mobs come of themselves (`IW4L_MINECRAFT_MOBS`).
+    mobs: bool,
     /// Sounds the mob world made since the last take: event, block point,
     /// volume, pitch.
     pub(crate) sounds: Vec<(String, DVec3, f32, f32)>,
@@ -182,7 +184,12 @@ pub(crate) struct PlayerView {
 
 impl Entities {
     pub(crate) fn new(stream: &TerrainStream, seed: i64) -> Self {
-        let sim = ServerSim::new(stream.world_gen(), stream.states.clone(), "minecraft:overworld");
+        let mut sim = ServerSim::new(stream.world_gen(), stream.states.clone(), "minecraft:overworld");
+        let mobs = crate::minecraft_settings::mobs();
+        if !mobs {
+            diag::info!(World, "Minecraft mobs: off ({}): only summoned ones", crate::minecraft_settings::MOBS_ENV);
+            sim.set_generated_entities(false);
+        }
         let mut server = ServerHandle::spawn(sim);
         // Mob and block loot and the recipes (stack sizes), from the game's
         // data JAR when MinecraftOSS has one.
@@ -226,6 +233,7 @@ impl Entities {
             loot,
             loot_sequences: HashMap::new(),
             seed,
+            mobs,
             sounds: Vec::new(),
             random: minecraftoss_player::rng::LegacyRandom::new((seed ^ 0x1735) as u64),
             remote: false,
@@ -280,6 +288,12 @@ impl Entities {
                 self.sounds.push(("minecraft:entity.generic.explode".to_owned(), at, 4.0, pitch));
             }
         }
+    }
+
+    /// Natural spawning from now on (the console's `mc spawning`); the
+    /// creatures chunk generation placed stay as `IW4L_MINECRAFT_MOBS` left them.
+    pub(crate) fn set_natural_spawning(&mut self, on: bool) {
+        self.mobs = on;
     }
 
     /// The world sounds this game took, the latest last, and how many in all.
@@ -793,7 +807,7 @@ impl Entities {
                 bright_outside,
                 tracking: (tracking, 160.0),
                 player_hurts: Vec::new(),
-                spawn_mobs: true,
+                spawn_mobs: self.mobs,
             });
         }
         let mut changes = Vec::new();

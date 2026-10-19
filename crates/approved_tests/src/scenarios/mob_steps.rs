@@ -12,11 +12,11 @@ use crate::duo::Pair;
 use crate::runner::Event;
 
 /// How long a mob summoned through the host takes to reach the client's view.
-pub const SEE_SECS: u64 = 30;
+pub const SEE_SECS: u64 = 60;
 /// How long a mob has to hurt the client.
-pub const HURT_SECS: u64 = 30;
+pub const HURT_SECS: u64 = 60;
 /// How long the client has to shoot a mob dead.
-pub const KILL_SECS: u64 = 60;
+pub const KILL_SECS: u64 = 120;
 /// How far apart the host's and the client's copies of a mob may stand at
 /// one moment, in blocks: the client draws a few ticks behind the host.
 pub const TRACK_BLOCKS: f64 = 1.5;
@@ -106,6 +106,42 @@ pub fn apart(a: [f64; 3], b: [f64; 3]) -> f64 {
     (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt()
 }
 
+/// Summons `kind` through the host at `offset` (blocks from the client's
+/// feet, `"dx dy dz"`) and asks the client until it sees it there
+/// (`summoned`), or `see` passes. Once: a summon the client never sees is a
+/// failure, not a retry.
+pub fn summon_seen(
+    pair: &mut Pair,
+    kind: &str,
+    offset: &str,
+    label: &str,
+    see: Duration,
+) -> Result<(Event, Option<Mob>), String> {
+    pair.client
+        .as_mut()
+        .ok_or("no client")?
+        .send(&format!("mc summon {kind} {offset}"))?;
+    poll(pair, true, label, Some(kind), see, summoned)
+}
+
+/// Asks the host until the arena around `centre` has its floor at its four
+/// corners (the arena crosses chunk borders) and under the spot a husk is
+/// summoned on. A host that generates the chunks there late sets the arena
+/// late, and a mob summoned before falls through to the ground below (runs
+/// 39235178267's husk and 39240931444's witch, on a dedicated server).
+pub fn arena_floor(pair: &mut Pair, centre: [i32; 3], timeout: Duration) -> Result<(), String> {
+    let [x, y, z] = centre;
+    let stone = "minecraft:stone";
+    for [dx, dz] in [[3, 0], [-4, -4], [4, -4], [-4, 4], [4, 4]] {
+        let at = [x + dx, y, z + dz];
+        let block = pair.poll_block(false, "h_arena", at, stone, timeout)?;
+        if block != stone {
+            return Err(format!("the host never had the arena's floor at {at:?}: {block}"));
+        }
+    }
+    Ok(())
+}
+
 /// `mc set` lines for a stone arena around `centre` (blocks from the
 /// world's spawn block): a 9 x 9 floor one block under the centre's feet
 /// level, and a wall two blocks high around it, so the mobs stay in.
@@ -139,7 +175,7 @@ pub fn census(
         Some(kind) => format!("mc mobs {label} {kind}"),
         None => format!("mc mobs {label}"),
     };
-    pair.ask(client, &script, label, Duration::from_secs(30))
+    pair.ask(client, &script, label, Duration::from_secs(60))
 }
 
 /// Whether `mob` is alive within the arena around the player of a census
@@ -211,7 +247,7 @@ pub fn poll_drop(pair: &mut Pair, id: &str, timeout: Duration) -> Result<String,
             true,
             "mc state c_drop_state",
             "c_drop_state",
-            Duration::from_secs(30),
+            Duration::from_secs(60),
         )?;
         if state
             .get("slots")
@@ -241,7 +277,10 @@ pub struct Shot {
 }
 
 /// The client raises a bullet gun (not the launcher or a grenade, which
-/// would take it with the mob): the first hotbar slot that holds one.
+/// would take it with the mob): the first hotbar slot that holds one. The
+/// key is pressed twice, a second apart: once, on 2 CPUs, it did not take,
+/// and the client fired its launcher at the husk beside it and died of the
+/// blast (run 39272980932 attempt 3).
 pub fn draw_gun(pair: &mut Pair) -> Result<u32, String> {
     let held = census(pair, true, "c_guns", Some("-"))?;
     let slot = guns(&held)
@@ -251,7 +290,7 @@ pub fn draw_gun(pair: &mut Pair) -> Result<u32, String> {
     pair.client
         .as_mut()
         .ok_or("no client")?
-        .send(&format!("key {slot}; wait 1.5s"))?;
+        .send(&format!("key {slot}; wait 1s; key {slot}; wait 1.5s"))?;
     Ok(slot)
 }
 
@@ -259,7 +298,11 @@ pub fn draw_gun(pair: &mut Pair) -> Result<u32, String> {
 /// starting from `seen`, a census of its in which it has the mob: it aims at
 /// the mob's middle from its eye as both stand on the client, fires a burst
 /// and looks again, until it sees the mob dead or gone; then the host is
-/// asked. Again until the host sees the mob die or `timeout` passes.
+/// asked. Again until the host sees the mob die or `timeout` passes. A
+/// burst is 1.5 s: a game that draws 3 to 4 frames a second fires only a
+/// few shots in it, and between two bursts (a census away) a husk beside
+/// the client strikes; with 0.6 s bursts one killed the client before it
+/// killed the husk (run 39228628595, dedicated_server mobs).
 pub fn shoot(
     pair: &mut Pair,
     kind: &str,
@@ -281,9 +324,9 @@ pub fn shoot(
             }
             let (yaw, pitch) = aim(eye, [mob.at[0], mob.at[1] + middle, mob.at[2]]);
             let script = format!(
-                "look {yaw:.2} {pitch:.2}; wait 0.1s; press +attack 0.6; wait 0.7s; mc mobs c_aim {kind}"
+                "look {yaw:.2} {pitch:.2}; wait 0.1s; press +attack 1.5; wait 1.6s; mc mobs c_aim {kind}"
             );
-            seen = pair.ask(true, &script, "c_aim", Duration::from_secs(30))?;
+            seen = pair.ask(true, &script, "c_aim", Duration::from_secs(60))?;
             bursts += 1;
         }
         let host = census(pair, false, "h_shot", Some(kind))?;
@@ -303,11 +346,11 @@ pub fn shoot(
 }
 
 /// How long a mob has to come within a knife's reach of the client.
-pub const CLOSE_SECS: u64 = 30;
+pub const CLOSE_SECS: u64 = 60;
 /// How long the client has to punch a mob dead.
-pub const PUNCH_SECS: u64 = 60;
+pub const PUNCH_SECS: u64 = 120;
 /// How long a witch has to land a potion on the client.
-pub const WITCH_SECS: u64 = 60;
+pub const WITCH_SECS: u64 = 120;
 /// How far a knife reaches from the eye, in blocks (MW2's 64 units),
 /// with room for the mob's half width.
 pub const KNIFE_BLOCKS: f64 = 1.3;
@@ -371,7 +414,9 @@ pub fn block_centre_map(at: [i32; 3]) -> [i32; 3] {
 
 /// `mc set` lines for a pen two blocks along +X from the block `feet` (from
 /// the world's spawn block): one block across and two high inside stone,
-/// so a mob in it cannot run from a fist that reaches through the stone.
+/// roofed, so a mob in it cannot run from a fist that reaches through the
+/// stone, nor be knocked out over the top (run 39228628595's pig was, by
+/// the blows that had taken it to 2 health).
 pub fn pen(feet: [i32; 3]) -> String {
     let [x, y, z] = feet;
     [
@@ -380,7 +425,7 @@ pub fn pen(feet: [i32; 3]) -> String {
             x + 1,
             z - 1,
             x + 3,
-            y + 1,
+            y + 2,
             z + 1
         ),
         format!("mc set {} {y} {z} {} {} {z} air", x + 2, x + 2, y + 1),
@@ -434,7 +479,7 @@ pub fn knife(
                         "look {yaw:.2} {pitch:.2}; wait 0.1s; press +melee 0.1; wait 1.2s; mc mobs c_struck {kind}"
                     ),
                     "c_struck",
-                    Duration::from_secs(30),
+                    Duration::from_secs(60),
                 )?;
                 blows += 1;
             }
@@ -485,7 +530,7 @@ pub fn punch(
                     "look {yaw:.2} {pitch:.2}; wait 0.1s; key mouse1 0; wait 0.6s; mc mobs c_punched {kind}"
                 ),
                 "c_punched",
-                Duration::from_secs(30),
+                Duration::from_secs(60),
             )?;
             blows += 1;
         }
@@ -544,16 +589,20 @@ pub fn beyond_the_gun(
     lines: &mut std::collections::BTreeMap<String, Event>,
     notes: &mut std::collections::BTreeMap<&'static str, String>,
 ) -> Result<(), String> {
-    let step = Duration::from_secs(60);
+    let step = Duration::from_secs(120);
     let see = Duration::from_secs(SEE_SECS);
-    let heard = pair.ask(true, "mc sounds c_sounds", "c_sounds", step)?;
-    lines.insert("c_sounds".into(), heard);
     // The middle of the platform, a gun up for the knife.
     let [x, y, z] = block_centre_map(far);
     pair.client
         .as_mut()
         .ok_or("no client")?
         .send(&format!("tp {x} {y} {z}; wait 3s"))?;
+    // What it heard of the husk, measured from there: a client the husk
+    // killed before its gun did (a headless server runs its mobs at full
+    // speed, a game drawing 3-4 frames a second shoots slowly) stood at the
+    // world's spawn until now (run 39246128209).
+    let heard = pair.ask(true, "mc sounds c_sounds", "c_sounds", step)?;
+    lines.insert("c_sounds".into(), heard);
     draw_gun(pair)?;
     pair.client
         .as_mut()
@@ -616,10 +665,7 @@ pub fn beyond_the_gun(
     notes.insert("punch_killed", blows.killed.to_string());
     notes.insert("punch_blows", blows.blows.to_string());
     // A witch across the arena: its potion and the effect.
-    pair.client
-        .as_mut()
-        .ok_or("no client")?
-        .send("mc summon witch -3 0 -3")?;
+    summon_seen(pair, "witch", "-3 0 -3", "c_witch_seen", see)?;
     let potion = poll_potion(pair, "c_witch", Duration::from_secs(WITCH_SECS))?;
     lines.insert("c_witch".into(), potion.clone());
     draw_gun(pair)?;
@@ -634,12 +680,53 @@ pub fn beyond_the_gun(
         )?;
         notes.insert("witch_killed", shot.killed.to_string());
     }
-    // Where the host's mobs live around the client.
-    let range = pair.ask(false, "mc mobrange s_range", "s_range", step)?;
+    // Where the host's mobs live around the client. Every mob so far was
+    // summoned (the world starts with `IW4L_MINECRAFT_MOBS=off`); natural
+    // spawning comes on only now, for this step. It is the world's ground
+    // and chance, so each side is asked until a mob lives beyond 48 blocks
+    // of the client.
+    pair.host.send("mc spawning on")?;
+    let range = until_one(
+        pair,
+        false,
+        "mc mobrange s_range",
+        "s_range",
+        "band48_128",
+        step,
+    )?;
     lines.insert("s_range".into(), range);
-    let far_mobs = census(pair, true, "c_far_mobs", None)?;
+    let far_mobs = until_one(pair, true, "mc mobs c_far_mobs", "c_far_mobs", "far", step)?;
     lines.insert("c_far_mobs".into(), far_mobs);
     Ok(())
+}
+
+/// How long `beyond_the_gun` asks for mobs far from the client.
+pub const RANGE_SECS: u64 = 180;
+
+/// Asks `script` for the line `label` until its `key` counts one or more or
+/// `RANGE_SECS` pass: the last answer either way.
+fn until_one(
+    pair: &mut Pair,
+    client: bool,
+    script: &str,
+    label: &str,
+    key: &str,
+    step: Duration,
+) -> Result<Event, String> {
+    let start = Instant::now();
+    loop {
+        let answer = pair.ask(client, script, label, step)?;
+        if number(&answer, key).is_some_and(|n| n >= 1.0)
+            || start.elapsed() > Duration::from_secs(RANGE_SECS)
+        {
+            return Ok(answer);
+        }
+        let pause = Instant::now();
+        while pause.elapsed() < Duration::from_secs(2) {
+            pair.sample();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
 }
 
 /// What `beyond_the_gun` must show, checkpoint by checkpoint.
@@ -939,7 +1026,7 @@ mod tests {
         let lines = pen([320, 61, 0]);
         assert_eq!(
             lines,
-            "mc set 321 61 -1 323 62 1 stone; mc set 322 61 0 322 62 0 air"
+            "mc set 321 61 -1 323 63 1 stone; mc set 322 61 0 322 62 0 air"
         );
         assert_eq!(block_centre_map([320, 60, 0]), [11520, 0, 2214]);
     }

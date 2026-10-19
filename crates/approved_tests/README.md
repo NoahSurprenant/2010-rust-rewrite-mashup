@@ -62,6 +62,38 @@ make approved SCENARIO=crafting_table           # the crafting table scenario
 make approved SCENARIO=minecraft_multiplayer    # a host and a client through a local master
 make approved SCENARIO=dedicated_server         # a dedicated server, and a client that comes and goes
 make approved SCENARIO=skate_multiplayer        # skaters with a listen host and a dedicated server
+make approved SCENARIO=minecraft_multiplayer ARGS='--part mobs'   # one part of a split scenario
+```
+
+`minecraft_multiplayer`, `dedicated_server` and `skate_multiplayer` come in
+parts, which CI runs as jobs of their own so that none holds the runner long
+and none runs more than two games: `--part world` (blocks, the client's hand,
+the restart) or `--part mobs` (far from the host, its mobs) for
+`minecraft_multiplayer`; `--part visits` (admin rights, the empty room,
+SIGTERM and the restart) or `--part mobs` for `dedicated_server`; `--part
+listen` or `--part dedicated` for `skate_multiplayer`. A part plays only its
+steps and judges only its checks (each scenario's `PARTS`; every check is in
+a part). With no `--part` the whole scenario runs, as before. `IW4L_REPO_ROOT`
+points the runner at a checkout other than the one it was built in (CI builds
+it on GitHub's runners and plays on the in-cluster one).
+
+The scenarios on the Minecraft map (`crafting_table`, `minecraft_multiplayer`,
+`dedicated_server`, `skate_multiplayer`) play one fixed world (`src/world.rs`):
+seed 12345, its first player at `90.5 130 -30.5` (feet, Minecraft block
+coordinates; a client three blocks along +Z), so every run plays the same
+ground from the same spot. No mob comes of itself: the hosts start with
+`IW4L_MINECRAFT_MOBS=off` (no natural spawning, no creatures from chunk
+generation), and the mob steps summon what they check (`mc summon`). Only the
+last step of the `mobs` parts, the spawn range, is about natural spawning: it
+turns it on (`mc spawning on`, a host's console) and asks until mobs live
+around the client. `run.json` keeps the world (`minecraft_world`: seed, spawn,
+mobs). Another world on purpose: `--seed N` (any i64; at that seed the
+game picks its own spawn unless `--spawn "x y z"` names one); the same world as
+a run: `--replay <run>/run.json`.
+
+```sh
+make approved SCENARIO=minecraft_multiplayer ARGS='--part world --seed -42 --spawn "0.5 80 0.5"'
+make approved SCENARIO=dedicated_server ARGS='--replay iw4l-artifacts/approved-tests/<run>/run.json'
 ```
 
 The runner builds nothing; `make approved` builds `target/play/iw4l` (and `target/play/iw4l-master`, which `minecraft_multiplayer`, `dedicated_server` and `skate_multiplayer` run) first.

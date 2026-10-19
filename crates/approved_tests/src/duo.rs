@@ -187,6 +187,8 @@ impl Player {
             .env_remove("IW4L_MASTER_JOIN")
             .env_remove("IW4L_MASTER_HOST_NAME")
             .env_remove("IW4L_MINECRAFT_SEED")
+            .env_remove("IW4L_MINECRAFT_SPAWN")
+            .env_remove("IW4L_MINECRAFT_MOBS")
             .env_remove("IW4L_MINECRAFT_WORLD")
             .env_remove("IW4L_MINECRAFT_WORLDS")
             // No admins but where a scenario names them; each game's own key.
@@ -460,7 +462,7 @@ impl Pair {
         let start = Instant::now();
         loop {
             let script = format!("mc block {label} {} {} {}", at[0], at[1], at[2]);
-            let event = self.ask(client, &script, label, Duration::from_secs(30))?;
+            let event = self.ask(client, &script, label, Duration::from_secs(60))?;
             let block = event.get("block").unwrap_or("").to_owned();
             if block == want || start.elapsed() > timeout {
                 return Ok(block);

@@ -28,7 +28,7 @@ until a matching presented pose, `force_match_start` until `Playing`,
 `disconnect` until the hold is torn down. `wait Ns` remains, for pacing and
 observation windows. The `&` suffix is a loud refusal to wait (`map mp_rust &`),
 `!` jumps the queue (in bash write `disconnect !`, or history expansion bites).
-The 120 s gate timeout aborts the rest with an echo; parsing is
+The 300 s gate timeout aborts the rest with an echo; parsing is
 `crates/console/src/`. Hand-typed `dump`/`clip`/`screenshot` pass through any
 wait while preserving the queue, which inside `--cmds` takes an explicit `!`.
 A hand-typed `quit`/`exit`/`disconnect` goes further: it jumps **every** hold,

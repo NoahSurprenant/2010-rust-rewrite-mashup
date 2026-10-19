@@ -33,25 +33,150 @@ jobs:
       # How the master lists a room (a dedicated server by its whole name).
       - run: cargo test -p master_protocol
 
-  # The approved crafting_table scenario plays the real game on the
-  # Minecraft map, so it needs the owner's MW2 files, which only the
-  # in-cluster runner has (mounted read-only at /skate-assets/mw2). The
-  # runner can read them and reach the internet, so a pull request from a
-  # fork never runs here; the repository also requires approval before an
-  # outside contributor's workflow runs.
-  crafting-table:
-    name: crafting_table (MW2 + Minecraft, in-cluster)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: iw4l-k8s
-    timeout-minutes: 60
-    env:
-      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
-      WGPU_BACKEND: vulkan
+
+  # The game, its master and the scenarios' runner, built once on GitHub's
+  # runners (the build needs no game data) for the in-cluster jobs below,
+  # which only play. The in-cluster runner (one job at a time, on a node that
+  # runs hot) builds nothing.
+  play-build:
+    name: play build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v5
+      - name: Build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            libx11-dev libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
+            libxcursor-dev libxrandr-dev libxi-dev
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: play
+      - run: cargo build --profile play -p launcher --bin iw4l
+      - run: cargo build --profile play -p approved_tests -p iw4l-master
+      # A tar keeps the binaries' modes, which an artifact's zip drops.
+      - name: Binaries
+        run: tar -cf play-bins.tar -C target/play iw4l approved_tests iw4l-master
+      - uses: actions/upload-artifact@v4
+        with:
+          name: play-bins
+          path: play-bins.tar
+          retention-days: 3
+          if-no-files-found: error
+
+  # The unit tests of what the in-cluster scenarios play, beside the build
+  # rather than after it, so the scenarios need not wait for them.
+  play-unit-tests:
+    name: play unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            libx11-dev libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
+            libxcursor-dev libxrandr-dev libxi-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: play-tests
+      # The host's command inbox: a client whose clock runs ahead of a host
+      # that lost time is taken a command a tick, not retired.
+      - name: net inbox unit tests
+        run: cargo test --profile play -p net --lib authority::inbox
+      # A host's own load deadline, long enough for a slow machine.
+      - name: net host load deadline unit test
+        run: cargo test --profile play -p net --lib session_core::progress_watch_tests
+      # What a host sends a client of its Minecraft world: the mobs near it
+      # ahead of a long edit log.
+      - name: Minecraft host stream unit tests (render_anim minecraft_mp)
+        run: cargo test --profile play -p render_anim --lib minecraft_mp
+      # The Minecraft map's test settings (IW4L_MINECRAFT_SPAWN, IW4L_MINECRAFT_MOBS),
+      # and the host's logged changes per chunk.
+      - name: Minecraft test settings and host log unit tests (render_anim minecraft_settings, minecraft_world)
+        run: |
+          cargo test --profile play -p render_anim --lib minecraft_settings
+          cargo test --profile play -p render_anim --lib minecraft_world::tests
+      - name: player key and admin unit tests (player_key, net identity and admins, console debug_admins)
+        run: |
+          cargo test --profile play -p player_key
+          cargo test --profile play -p net --lib identity
+          cargo test --profile play -p net --lib admins
+          cargo test --profile play -p console --lib debug_admins
+      - name: skate unit tests (net::skate, console skate)
+        run: |
+          cargo test --profile play -p net --lib skate
+          cargo test --profile play -p console --lib debug_skate
+
+  # The approved scenarios that play the real game on the Minecraft map,
+  # each in parts a job of its own (approved_tests <scenario> --part <part>),
+  # so that no job keeps the runner loaded for long and the largest holds
+  # two games, not more. They need the owner's MW2 files (and Skate 3's for
+  # skate_multiplayer), which only the in-cluster runner has, mounted
+  # read-only at /skate-assets. The runner can read them and reach the
+  # internet, so a pull request from a fork never runs here; the repository
+  # also requires approval before an outside contributor's workflow runs.
+  #
+  # - crafting_table: one game.
+  # - minecraft_multiplayer: a listen host and a client through an
+  #   iw4l-master the run starts on the loopback. `world`: blocks both ways,
+  #   the client's hand, then both again on the same settings to see the
+  #   host's world kept. `mobs`: far from the host, its mobs.
+  # - dedicated_server: `iw4l dedicated` (headless, no player of its own) and
+  #   a client. `visits`: admin rights, the empty room, SIGTERM and the
+  #   restart. `mobs`: far from the spawn, the server's mobs.
+  # - skate_multiplayer: `listen`, a listen host and a client, both with the
+  #   Skate 3 files; `dedicated`, a dedicated server (without them) and a
+  #   client.
+  #
+  # run.json records each game's peak memory; the job's last step prints the
+  # runner container's (cgroup) peak, page cache included.
+  #
+  # The games of a run share one loading cache (--cache shared): on 2 CPUs a
+  # listen host that compiles every shader itself while its client does the
+  # same can pass its own 120 s load deadline; with the cache shared, the
+  # second game reads what the first one compiled.
+  scenario:
+    name: ${{ matrix.scenario }}${{ matrix.part && format(' {0}', matrix.part) || '' }} (${{ matrix.games }}, in-cluster)
+    needs: play-build
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: iw4l-k8s
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      # One at a time: the runner has 2 CPUs, and its node is shared.
+      max-parallel: 1
+      matrix:
+        include:
+          - { scenario: crafting_table, part: '', games: 'MW2 + Minecraft', timeout: 60 }
+          - { scenario: minecraft_multiplayer, part: world, games: 'listen host + client', timeout: 90 }
+          - { scenario: minecraft_multiplayer, part: mobs, games: 'listen host + client', timeout: 90 }
+          - { scenario: dedicated_server, part: visits, games: 'dedicated server + client', timeout: 90 }
+          - { scenario: dedicated_server, part: mobs, games: 'dedicated server + client', timeout: 90 }
+          - { scenario: skate_multiplayer, part: listen, games: 'listen host + client', timeout: 90, skate: true }
+          - { scenario: skate_multiplayer, part: dedicated, games: 'dedicated server + client', timeout: 90, skate: true }
+    env:
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+      WGPU_BACKEND: vulkan
+      # lavapipe sizes its render threads from the host's cores, not the
+      # runner's CPU limit (2); the game's own pools (Bevy's task pools, the
+      # terrain's generation and section threads, asset loading) already
+      # follow the limit through available_parallelism.
+      LP_NUM_THREADS: 2
+      # The checkout, not where the binaries were built.
+      IW4L_REPO_ROOT: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: play-bins
+      - name: Binaries
+        run: |
+          mkdir -p target/play
+          tar -xf play-bins.tar -C target/play
+          rm play-bins.tar
       # Minecraft's files, fetched from Mojang on the first run.
       - uses: actions/cache@v4
         with:
@@ -63,163 +188,30 @@ jobs:
           ln -sfn /skate-assets/mw2 "$RUNNER_TEMP/games/mw2"
           echo "IW4L_GAMES=$RUNNER_TEMP/games" >> "$GITHUB_ENV"
           echo "XDG_CONFIG_HOME=$RUNNER_TEMP/config" >> "$GITHUB_ENV"
-      - run: cargo build --profile play -p launcher --bin iw4l
-      - run: cargo build --profile play -p approved_tests
-      - name: crafting_table
-        run: scripts/headless-display.sh target/play/approved_tests crafting_table
+          if [ "${{ matrix.skate }}" = true ]; then
+            echo "IW4L_SKATE_ASSETS=/skate-assets/skate-data/assets" >> "$GITHUB_ENV"
+          fi
+      - name: ${{ matrix.scenario }}${{ matrix.part && format(' --part {0}', matrix.part) || '' }}
+        run: scripts/headless-display.sh target/play/approved_tests ${{ matrix.scenario }} ${{ matrix.part && format('--part {0}', matrix.part) || '' }} --cache shared
+      - name: Job peak memory (runner container cgroup)
+        if: always()
+        run: |
+          for f in memory.peak memory.max memory.current; do
+            [ -r "/sys/fs/cgroup/$f" ] || continue
+            v=$(cat "/sys/fs/cgroup/$f")
+            case $v in max) echo "$f max" ;; *) echo "$f $v bytes ($((v / 1048576)) MiB)" ;; esac
+          done
       # The run's verdict and logs; not its screenshots, which are pictures
       # of the games' assets.
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: crafting_table
+          name: ${{ matrix.scenario }}${{ matrix.part && format('-{0}', matrix.part) || '' }}
           path: |
             iw4l-artifacts/approved-tests/*/run.json
             iw4l-artifacts/approved-tests/*/child_stdout.txt
             iw4l-artifacts/approved-tests/*/child_stderr.txt
             iw4l-artifacts/approved-tests/*/iw4l-artifacts/logs/latest.log
-          if-no-files-found: warn
-
-  # The approved minecraft_multiplayer scenario: a host and a client on the
-  # Minecraft map through an iw4l-master the run starts on the loopback,
-  # then both again on the same settings to see the host's world kept. Two
-  # games at once, so the runner needs room for both (run.json records each
-  # one's and the pair's peak memory).
-  minecraft-multiplayer:
-    name: minecraft_multiplayer (two games through a local master, in-cluster)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: iw4l-k8s
-    timeout-minutes: 90
-    env:
-      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
-      WGPU_BACKEND: vulkan
-    steps:
-      - uses: actions/checkout@v5
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: play
-      - uses: actions/cache@v4
-        with:
-          path: iw4l-artifacts/minecraft-26.3
-          key: minecraft-26.3
-      - name: Games root
-        run: |
-          mkdir -p "$RUNNER_TEMP/games"
-          ln -sfn /skate-assets/mw2 "$RUNNER_TEMP/games/mw2"
-          echo "IW4L_GAMES=$RUNNER_TEMP/games" >> "$GITHUB_ENV"
-          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/config" >> "$GITHUB_ENV"
-      - run: cargo build --profile play -p launcher --bin iw4l
-      - run: cargo build --profile play -p approved_tests -p iw4l-master
-      - name: minecraft_multiplayer
-        run: scripts/headless-display.sh target/play/approved_tests minecraft_multiplayer
-      - if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: minecraft_multiplayer
-          path: |
-            iw4l-artifacts/approved-tests/*/run.json
-            iw4l-artifacts/approved-tests/*/*/child_stdout_*.txt
-            iw4l-artifacts/approved-tests/*/*/child_stderr_*.txt
-            iw4l-artifacts/approved-tests/*/*/iw4l-artifacts/logs/*.log
-            iw4l-artifacts/approved-tests/*/master/master_*.txt
-          if-no-files-found: warn
-
-  # The approved dedicated_server scenario: `iw4l dedicated` on the Minecraft
-  # map (headless, no player of its own) through an iw4l-master the run starts
-  # on the loopback, a client that joins, leaves and comes back, and the server
-  # stopped with SIGTERM and started again. One rendering game and the server
-  # at once (run.json records the server's memory and CPU).
-  dedicated-server:
-    name: dedicated_server (a dedicated server and a client through a local master, in-cluster)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: iw4l-k8s
-    timeout-minutes: 90
-    env:
-      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
-      WGPU_BACKEND: vulkan
-    steps:
-      - uses: actions/checkout@v5
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: play
-      - uses: actions/cache@v4
-        with:
-          path: iw4l-artifacts/minecraft-26.3
-          key: minecraft-26.3
-      - name: Games root
-        run: |
-          mkdir -p "$RUNNER_TEMP/games"
-          ln -sfn /skate-assets/mw2 "$RUNNER_TEMP/games/mw2"
-          echo "IW4L_GAMES=$RUNNER_TEMP/games" >> "$GITHUB_ENV"
-          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/config" >> "$GITHUB_ENV"
-      - run: cargo build --profile play -p launcher --bin iw4l
-      - run: cargo build --profile play -p approved_tests -p iw4l-master
-      - name: player key and admin unit tests (player_key, net identity and admins, console debug_admins)
-        run: |
-          cargo test --profile play -p player_key
-          cargo test --profile play -p net --lib identity
-          cargo test --profile play -p net --lib admins
-          cargo test --profile play -p console --lib debug_admins
-      - name: dedicated_server
-        run: scripts/headless-display.sh target/play/approved_tests dedicated_server
-      - if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dedicated_server
-          path: |
-            iw4l-artifacts/approved-tests/*/run.json
-            iw4l-artifacts/approved-tests/*/*/child_stdout_*.txt
-            iw4l-artifacts/approved-tests/*/*/child_stderr_*.txt
-            iw4l-artifacts/approved-tests/*/*/iw4l-artifacts/logs/*.log
-            iw4l-artifacts/approved-tests/*/master/master_*.txt
-          if-no-files-found: warn
-
-  # The approved skate_multiplayer scenario: players skate on the Minecraft
-  # map, first in a listen host's room (the client skates while the host
-  # watches, then the other way round), then on a dedicated server, each
-  # through an iw4l-master the run starts on the loopback. The skaters need
-  # the owner's converted Skate 3 data as well as MW2, read-only from the
-  # same mount (/skate-assets/skate-data/assets); the dedicated server runs
-  # without it. The skate codec's and console's unit tests run here too, on
-  # the build the scenario uses.
-  skate-multiplayer:
-    name: skate_multiplayer (listen host and dedicated server through a local master, in-cluster)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: iw4l-k8s
-    timeout-minutes: 120
-    env:
-      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
-      WGPU_BACKEND: vulkan
-    steps:
-      - uses: actions/checkout@v5
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: play
-      - uses: actions/cache@v4
-        with:
-          path: iw4l-artifacts/minecraft-26.3
-          key: minecraft-26.3
-      - name: Games root
-        run: |
-          mkdir -p "$RUNNER_TEMP/games"
-          ln -sfn /skate-assets/mw2 "$RUNNER_TEMP/games/mw2"
-          echo "IW4L_GAMES=$RUNNER_TEMP/games" >> "$GITHUB_ENV"
-          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/config" >> "$GITHUB_ENV"
-          echo "IW4L_SKATE_ASSETS=/skate-assets/skate-data/assets" >> "$GITHUB_ENV"
-      - run: cargo build --profile play -p launcher --bin iw4l
-      - run: cargo build --profile play -p approved_tests -p iw4l-master
-      - name: skate unit tests (net::skate, console skate)
-        run: |
-          cargo test --profile play -p net --lib skate
-          cargo test --profile play -p console --lib debug_skate
-      - name: skate_multiplayer
-        run: scripts/headless-display.sh target/play/approved_tests skate_multiplayer
-      - if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: skate_multiplayer
-          path: |
-            iw4l-artifacts/approved-tests/*/run.json
             iw4l-artifacts/approved-tests/*/*/child_stdout_*.txt
             iw4l-artifacts/approved-tests/*/*/child_stderr_*.txt
             iw4l-artifacts/approved-tests/*/*/iw4l-artifacts/logs/*.log

@@ -33,6 +33,9 @@ pub struct ServerSim {
     /// The entity storage the level's entities are saved to, shared with
     /// the chunk map (`EntityStorage`).
     storage: Option<Arc<minecraftoss_world::storage::ChunkStorage>>,
+    /// Whether a fresh chunk brings the creatures its generation placed
+    /// (`set_generated_entities`).
+    generated_entities: bool,
     /// Server ticks since the last autosave.
     ticks_since_save: u32,
     entity_loot: Option<minecraftoss_entities::loot::EntityLootBook>,
@@ -206,6 +209,7 @@ impl ServerSim {
             mob_tables,
             mob_tags: std::collections::HashMap::new(),
             storage: None,
+            generated_entities: true,
             ticks_since_save: 0,
             entity_loot: None,
             shearing_loot: None,
@@ -216,6 +220,12 @@ impl ServerSim {
             take_xp_delay: 0,
             merchant_closing: false,
         }
+    }
+
+    /// Without them, a fresh chunk leaves out the creatures its generation
+    /// placed: no mobs but saved, spawned or summoned ones.
+    pub fn set_generated_entities(&mut self, on: bool) {
+        self.generated_entities = on;
     }
 
     /// Loads the entity and shearing loot tables and the villager trade
@@ -374,7 +384,9 @@ impl ServerSim {
                 None
             })
         });
-        for tag in saved.unwrap_or_else(|| chunk.generation.entities.clone()) {
+        let generated = self.generated_entities;
+        let tags = saved.unwrap_or_else(|| if generated { chunk.generation.entities.clone() } else { Vec::new() });
+        for tag in tags {
             self.add_saved_entity(tag);
         }
     }
@@ -1340,6 +1352,30 @@ mod tests {
         // The client tracks the ones near its player.
         let near = server.tracked_mobs([328.0, 80.0, 2056.0], 32.0);
         assert!(animals(&near) <= animals(&server.mobs));
+    }
+
+    /// Without generated entities (`IW4L_MINECRAFT_MOBS=off`), the same
+    /// chunks bring no animals.
+    #[test]
+    fn without_generated_entities_chunks_bring_no_mobs() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 1234).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 1234, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 6, 8);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        server.set_generated_entities(false);
+        let mut generated = 0;
+        for x in 15..=25 {
+            for z in 123..=133 {
+                let chunk = map.load_now(ChunkPos::new(x, z));
+                generated += chunk.generation.entities.len();
+                server.load_chunk(&chunk);
+            }
+        }
+        assert!(generated > 0, "seed 1234 generates creatures there");
+        assert!(server.mobs.census().is_empty(), "no generated creature joins");
     }
 
     /// Generated animals wander about a player among them, climbing the

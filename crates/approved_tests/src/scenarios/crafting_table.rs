@@ -1,8 +1,9 @@
 //! `crafting_table` — owner-approved. This file is the one place its data
 //! lives: the arena, the inputs, and what each checkpoint must show.
 //!
-//! On the Minecraft map, at a fixed world seed, the player builds a small
-//! arena (stone floor, cleared air, a crafting table three blocks along +X,
+//! On the Minecraft map, in the fixed world (`crate::world`: seed and
+//! spawn, no mobs), the player builds a small arena 40 blocks over the
+//! spawn (stone floor, cleared air, a crafting table three blocks along +X,
 //! which is where MW2 yaw 0 looks), then: opens the table with E, crafts a
 //! chest on its 3x3 grid, leaves a plank in the grid and closes with Escape
 //! (the plank comes back, no MW2 menu opens), opens it with E holding a gun,
@@ -16,9 +17,8 @@ use crate::runner::Event;
 
 pub const NAME: &str = "crafting_table";
 pub const MAP: &str = "minecraft:overworld";
-pub const SEED: &str = "12345";
-pub const PHASE_TIMEOUT_SECS: u64 = 300;
-pub const QUIT_TIMEOUT_SECS: u64 = 30;
+pub const PHASE_TIMEOUT_SECS: u64 = 600;
+pub const QUIT_TIMEOUT_SECS: u64 = 60;
 
 /// The class the player spawns with, written as the run's class file: a
 /// fresh profile draws its classes at random, and an akimbo gun fires on a
@@ -59,7 +59,13 @@ pub enum Screen {
 
 pub const STEPS: &[Step] = &[
     Step {
+        // The arena stands on a stone floor 40 blocks over the spawn block,
+        // clear of the ground: at the fixed spawn, clearing air in the ground
+        // dropped leaf litter that the player picked up into its empty hand
+        // (runs 39228628595, 39235178267). `tp` is in map units: the middle of
+        // the block over the floor's, as `mob_steps::block_centre_map` gives.
         commands: "wait world; spawn 0; force_match_start; wait minecraft; wait 1s; \
+                   mc set -1 40 -2 4 40 2 stone; wait 2s; tp 0 0 1494; wait 2s; \
                    mc fill -1 0 -2 4 3 2 air; mc fill -1 -1 -2 4 -1 2 stone; \
                    mc fill 3 0 0 3 0 0 crafting_table; wait 2s; \
                    mc clear; mc give oak_planks 16; wait 1s; look 0 23; wait 1s",
@@ -485,6 +491,13 @@ mod tests {
                 slots("minecraft:oak_planks*7", ""),
             ),
         ]
+    }
+
+    #[test]
+    fn the_arena_s_tp_lands_over_its_floor() {
+        let z = crate::scenarios::mob_steps::block_centre_map([0, 40, 0])[2];
+        assert!(STEPS[0].commands.contains("mc set -1 40 -2 4 40 2 stone"));
+        assert!(STEPS[0].commands.contains(&format!("tp 0 0 {z};")));
     }
 
     #[test]

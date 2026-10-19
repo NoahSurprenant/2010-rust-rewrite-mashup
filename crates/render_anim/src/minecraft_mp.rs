@@ -370,8 +370,8 @@ fn push(reliable: &mut net::ReliableEventHub, client: sim::ClientId, message: &H
 }
 
 /// Sends one client what it lacks, as its stream has room: the world, the
-/// host's corrections, the edit log from its cursor, its inventory when it
-/// changed, the items near it, and the mobs near it.
+/// host's corrections, its inventory when it changed, the items near it,
+/// the mobs near it, and then the edit log from its cursor.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn send_to(
     reliable: &mut net::ReliableEventHub,
@@ -398,21 +398,16 @@ pub(crate) fn send_to(
     if let Some(at) = remote.placed_at.take() {
         push(reliable, client, &HostMessage::Placed { at });
     }
-    // A joining player's inventory goes ahead of the edit history, which
-    // can take many seconds to send: it is theirs as soon as they arrive.
-    if remote.sent_inventory.is_none() {
-        send_inventory(reliable, client, remote);
-    }
     while !remote.corrections.is_empty() && has_room(reliable.queue(client)) {
         let fit = edits_that_fit(&remote.corrections);
         let corrections: Vec<_> = remote.corrections.drain(..fit).collect();
         push(reliable, client, &HostMessage::Edits(corrections));
     }
-    while remote.cursor < host.log.len() && has_room(reliable.queue(client)) {
-        let (batch, next) = host.log.batch(remote.cursor);
-        push(reliable, client, &HostMessage::Edits(batch));
-        remote.cursor = next;
-    }
+    // What is the client's or near it now (its inventory, the items, the
+    // mobs) goes ahead of the edit log, which takes the room left: the log
+    // can be many seconds behind (a joining player's whole history, or a
+    // level that changes thousands of blocks near a client, water and lava
+    // running in fresh chunks), and a mob or an item must not wait for it.
     send_inventory(reliable, client, remote);
     remote.items_clock += dt;
     if remote.items_clock >= ITEMS_SECONDS
@@ -438,6 +433,11 @@ pub(crate) fn send_to(
     }
     if let (Some(view), Some(feet)) = (mobs, feet) {
         send_mobs(reliable, client, remote, view, feet, frames);
+    }
+    while remote.cursor < host.log.len() && has_room(reliable.queue(client)) {
+        let (batch, next) = host.log.batch(remote.cursor);
+        push(reliable, client, &HostMessage::Edits(batch));
+        remote.cursor = next;
     }
     remote.mob_clock += dt;
     if remote.mob_clock >= MOB_REPORT_SECONDS {
@@ -759,5 +759,100 @@ pub(crate) fn admin_transfer(
             "admin-transfer: label={label} result=refused reason=\"{}\"",
             reason.replace('"', "'")
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minecraft_terrain::mob_sync::{EventLog, Look, PlayerEffects};
+
+    fn rows(reliable: &net::ReliableEventHub, client: sim::ClientId) -> Vec<HostMessage> {
+        reliable
+            .queue(client)
+            .map(|queue| queue.pending())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|(_, row)| match row {
+                net::ReliableRow::Minecraft(bytes) => HostMessage::decode(bytes).ok(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A mob that comes into a client's view while the host's edit log is
+    /// far behind (the level changing thousands of blocks near it) is sent
+    /// as soon as the client's acks make room, not after the whole log.
+    #[test]
+    fn a_mob_goes_ahead_of_a_long_edit_log() {
+        let mut host = Host::new(1, [0.0; 3], None, None);
+        for x in 0..20_000 {
+            host.record((x, 64, 0), Some("minecraft:water[level=3]".into()));
+        }
+        let mut remote = Remote::new("client".into(), None, Inventory::default(), None);
+        let mut reliable = net::ReliableEventHub::default();
+        let client = sim::ClientId(1);
+        let feet = [0.5, 65.0, 0.5];
+        let (events, effects) = (EventLog::default(), PlayerEffects::default());
+        let mut mobs = Vec::new();
+        let frame =
+            |reliable: &mut net::ReliableEventHub, remote: &mut Remote, mobs: &[HostMob]| {
+                let view = MobView {
+                    mobs,
+                    tick: 1,
+                    fresh: false,
+                    events: &events,
+                    projectiles: &[],
+                    effects: &effects,
+                };
+                send_to(
+                    reliable,
+                    client,
+                    &host,
+                    remote,
+                    &[],
+                    Some(feet),
+                    0.05,
+                    Some(&view),
+                    None,
+                );
+            };
+        // The first frame: the window is full of the log.
+        frame(&mut reliable, &mut remote, &mobs);
+        assert!(!has_room(reliable.queue(client)));
+        let behind = host.log.len() - remote.cursor;
+        assert!(behind > 10_000, "{behind} edits left");
+        // A bat comes; the client acks all it has, and the next frame
+        // sends the bat though the log is still thousands of edits behind.
+        mobs.push(HostMob {
+            spawn: MobSpawn {
+                id: 7,
+                look: Look::Bat,
+                baby: false,
+                width: 0.6,
+                height: 1.95,
+                position: [3.5, 65.0, 0.5],
+                yaw: 0.0,
+            },
+            state: MobState {
+                id: 7,
+                position: [3.5, 65.0, 0.5],
+                ..MobState::default()
+            },
+        });
+        let through = reliable
+            .queue(client)
+            .and_then(|queue| queue.pending().last().map(|(seq, _)| *seq))
+            .expect("rows queued");
+        reliable.queue_mut(client).ack(through);
+        frame(&mut reliable, &mut remote, &mobs);
+        let sent = rows(&reliable, client);
+        let bat = sent.iter().position(
+            |m| matches!(m, HostMessage::Mobs(spawns) if spawns.iter().any(|s| s.id == 7)),
+        );
+        let first_edit = sent.iter().position(|m| matches!(m, HostMessage::Edits(_)));
+        assert!(bat.is_some(), "no Mobs row for the bat");
+        assert!(bat < first_edit, "the bat after the log's edits");
+        assert!(host.log.len() - remote.cursor > 5_000);
     }
 }

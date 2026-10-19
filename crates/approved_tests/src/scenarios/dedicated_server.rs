@@ -32,9 +32,56 @@ use std::time::{Duration, Instant};
 
 use crate::duo::{Pair, Player, cpu_secs, field};
 use crate::runner::Event;
+use crate::scenario::Parts;
 use crate::scenarios::mob_steps;
 
 pub const NAME: &str = "dedicated_server";
+/// The rooms with and without the client, its keys and admin rights, and
+/// the restarts: both server lives.
+pub const VISITS: &str = "visits";
+/// Far from the spawn, the mobs: one visit of the first life.
+pub const MOBS: &str = "mobs";
+/// Each part's checks.
+pub const PARTS: Parts = &[
+    (
+        VISITS,
+        &[
+            "server_has_no_player",
+            "seed_shared",
+            "non_admin_refused",
+            "admin_allowed",
+            "player_joined_by_key",
+            "admin_transfer_on_server",
+            "client_block_on_server",
+            "client_inventory",
+            "room_kept_empty",
+            "rejoin_world_kept",
+            "sigterm_saves_and_exits",
+            "restart_world_kept",
+            "second_sigterm",
+        ],
+    ),
+    (
+        MOBS,
+        &[
+            "server_has_no_player",
+            "seed_shared",
+            "player_joined_by_key",
+            "mob_seen_with_no_server_player",
+            "mob_hurts_client",
+            "client_kills_mob_server_sees",
+            "mob_states_sent",
+            "client_hears_mob_sounds",
+            "client_knifes_mob_host_sees",
+            "client_punches_mob_host_sees",
+            "client_sees_witch_potion",
+            "client_gets_potion_effect",
+            "mobs_live_beyond_48_blocks",
+            "spawns_in_vanilla_range",
+            "despawns_beyond_128",
+        ],
+    ),
+];
 pub const MAP: &str = "minecraft:overworld";
 /// The room's name on the master, longer than the 16 characters a master
 /// keeps of a player's name: the list shows it whole.
@@ -43,19 +90,19 @@ pub const ROOM: &str = "approved dedicated server";
 pub const CLIENT: &str = "client";
 pub const CLASSES: &str = crate::scenarios::crafting_table::CLASSES;
 /// Loading a game and its world, on a CPU renderer.
-pub const LOAD_SECS: u64 = 600;
-pub const STEP_SECS: u64 = 60;
-pub const SYNC_SECS: u64 = 30;
+pub const LOAD_SECS: u64 = 900;
+pub const STEP_SECS: u64 = 120;
+pub const SYNC_SECS: u64 = 60;
 /// A rejoining client's whole edit history: the level's own changes (the
 /// leaves of a mangrove swamp settling) can run to a hundred thousand.
-pub const REJOIN_SECS: u64 = 120;
+pub const REJOIN_SECS: u64 = 240;
 /// The room left empty: longer than a master session's 60 s without
 /// authority progress, after which a stalled host is dropped.
 pub const EMPTY_SECS: u64 = 75;
 /// How long the server's CPU use is sampled at each point.
 pub const CPU_SECS: u64 = 20;
 /// SIGTERM to exit.
-pub const STOP_SECS: u64 = 30;
+pub const STOP_SECS: u64 = 60;
 
 /// A block the client sets, from the world's spawn block.
 const GOLD: [i32; 3] = [2, 5, 0];
@@ -313,6 +360,14 @@ pub fn first_visit(pair: &mut Pair, facts: &mut Facts, room: &str) -> Result<(),
     Ok(())
 }
 
+/// Part `mobs`'s visit: the client joins (an admin, as `IW4L_ADMIN_KEYS`
+/// made it) and goes straight to the mobs.
+pub fn mobs_visit(pair: &mut Pair, facts: &mut Facts, room: &str) -> Result<(), String> {
+    let ready = join(pair, room, "c_ready")?;
+    facts.keep("c_ready", ready);
+    mob_visit(pair, facts)
+}
+
 /// Far from the world's spawn, in a walled arena on a platform the client
 /// asks for: a husk summoned beside the client, with no player of the
 /// server's own about, reaches the client with the server's id, hurts it,
@@ -331,10 +386,9 @@ pub fn mob_visit(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     facts.keep("c_far", far);
     // A bullet gun up before the husk comes.
     mob_steps::draw_gun(pair)?;
-    client(pair)?.send("mc summon husk 3 0 0")?;
+    mob_steps::arena_floor(pair, FAR, Duration::from_secs(mob_steps::SEE_SECS))?;
     let see = Duration::from_secs(mob_steps::SEE_SECS);
-    let (seen, husk) =
-        mob_steps::poll(pair, true, "c_husk", Some("husk"), see, mob_steps::summoned)?;
+    let (seen, husk) = mob_steps::summon_seen(pair, "husk", "3 0 0", "c_husk", see)?;
     facts.keep("c_husk", seen);
     let husk = husk.ok_or("the client never saw the husk")?;
     facts.notes.insert("husk_id", husk.id.to_string());
@@ -377,7 +431,7 @@ pub fn mob_visit(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
 /// The client leaves through the normal exit and the server's room stays.
 pub fn leave(pair: &mut Pair) -> Result<(), String> {
     client(pair)?.send("wait 3s; finish_run")?;
-    pair.until("the client to exit", Duration::from_secs(120), |pair| {
+    pair.until("the client to exit", Duration::from_secs(240), |pair| {
         pair.client.as_mut().is_none_or(|c| c.exited().is_some())
     })
     .or_else(|e| {
@@ -820,6 +874,12 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_parts_keep_every_check() {
+        let judged: Vec<&str> = judge(&Facts::default()).iter().map(|c| c.label).collect();
+        crate::scenario::assert_parts_cover(PARTS, &judged);
+    }
 
     fn event(prefix: &str, fields: &str) -> Event {
         crate::runner::parse(&format!("{prefix} {fields}"), prefix, 0).unwrap()

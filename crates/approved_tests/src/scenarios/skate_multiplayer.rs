@@ -24,24 +24,56 @@ use std::time::{Duration, Instant};
 
 use crate::duo::Pair;
 use crate::runner::Event;
+use crate::scenario::Parts;
 
 pub const NAME: &str = "skate_multiplayer";
+/// The listen host's room: the client skates, then the host.
+pub const LISTEN: &str = "listen";
+/// The dedicated server's room: the client skates.
+pub const DEDICATED: &str = "dedicated";
+/// Each part's checks.
+pub const PARTS: Parts = &[
+    (
+        LISTEN,
+        &[
+            "client_skates",
+            "host_moves_skating_client",
+            "host_draws_client_pose",
+            "client_gets_off",
+            "host_skates",
+            "client_receives_host_pose",
+        ],
+    ),
+    (
+        DEDICATED,
+        &[
+            "dedicated_client_skates",
+            "dedicated_moves_skating_client",
+            "dedicated_client_gets_off",
+        ],
+    ),
+];
 pub const MAP: &str = "minecraft:overworld";
 pub const CLASSES: &str = crate::scenarios::crafting_table::CLASSES;
 /// The dedicated server's room on the master (16 characters at most).
 pub const ROOM: &str = "approved skate";
 pub const CLIENT: &str = "client";
 /// Loading a game and its world, on a CPU renderer.
-pub const LOAD_SECS: u64 = 600;
-pub const STEP_SECS: u64 = 60;
+pub const LOAD_SECS: u64 = 900;
+pub const STEP_SECS: u64 = 120;
 /// The skate session's preparation for the map, after the world loads.
-pub const READY_SECS: u64 = 300;
-/// How long a skater pushes before the others are asked.
+pub const READY_SECS: u64 = 600;
+/// How long a skater pushes before the others are asked, at least.
 pub const PUSH_SECS: u64 = 4;
+/// It pushes on until it has sent `PUSH_STATES` states (it sends one a
+/// frame at most, and a game on 2 CPUs draws 2 to 4 a second: 14 to 18 in
+/// 4 to 10 s in runs 39217075456 and 39264289901), or `PUSH_MAX_SECS` pass.
+pub const PUSH_STATES: f64 = 24.0;
+pub const PUSH_MAX_SECS: u64 = 25;
 /// A skater's movement reaching the host.
-pub const SYNC_SECS: u64 = 20;
+pub const SYNC_SECS: u64 = 40;
 /// How far down the runway (map units) a skater must have gone: about 4 m,
-/// half what pushing for `PUSH_SECS` covers.
+/// well short of what pushing for `PUSH_SECS` covers.
 pub const MOVED_UNITS: f64 = 160.0;
 
 /// A stone runway high over the world (blocks from the world's spawn block):
@@ -284,7 +316,17 @@ fn skate_on(
     pair.until("pushing", Duration::from_secs(PUSH_SECS + 5), |_| {
         at.elapsed() >= Duration::from_secs(PUSH_SECS)
     })?;
-    let event = state(pair, client, pushing)?;
+    let mut event = state(pair, client, pushing)?;
+    // NaN (no `sent`) ends it too: the judges say what is missing.
+    while number(&event, "sent") < PUSH_STATES
+        && at.elapsed() < Duration::from_secs(PUSH_MAX_SECS)
+    {
+        let pause = Instant::now();
+        pair.until("pushing on", Duration::from_secs(5), |_| {
+            pause.elapsed() >= Duration::from_secs(2)
+        })?;
+        event = state(pair, client, pushing)?;
+    }
     Ok(facts.keep(pushing, event))
 }
 
@@ -624,6 +666,12 @@ pub fn bandwidth(facts: &Facts) -> BTreeMap<&'static str, f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_parts_keep_every_check() {
+        let judged: Vec<&str> = judge(&Facts::default()).iter().map(|c| c.label).collect();
+        crate::scenario::assert_parts_cover(PARTS, &judged);
+    }
 
     fn event(fields: &str) -> Event {
         crate::runner::parse(&format!("skate-state: {fields}"), "skate-state:", 0).unwrap()

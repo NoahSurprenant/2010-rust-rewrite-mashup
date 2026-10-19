@@ -72,7 +72,11 @@ pub fn run(launch: Launch<'_>) -> Outcome {
         .current_dir(launch.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::from(stderr_file));
+        .stderr(Stdio::from(stderr_file))
+        // The world is the run's, as `env` says, not the shell's.
+        .env_remove("IW4L_MINECRAFT_SEED")
+        .env_remove("IW4L_MINECRAFT_SPAWN")
+        .env_remove("IW4L_MINECRAFT_MOBS");
     for (key, value) in &launch.env {
         command.env(key, value);
     }
