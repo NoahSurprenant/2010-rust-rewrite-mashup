@@ -461,7 +461,7 @@ fn run_crafting_table(root: &Path, args: &Args) -> Result<bool, String> {
         bin: &bin,
         cwd: &run_dir,
         args: child_args,
-        env: world.env(false),
+        env: world.env(),
         phase_timeout: Duration::from_secs(crafting_table::PHASE_TIMEOUT_SECS),
         quit_timeout: Duration::from_secs(crafting_table::QUIT_TIMEOUT_SECS),
     });
@@ -598,7 +598,7 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
     asset_transport::load_dotenv();
     let part = scenario::Part::of(minecraft_multiplayer::PARTS, args.part.as_deref())?;
     let world = minecraft_world(args)?;
-    // Mobs only for the part that checks them.
+    // Natural spawning only for the spawn range, in the part that checks it.
     let mobs = part.plays(minecraft_multiplayer::MOBS);
     let master_bin = args
         .bin
@@ -677,7 +677,7 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
         &[1]
     };
     for &session in sessions {
-        let mut pair = match open_duo(&bin, &master, &dirs, session, &world.env(mobs)) {
+        let mut pair = match open_duo(&bin, &master, &dirs, session, &world.env()) {
             Ok(pair) => pair,
             Err(e) => {
                 failure = Some(format!("session {session}: {e}"));
@@ -876,7 +876,7 @@ fn run_dedicated_server(root: &Path, args: &Args) -> Result<bool, String> {
     asset_transport::load_dotenv();
     let part = scenario::Part::of(dedicated_server::PARTS, args.part.as_deref())?;
     let world = minecraft_world(args)?;
-    // Mobs only for the part that checks them.
+    // Natural spawning only for the spawn range, in the part that checks it.
     let mobs = part.plays(dedicated_server::MOBS);
     let master_bin = args
         .bin
@@ -948,7 +948,7 @@ fn run_dedicated_server(root: &Path, args: &Args) -> Result<bool, String> {
         &master,
         &dirs,
         part,
-        &world.env(mobs),
+        &world.env(),
         &mut facts,
         &mut peaks,
     )
@@ -1210,7 +1210,7 @@ fn run_skate_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
         &dirs,
         &skate_assets,
         part,
-        &world.env(false),
+        &world.env(),
         &mut facts,
         &mut peaks,
     )

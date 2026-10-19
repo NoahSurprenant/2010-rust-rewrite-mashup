@@ -290,6 +290,12 @@ impl Entities {
         }
     }
 
+    /// Natural spawning from now on (the console's `mc spawning`); the
+    /// creatures chunk generation placed stay as `IW4L_MINECRAFT_MOBS` left them.
+    pub(crate) fn set_natural_spawning(&mut self, on: bool) {
+        self.mobs = on;
+    }
+
     /// The world sounds this game took, the latest last, and how many in all.
     pub(crate) fn heard(&self) -> (impl Iterator<Item = &(String, DVec3)>, u64) {
         (self.heard.iter(), self.heard_total)

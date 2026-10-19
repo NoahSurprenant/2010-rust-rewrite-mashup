@@ -1,8 +1,8 @@
 //! The Minecraft world of the scenarios on the Minecraft map
 //! (`crafting_table`, `minecraft_multiplayer`, `dedicated_server`,
 //! `skate_multiplayer`): one fixed seed and spawn, so that every run plays
-//! the same ground from the same spot, and no mobs but where a part checks
-//! them. `--seed N` (with `--spawn "x y z"`) plays another world on purpose;
+//! the same ground from the same spot, and no mobs but summoned ones until
+//! the one step that checks natural spawning turns it on (`mc spawning on`). `--seed N` (with `--spawn "x y z"`) plays another world on purpose;
 //! `--replay run.json` plays a run's again.
 
 use std::path::Path;
@@ -79,12 +79,12 @@ impl World {
         Self::choose(seed, spawn, run.as_ref())
     }
 
-    /// The settings a game that makes this world starts with; `mobs` for a
-    /// part that checks mobs, else none come of themselves.
-    pub fn env(&self, mobs: bool) -> Vec<(&'static str, String)> {
+    /// The settings a game that makes this world starts with: no mob comes
+    /// of itself.
+    pub fn env(&self) -> Vec<(&'static str, String)> {
         let mut env = vec![
             ("IW4L_MINECRAFT_SEED", self.seed.to_string()),
-            ("IW4L_MINECRAFT_MOBS", if mobs { "on" } else { "off" }.into()),
+            ("IW4L_MINECRAFT_MOBS", "off".into()),
         ];
         if let Some(spawn) = &self.spawn {
             env.push(("IW4L_MINECRAFT_SPAWN", spawn.clone()));
@@ -92,13 +92,15 @@ impl World {
         env
     }
 
-    /// What run.json keeps of it (and `--replay` reads back).
-    pub fn facts(&self, mobs: bool) -> Value {
-        json!({
-            "seed": self.seed,
-            "spawn": self.spawn,
-            "mobs": if mobs { "on" } else { "off: only summoned ones" },
-        })
+    /// What run.json keeps of it (and `--replay` reads back); `spawning`
+    /// for a part whose spawn-range step turns natural spawning on.
+    pub fn facts(&self, spawning: bool) -> Value {
+        let mobs = if spawning {
+            "off: only summoned ones, until the spawn-range step turns natural spawning on"
+        } else {
+            "off: only summoned ones"
+        };
+        json!({ "seed": self.seed, "spawn": self.spawn, "mobs": mobs })
     }
 }
 
@@ -129,21 +131,20 @@ mod tests {
             }
         );
         assert_eq!(
-            world.env(false),
+            world.env(),
             [
                 ("IW4L_MINECRAFT_SEED", "12345".to_owned()),
                 ("IW4L_MINECRAFT_MOBS", "off".to_owned()),
                 ("IW4L_MINECRAFT_SPAWN", SPAWN.to_owned()),
             ]
         );
-        assert_eq!(world.env(true)[1], ("IW4L_MINECRAFT_MOBS", "on".to_owned()));
     }
 
     #[test]
     fn another_seed_is_played_on_purpose() {
         let other = World::choose(Some(-7), None, None).unwrap();
         assert_eq!(other, World { seed: -7, spawn: None });
-        assert!(other.env(false).iter().all(|(k, _)| *k != "IW4L_MINECRAFT_SPAWN"));
+        assert!(other.env().iter().all(|(k, _)| *k != "IW4L_MINECRAFT_SPAWN"));
         let placed = World::choose(Some(-7), Some("1 70 2"), None).unwrap();
         assert_eq!(placed.spawn.as_deref(), Some("1 70 2"));
         assert_eq!(
@@ -162,7 +163,8 @@ mod tests {
             let run = json!({ "minecraft_world": world.facts(false) });
             assert_eq!(World::choose(None, None, Some(&run)).unwrap(), world);
         }
-        let run = json!({ "minecraft_world": World::choose(None, None, None).unwrap().facts(true) });
+        let world = World::choose(None, None, None).unwrap();
+        let run = json!({ "minecraft_world": world.facts(true) });
         assert!(World::choose(Some(1), None, Some(&run)).is_err());
         assert!(World::choose(None, None, Some(&json!({}))).is_err());
     }

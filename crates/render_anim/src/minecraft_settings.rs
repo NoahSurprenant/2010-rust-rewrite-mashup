@@ -12,8 +12,9 @@
 pub(crate) const SPAWN_ENV: &str = "IW4L_MINECRAFT_SPAWN";
 
 /// `IW4L_MINECRAFT_MOBS=off`: no mobs but summoned ones (`mc summon`):
-/// natural spawning is off and the creatures chunk generation places are
-/// left out. `on` (or unset) is the game as it is.
+/// natural spawning is off (until a host's console turns it on, `mc spawning
+/// on`) and the creatures chunk generation places are left out. `on` (or
+/// unset) is the game as it is.
 pub(crate) const MOBS_ENV: &str = "IW4L_MINECRAFT_MOBS";
 
 /// The spawn `IW4L_MINECRAFT_SPAWN` sets, if it is set; a value that is not

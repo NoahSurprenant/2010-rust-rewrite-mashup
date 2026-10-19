@@ -8,7 +8,7 @@ use frame::{McClick, McSlot, McStack, MinecraftUi};
 use crate::binds::{BindButton, parse_key_name};
 use crate::{ConsoleCommand, ConsoleRegistry, ConsoleSettings, ConsoleState};
 
-const MC_USAGE: &str = "mc give <item> [count] | mc clear | mc click <inv N|grid N|result> [right] [shift] | mc fill <x1 y1 z1 x2 y2 z2> <block|air> (from the feet) | mc set <x1 y1 z1 x2 y2 z2> <block|air> (from the world's spawn block) | mc block <label> <x y z> (from the spawn block) | mc state <label> | mc summon <mob> [dx dy dz] (from the feet) | mc mobs <label> [mob] (the mobs near the player) | mc sounds <label> (the world sounds heard) | mc mobrange <label> (a host's spawns and despawns around a player) | mc world [name] (the world a host keeps) — the Minecraft map";
+const MC_USAGE: &str = "mc give <item> [count] | mc clear | mc click <inv N|grid N|result> [right] [shift] | mc fill <x1 y1 z1 x2 y2 z2> <block|air> (from the feet) | mc set <x1 y1 z1 x2 y2 z2> <block|air> (from the world's spawn block) | mc block <label> <x y z> (from the spawn block) | mc state <label> | mc summon <mob> [dx dy dz] (from the feet) | mc mobs <label> [mob] (the mobs near the player) | mc sounds <label> (the world sounds heard) | mc mobrange <label> (a host's spawns and despawns around a player) | mc spawning <on|off> (a host's natural spawning) | mc world [name] (the world a host keeps) — the Minecraft map";
 const FILL_MAX: i32 = 4096;
 const KEY_USAGE: &str =
     "key <key|mouse1|mouse2> [seconds] — press a key or mouse button as the device does";
@@ -211,6 +211,10 @@ pub(crate) fn route_debug_minecraft_commands(
                     }
                     ["sounds", label] => ui.sound_probes.push((*label).to_owned()),
                     ["mobrange", label] => ui.range_probes.push((*label).to_owned()),
+                    ["spawning", state @ ("on" | "off")] => {
+                        ui.natural_spawning = Some(*state == "on");
+                        console.echo(format!("mc: natural spawning {state}"), capacity);
+                    }
                     ["click", rest @ ..] => match parse_click(rest) {
                         Some(click) => ui.clicks.push(click),
                         None => console.echo(format!("usage: {MC_USAGE}"), capacity),

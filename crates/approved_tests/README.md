@@ -81,13 +81,13 @@ The scenarios on the Minecraft map (`crafting_table`, `minecraft_multiplayer`,
 `dedicated_server`, `skate_multiplayer`) play one fixed world (`src/world.rs`):
 seed 12345, its first player at `90.5 130 -30.5` (feet, Minecraft block
 coordinates; a client three blocks along +Z), so every run plays the same
-ground from the same spot. Mobs come of themselves only in the parts that check
-them (`minecraft_multiplayer --part mobs`, `dedicated_server --part mobs`, and
-the whole of either); elsewhere the hosts start with `IW4L_MINECRAFT_MOBS=off`
-(no natural spawns, no creatures from chunk generation; `mc summon` still
-works), and the mob steps summon what they check but the spawn range, which is
-about natural spawning. `run.json` keeps the world (`minecraft_world`: seed,
-spawn, mobs). Another world on purpose: `--seed N` (any i64; at that seed the
+ground from the same spot. No mob comes of itself: the hosts start with
+`IW4L_MINECRAFT_MOBS=off` (no natural spawning, no creatures from chunk
+generation), and the mob steps summon what they check (`mc summon`). Only the
+last step of the `mobs` parts, the spawn range, is about natural spawning: it
+turns it on (`mc spawning on`, a host's console) and asks until mobs live
+around the client. `run.json` keeps the world (`minecraft_world`: seed, spawn,
+mobs). Another world on purpose: `--seed N` (any i64; at that seed the
 game picks its own spawn unless `--spawn "x y z"` names one); the same world as
 a run: `--replay <run>/run.json`.
 

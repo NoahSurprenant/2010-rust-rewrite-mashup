@@ -2384,6 +2384,20 @@ fn update(
         diag::info!(Console, "{line}");
         println!("{line}");
     }
+    // The console's natural spawning, on a host (`mc spawning on|off`).
+    if let Some(on) = ui.natural_spawning.take() {
+        let line = match (&*net_role, entities.as_mut()) {
+            (NetRole::Client(_), _) => "refused: a client's host spawns its mobs".to_owned(),
+            (_, Some(entities)) => {
+                entities.set_natural_spawning(on);
+                format!("natural spawning {}", if on { "on" } else { "off" })
+            }
+            (_, None) => "no world".to_owned(),
+        };
+        let line = format!("minecraft-spawning: {line}");
+        diag::info!(Console, "{line}");
+        println!("{line}");
+    }
     if dedicated {
         day.advance(dt);
         return;

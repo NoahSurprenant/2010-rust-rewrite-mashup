@@ -45,8 +45,9 @@ For tests, the world takes settings from the environment:
 z"` (the first player's feet in Minecraft block coordinates, where the map's
 origin sits, instead of vanilla's spot picked at random near the world spawn)
 and `IW4L_MINECRAFT_MOBS=off` (no natural spawning and no creatures from chunk
-generation: only summoned mobs, in any world). A kept world keeps its
-seed and spawn. The approved scenarios set all three (`crates/approved_tests/README.md`).
+generation: only summoned mobs, in any world; a host's console turns natural
+spawning back on with `mc spawning on`). A kept world keeps its seed and spawn.
+The approved scenarios set all three (`crates/approved_tests/README.md`).
 
 ## Player keys and admins
 

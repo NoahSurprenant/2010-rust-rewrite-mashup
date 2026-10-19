@@ -112,6 +112,9 @@ pub struct MinecraftUi {
     /// Labels the console asks a host where its mobs spawn and despawn
     /// around a player under (`mc mobrange`).
     pub range_probes: Vec<String>,
+    /// Natural spawning turned on or off from the console, on a host
+    /// (`mc spawning on|off`).
+    pub natural_spawning: Option<bool>,
     /// The block at the player's feet, relative to the world's spawn block.
     pub feet: Option<[i32; 3]>,
     /// The world's seed, once it is known.

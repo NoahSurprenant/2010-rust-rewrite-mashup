@@ -106,17 +106,22 @@ pub fn apart(a: [f64; 3], b: [f64; 3]) -> f64 {
     (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt()
 }
 
-/// Asks the host until the arena around `centre` has its floor under the
-/// spot a husk is summoned on (three blocks along +X from the centre). A host
-/// that generates the chunks there late sets the arena late, and a mob
-/// summoned before it falls through to the ground below.
+/// Asks the host until the arena around `centre` has its floor at its four
+/// corners (the arena crosses chunk borders) and under the spot a husk is
+/// summoned on. A host that generates the chunks there late sets the arena
+/// late, and a mob summoned before falls through to the ground below (runs
+/// 39235178267's husk and 39240931444's witch, on a dedicated server).
 pub fn arena_floor(pair: &mut Pair, centre: [i32; 3], timeout: Duration) -> Result<(), String> {
     let [x, y, z] = centre;
     let stone = "minecraft:stone";
-    match pair.poll_block(false, "h_arena", [x + 3, y, z], stone, timeout)? {
-        block if block == stone => Ok(()),
-        block => Err(format!("the host never had the arena's floor: {block}")),
+    for [dx, dz] in [[3, 0], [-4, -4], [4, -4], [-4, 4], [4, 4]] {
+        let at = [x + dx, y, z + dz];
+        let block = pair.poll_block(false, "h_arena", at, stone, timeout)?;
+        if block != stone {
+            return Err(format!("the host never had the arena's floor at {at:?}: {block}"));
+        }
     }
+    Ok(())
 }
 
 /// `mc set` lines for a stone arena around `centre` (blocks from the
@@ -653,9 +658,12 @@ pub fn beyond_the_gun(
         )?;
         notes.insert("witch_killed", shot.killed.to_string());
     }
-    // Where the host's mobs live around the client. Natural spawning there
-    // is the seed's ground and chance, so each side is asked until a mob
-    // lives beyond 48 blocks of the client.
+    // Where the host's mobs live around the client. Every mob so far was
+    // summoned (the world starts with `IW4L_MINECRAFT_MOBS=off`); natural
+    // spawning comes on only now, for this step. It is the world's ground
+    // and chance, so each side is asked until a mob lives beyond 48 blocks
+    // of the client.
+    pair.host.send("mc spawning on")?;
     let range = until_one(
         pair,
         false,
