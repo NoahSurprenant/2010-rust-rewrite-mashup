@@ -36,11 +36,10 @@ jobs:
 
   # The game, its master and the scenarios' runner, built once on GitHub's
   # runners (the build needs no game data) for the in-cluster jobs below,
-  # which only play; and the unit tests of what those scenarios play, on the
-  # same build. The in-cluster runner (one job at a time, on a node that
+  # which only play. The in-cluster runner (one job at a time, on a node that
   # runs hot) builds nothing.
   play-build:
-    name: play build and its unit tests
+    name: play build
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     steps:
@@ -56,6 +55,33 @@ jobs:
           shared-key: play
       - run: cargo build --profile play -p launcher --bin iw4l
       - run: cargo build --profile play -p approved_tests -p iw4l-master
+      # A tar keeps the binaries' modes, which an artifact's zip drops.
+      - name: Binaries
+        run: tar -cf play-bins.tar -C target/play iw4l approved_tests iw4l-master
+      - uses: actions/upload-artifact@v4
+        with:
+          name: play-bins
+          path: play-bins.tar
+          retention-days: 3
+          if-no-files-found: error
+
+  # The unit tests of what the in-cluster scenarios play, beside the build
+  # rather than after it, so the scenarios need not wait for them.
+  play-unit-tests:
+    name: play unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            libx11-dev libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
+            libxcursor-dev libxrandr-dev libxi-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: play-tests
       # The host's command inbox: a client whose clock runs ahead of a host
       # that lost time is taken a command a tick, not retired.
       - name: net inbox unit tests
@@ -74,15 +100,6 @@ jobs:
         run: |
           cargo test --profile play -p net --lib skate
           cargo test --profile play -p console --lib debug_skate
-      # A tar keeps the binaries' modes, which an artifact's zip drops.
-      - name: Binaries
-        run: tar -cf play-bins.tar -C target/play iw4l approved_tests iw4l-master
-      - uses: actions/upload-artifact@v4
-        with:
-          name: play-bins
-          path: play-bins.tar
-          retention-days: 3
-          if-no-files-found: error
 
   # The approved scenarios that play the real game on the Minecraft map,
   # each in parts a job of its own (approved_tests <scenario> --part <part>),
