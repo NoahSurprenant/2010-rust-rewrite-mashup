@@ -151,3 +151,74 @@ pub fn script(phases: &[Phase]) -> String {
     }
     out.join("; ")
 }
+
+/// A scenario's parts: each part's name and the checks it judges. A run
+/// plays one part (`--part <name>`, a CI job of its own, shorter and with
+/// fewer games at once) or, with no `--part`, all of them in one go.
+pub type Parts = &'static [(&'static str, &'static [&'static str])];
+
+/// The part a run plays, or all of the scenario.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Part(pub Option<&'static str>);
+
+impl Part {
+    /// The part named `arg` of a scenario with `parts`.
+    pub fn of(parts: Parts, arg: Option<&str>) -> Result<Self, String> {
+        let Some(arg) = arg else {
+            return Ok(Self(None));
+        };
+        parts
+            .iter()
+            .find(|(name, _)| *name == arg)
+            .map(|(name, _)| Self(Some(*name)))
+            .ok_or_else(|| {
+                let names: Vec<&str> = parts.iter().map(|(name, _)| *name).collect();
+                if names.is_empty() {
+                    format!("--part {arg}: this scenario has no parts")
+                } else {
+                    format!("--part {arg}: one of {}", names.join(", "))
+                }
+            })
+    }
+
+    /// Whether the run plays the steps of part `name`.
+    pub fn plays(self, name: &str) -> bool {
+        self.0.is_none_or(|part| part == name)
+    }
+
+    /// Whether the run judges the check `label`.
+    pub fn judges(self, parts: Parts, label: &str) -> bool {
+        parts
+            .iter()
+            .any(|(name, labels)| self.plays(name) && labels.contains(&label))
+    }
+
+    /// The run's name for its directory and report: the scenario's, with
+    /// the part's after a dot.
+    pub fn run_name(self, scenario: &str) -> String {
+        match self.0 {
+            Some(part) => format!("{scenario}.{part}"),
+            None => scenario.to_owned(),
+        }
+    }
+}
+
+/// Every check of a judge is in some part, and every part's check is one
+/// the judge gives: a split scenario keeps all its checks.
+#[cfg(test)]
+pub fn assert_parts_cover(parts: Parts, judged: &[&str]) {
+    for label in judged {
+        assert!(
+            parts.iter().any(|(_, labels)| labels.contains(label)),
+            "check {label} is in no part"
+        );
+    }
+    for (name, labels) in parts {
+        for label in *labels {
+            assert!(
+                judged.contains(label),
+                "part {name}: {label} is no check of the judge"
+            );
+        }
+    }
+}

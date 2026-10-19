@@ -24,8 +24,35 @@ use std::time::{Duration, Instant};
 
 use crate::duo::Pair;
 use crate::runner::Event;
+use crate::scenario::Parts;
 
 pub const NAME: &str = "skate_multiplayer";
+/// The listen host's room: the client skates, then the host.
+pub const LISTEN: &str = "listen";
+/// The dedicated server's room: the client skates.
+pub const DEDICATED: &str = "dedicated";
+/// Each part's checks.
+pub const PARTS: Parts = &[
+    (
+        LISTEN,
+        &[
+            "client_skates",
+            "host_moves_skating_client",
+            "host_draws_client_pose",
+            "client_gets_off",
+            "host_skates",
+            "client_receives_host_pose",
+        ],
+    ),
+    (
+        DEDICATED,
+        &[
+            "dedicated_client_skates",
+            "dedicated_moves_skating_client",
+            "dedicated_client_gets_off",
+        ],
+    ),
+];
 pub const MAP: &str = "minecraft:overworld";
 pub const CLASSES: &str = crate::scenarios::crafting_table::CLASSES;
 /// The dedicated server's room on the master (16 characters at most).
@@ -624,6 +651,12 @@ pub fn bandwidth(facts: &Facts) -> BTreeMap<&'static str, f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_parts_keep_every_check() {
+        let judged: Vec<&str> = judge(&Facts::default()).iter().map(|c| c.label).collect();
+        crate::scenario::assert_parts_cover(PARTS, &judged);
+    }
 
     fn event(fields: &str) -> Event {
         crate::runner::parse(&format!("skate-state: {fields}"), "skate-state:", 0).unwrap()

@@ -24,9 +24,57 @@ use std::time::Duration;
 
 use crate::duo::Pair;
 use crate::runner::Event;
+use crate::scenario::{Part, Parts};
 use crate::scenarios::mob_steps;
 
 pub const NAME: &str = "minecraft_multiplayer";
+/// The blocks, the client's hand and the restart: both sessions.
+pub const WORLD: &str = "world";
+/// Far from the host, the mobs: the first session only.
+pub const MOBS: &str = "mobs";
+/// Each part's checks. Both need a listen host: they are the host's own
+/// world and mobs as a player of it sees them, far from its own player;
+/// `dedicated_server` has a dedicated server's.
+pub const PARTS: Parts = &[
+    (
+        WORLD,
+        &[
+            "seed_shared",
+            "host_block_on_client",
+            "client_block_on_host",
+            "host_clear_on_client",
+            "host_gives_client",
+            "client_place_on_host",
+            "client_break_on_host",
+            "client_picks_up_drop",
+            "restart_same_seed",
+            "restart_world_kept",
+            "restart_host_inventory",
+            "restart_client_inventory",
+        ],
+    ),
+    (
+        MOBS,
+        &[
+            "seed_shared",
+            "client_ground_far_from_host",
+            "client_sees_mob_far_from_host",
+            "mob_tracks_host_position",
+            "mob_hurts_client",
+            "client_kills_mob_host_sees",
+            "mob_drop_reaches_client",
+            "mob_states_sent",
+            "client_hears_mob_sounds",
+            "client_knifes_mob_host_sees",
+            "client_punches_mob_host_sees",
+            "client_sees_witch_potion",
+            "client_gets_potion_effect",
+            "mobs_live_beyond_48_blocks",
+            "spawns_in_vanilla_range",
+            "despawns_beyond_128",
+        ],
+    ),
+];
 pub const MAP: &str = "minecraft:overworld";
 /// The same class as `crafting_table`'s: guns fill the first hotbar slots.
 pub const CLASSES: &str = crate::scenarios::crafting_table::CLASSES;
@@ -116,12 +164,11 @@ fn corridor(feet: [i32; 3]) -> String {
 }
 
 /// The first session: the lobby is up and the match started; everything
-/// both games are asked, in order. Stops at the first step that cannot go
-/// on (a missing answer); the judge says what failed.
-pub fn first_session(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
+/// both games are asked, in order (the part's steps, or all of them). Stops
+/// at the first step that cannot go on (a missing answer); the judge says
+/// what failed.
+pub fn first_session(pair: &mut Pair, facts: &mut Facts, part: Part) -> Result<(), String> {
     let load = Duration::from_secs(LOAD_SECS);
-    let step = Duration::from_secs(STEP_SECS);
-    let sync = Duration::from_secs(SYNC_SECS);
     pair.host.send(&format!(
         "wait world; spawn 0; force_match_start; wait minecraft; wait 1s; mc clear; mc give torch 7; {}; wait 1s",
         set(GOLD, "gold_block")
@@ -134,6 +181,20 @@ pub fn first_session(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     facts.keep("h_ready", host);
     let client = pair.ask(true, "wait minecraft; mc state c_ready", "c_ready", load)?;
     let client = facts.keep("c_ready", client);
+    if part.plays(WORLD) {
+        world_steps(pair, facts, &client)?;
+    }
+    if part.plays(MOBS) {
+        far_steps(pair, facts)?;
+    }
+    Ok(())
+}
+
+/// Part `world`'s first session: blocks set and cleared both ways, and the
+/// client's planks placed, broken and picked up by hand.
+fn world_steps(pair: &mut Pair, facts: &mut Facts, client: &Event) -> Result<(), String> {
+    let step = Duration::from_secs(STEP_SECS);
+    let sync = Duration::from_secs(SYNC_SECS);
     // The host's block, on the client.
     let gold = pair.poll_block(true, "c_gold", GOLD, "minecraft:gold_block", sync)?;
     facts.notes.insert("c_gold", gold);
@@ -151,7 +212,7 @@ pub fn first_session(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
 
     // The client places planks by hand against a stone three blocks along
     // +X from its feet, with planks its host gave it.
-    let feet = feet(&client).ok_or("c_ready has no feet")?;
+    let feet = feet(client).ok_or("c_ready has no feet")?;
     let plank = add(feet, [2, 0, 0]);
     let script = format!(
         "{}; mc clear; mc give oak_planks 4; wait 2s; mc state c_given",
@@ -199,6 +260,13 @@ pub fn first_session(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     facts.keep("c_picked", picked);
     let last = pair.ask(true, "key 1; wait 1s; mc state c_final", "c_final", step)?;
     facts.keep("c_final", last);
+    Ok(())
+}
+
+/// Part `mobs`'s first session: the client far from the host, on a
+/// platform, and the mobs there.
+fn far_steps(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
+    let step = Duration::from_secs(STEP_SECS);
     // Far from the host, the host still has ground under the client: it
     // stands on a platform it asked for there (the host has no terrain
     // there of its own).
@@ -572,6 +640,12 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_parts_keep_every_check() {
+        let judged: Vec<&str> = judge(&Facts::default()).iter().map(|c| c.label).collect();
+        crate::scenario::assert_parts_cover(PARTS, &judged);
+    }
 
     fn event(fields: &str) -> Event {
         crate::runner::parse(&format!("minecraft-state: {fields}"), "minecraft-state:", 0).unwrap()

@@ -41,6 +41,8 @@ struct Args {
     replay: Option<PathBuf>,
     cache: CacheMode,
     bin: PathBuf,
+    /// `--part <name>`: one part of a split scenario.
+    part: Option<String>,
 }
 
 fn main() {
@@ -51,7 +53,7 @@ fn main() {
             eprintln!("{message}");
             eprintln!(
                 "usage: approved_tests heavy_gameplay_lifecycle [--seed N | --replay run.json] \
-                 [--cache cold|shared] [--bin path]\n       approved_tests crafting_table [--cache cold|shared] [--bin path]\n       approved_tests minecraft_multiplayer [--cache cold|shared] [--bin path]\n       approved_tests dedicated_server [--cache cold|shared] [--bin path]\n       approved_tests skate_multiplayer [--cache cold|shared] [--bin path]"
+                 [--cache cold|shared] [--bin path]\n       approved_tests crafting_table [--cache cold|shared] [--bin path]\n       approved_tests minecraft_multiplayer [--part world|mobs] [--cache cold|shared] [--bin path]\n       approved_tests dedicated_server [--part visits|mobs] [--cache cold|shared] [--bin path]\n       approved_tests skate_multiplayer [--part listen|dedicated] [--cache cold|shared] [--bin path]"
             );
             std::process::exit(2);
         }
@@ -88,7 +90,12 @@ fn main() {
     });
 }
 
+/// The repository: `IW4L_REPO_ROOT`, or where this was built (a CI job that
+/// runs a build made in another job checks the repository out elsewhere).
 fn repo_root() -> PathBuf {
+    if let Some(root) = std::env::var_os("IW4L_REPO_ROOT").filter(|r| !r.is_empty()) {
+        return PathBuf::from(root);
+    }
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     manifest
         .parent()
@@ -106,6 +113,7 @@ fn parse_args(root: &Path) -> Result<Args, String> {
         replay: None,
         cache: CacheMode::Cold,
         bin: root.join("target/play/iw4l"),
+        part: None,
     };
     while let Some(flag) = it.next() {
         let mut value = || it.next().ok_or(format!("{flag} needs a value"));
@@ -126,6 +134,7 @@ fn parse_args(root: &Path) -> Result<Args, String> {
                 }
             }
             "--bin" => args.bin = PathBuf::from(value()?),
+            "--part" => args.part = Some(value()?),
             other => return Err(format!("unknown flag {other}")),
         }
     }
@@ -225,6 +234,7 @@ fn resolve_scenes(
 
 fn run(root: &Path, args: &Args) -> Result<bool, String> {
     asset_transport::load_dotenv();
+    scenario::Part::of(&[], args.part.as_deref())?;
     let replay = args.replay.as_deref().map(read_replay).transpose()?;
     let seed = replay
         .as_ref()
@@ -367,6 +377,7 @@ fn run(root: &Path, args: &Args) -> Result<bool, String> {
 
 fn run_crafting_table(root: &Path, args: &Args) -> Result<bool, String> {
     asset_transport::load_dotenv();
+    scenario::Part::of(&[], args.part.as_deref())?;
     if args.seed.is_some() || args.replay.is_some() {
         return Err("crafting_table runs at its fixed world seed: no --seed or --replay".into());
     }
@@ -563,6 +574,7 @@ fn close_duo(pair: &mut duo::Pair) -> Result<(), String> {
 
 fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
     asset_transport::load_dotenv();
+    let part = scenario::Part::of(minecraft_multiplayer::PARTS, args.part.as_deref())?;
     if args.seed.is_some() || args.replay.is_some() {
         return Err(
             "minecraft_multiplayer takes no --seed or --replay: the host picks the seed".into(),
@@ -583,13 +595,18 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
     let mw2_installed = asset_transport::list_mp_maps(&games)
         .iter()
         .any(|m| m.starts_with("iw4:"));
-    let run_id = format!("{}-{}", utc_stamp(), minecraft_multiplayer::NAME);
+    let run_id = format!(
+        "{}-{}",
+        utc_stamp(),
+        part.run_name(minecraft_multiplayer::NAME)
+    );
     let run_dir = root.join("iw4l-artifacts/approved-tests").join(&run_id);
     std::fs::create_dir_all(run_dir.parent().expect("has parent"))
         .map_err(|e| format!("create run root: {e}"))?;
     std::fs::create_dir(&run_dir).map_err(|e| format!("create {}: {e}", run_dir.display()))?;
     let mut manifest = json!({
         "scenario": minecraft_multiplayer::NAME,
+        "part": part.0,
         "run_id": run_id,
         "result": "running",
         "build": report::build_facts(root, &args.bin),
@@ -632,7 +649,13 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
     let mut facts = minecraft_multiplayer::Facts::default();
     let mut peaks = Vec::new();
     let mut failure = None;
-    for session in [1, 2] {
+    // Part `mobs` needs no restart.
+    let sessions: &[u32] = if part.plays(minecraft_multiplayer::WORLD) {
+        &[1, 2]
+    } else {
+        &[1]
+    };
+    for &session in sessions {
         let mut pair = match open_duo(&bin, &master, &dirs, session, &[]) {
             Ok(pair) => pair,
             Err(e) => {
@@ -641,7 +664,7 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
             }
         };
         let played = if session == 1 {
-            minecraft_multiplayer::first_session(&mut pair, &mut facts)
+            minecraft_multiplayer::first_session(&mut pair, &mut facts, part)
         } else {
             minecraft_multiplayer::second_session(&mut pair, &mut facts)
         };
@@ -669,7 +692,8 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
         keep_minecraft_files(root, dir);
     }
     manifest["memory"] = peaks.into();
-    let checks = minecraft_multiplayer::judge(&facts);
+    let mut checks = minecraft_multiplayer::judge(&facts);
+    checks.retain(|c| part.judges(minecraft_multiplayer::PARTS, c.label));
     for check in &checks {
         match check.failures.as_slice() {
             [] => println!("  pass  {}", check.label),
@@ -723,6 +747,7 @@ fn dedicated_sessions(
     master_bin: &Path,
     master: &duo::Master,
     dirs: &[PathBuf; 2],
+    part: scenario::Part,
     facts: &mut dedicated_server::Facts,
     peaks: &mut Vec<Value>,
 ) -> Result<(), String> {
@@ -755,7 +780,13 @@ fn dedicated_sessions(
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     };
     let client = |session| duo::Player::launch(bin, &dirs[1], "client", session, &env);
-    for life in [1, 2] {
+    // Part `mobs` needs no second life.
+    let lives: &[u32] = if part.plays(ds::VISITS) {
+        &[1, 2]
+    } else {
+        &[1]
+    };
+    for &life in lives {
         let server = duo::Player::launch_with(
             bin,
             &dirs[0],
@@ -771,13 +802,21 @@ fn dedicated_sessions(
             peak_client_kib: 0,
         };
         let played = (|| {
-            if life == 1 {
+            if !part.plays(ds::VISITS) {
+                let room = ds::server_ready(&mut pair, facts, "s_ready")?;
+                pair.client = Some(client(1)?);
+                ds::mobs_visit(&mut pair, facts, &room)?;
+                ds::leave(&mut pair)?;
+                ds::stop(&mut pair, facts, "stop1")
+            } else if life == 1 {
                 let room = ds::server_ready(&mut pair, facts, "s_ready")?;
                 ds::measure(&mut pair, facts, "no_client")?;
                 pair.client = Some(client(1)?);
                 ds::first_visit(&mut pair, facts, &room)?;
                 ds::measure(&mut pair, facts, "one_client")?;
-                ds::mob_visit(&mut pair, facts)?;
+                if part.plays(ds::MOBS) {
+                    ds::mob_visit(&mut pair, facts)?;
+                }
                 ds::leave(&mut pair)?;
                 ds::empty_room(&mut pair, facts, &list)?;
                 pair.client = Some(client(2)?);
@@ -810,6 +849,7 @@ fn dedicated_sessions(
 
 fn run_dedicated_server(root: &Path, args: &Args) -> Result<bool, String> {
     asset_transport::load_dotenv();
+    let part = scenario::Part::of(dedicated_server::PARTS, args.part.as_deref())?;
     if args.seed.is_some() || args.replay.is_some() {
         return Err(
             "dedicated_server takes no --seed or --replay: the server picks the seed".into(),
@@ -830,13 +870,14 @@ fn run_dedicated_server(root: &Path, args: &Args) -> Result<bool, String> {
     let mw2_installed = asset_transport::list_mp_maps(&games)
         .iter()
         .any(|m| m.starts_with("iw4:"));
-    let run_id = format!("{}-{}", utc_stamp(), dedicated_server::NAME);
+    let run_id = format!("{}-{}", utc_stamp(), part.run_name(dedicated_server::NAME));
     let run_dir = root.join("iw4l-artifacts/approved-tests").join(&run_id);
     std::fs::create_dir_all(run_dir.parent().expect("has parent"))
         .map_err(|e| format!("create run root: {e}"))?;
     std::fs::create_dir(&run_dir).map_err(|e| format!("create {}: {e}", run_dir.display()))?;
     let mut manifest = json!({
         "scenario": dedicated_server::NAME,
+        "part": part.0,
         "run_id": run_id,
         "result": "running",
         "build": report::build_facts(root, &args.bin),
@@ -877,8 +918,16 @@ fn run_dedicated_server(root: &Path, args: &Args) -> Result<bool, String> {
     let master = duo::Master::start(&master_bin, &run_dir.join("master"))?;
     let mut facts = dedicated_server::Facts::default();
     let mut peaks = Vec::new();
-    let failure =
-        dedicated_sessions(&bin, &master_bin, &master, &dirs, &mut facts, &mut peaks).err();
+    let failure = dedicated_sessions(
+        &bin,
+        &master_bin,
+        &master,
+        &dirs,
+        part,
+        &mut facts,
+        &mut peaks,
+    )
+    .err();
     drop(master);
     for dir in &dirs {
         keep_minecraft_files(root, dir);
@@ -905,7 +954,8 @@ fn run_dedicated_server(root: &Path, args: &Args) -> Result<bool, String> {
         .map(|e| json!(e.fields))
         .collect::<Vec<_>>()
         .into();
-    let checks = dedicated_server::judge(&facts);
+    let mut checks = dedicated_server::judge(&facts);
+    checks.retain(|c| part.judges(dedicated_server::PARTS, c.label));
     for check in &checks {
         match check.failures.as_slice() {
             [] => println!("  pass  {}", check.label),
@@ -959,23 +1009,31 @@ fn skate_sessions(
     master: &duo::Master,
     dirs: &[PathBuf; 3],
     skate_assets: &str,
+    part: scenario::Part,
     facts: &mut skate_multiplayer::Facts,
     peaks: &mut Vec<Value>,
 ) -> Result<(), String> {
     use duo::field;
     use skate_multiplayer as sk;
     let skate = [("IW4L_SKATE_ASSETS", skate_assets.to_owned())];
-    let listen_dirs = [dirs[0].clone(), dirs[1].clone()];
-    let mut pair = open_duo(bin, master, &listen_dirs, 1, &skate)?;
-    let played = sk::listen_session(&mut pair, facts);
-    let closed = close_duo(&mut pair);
-    peaks.push(json!({
-        "room": "listen",
-        "host_peak_rss_mib": pair.host.peak_rss_kib / 1024,
-        "client_peak_rss_mib": pair.peak_client_kib / 1024,
-        "combined_peak_rss_mib": pair.peak_combined_kib / 1024,
-    }));
-    played.and(closed).map_err(|e| format!("listen room: {e}"))?;
+    if part.plays(sk::LISTEN) {
+        let listen_dirs = [dirs[0].clone(), dirs[1].clone()];
+        let mut pair = open_duo(bin, master, &listen_dirs, 1, &skate)?;
+        let played = sk::listen_session(&mut pair, facts);
+        let closed = close_duo(&mut pair);
+        peaks.push(json!({
+            "room": "listen",
+            "host_peak_rss_mib": pair.host.peak_rss_kib / 1024,
+            "client_peak_rss_mib": pair.peak_client_kib / 1024,
+            "combined_peak_rss_mib": pair.peak_combined_kib / 1024,
+        }));
+        played
+            .and(closed)
+            .map_err(|e| format!("listen room: {e}"))?;
+    }
+    if !part.plays(sk::DEDICATED) {
+        return Ok(());
+    }
 
     let env = [
         ("IW4L_MASTER_ADDR", master.addr.clone()),
@@ -1037,6 +1095,7 @@ fn skate_sessions(
 
 fn run_skate_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
     asset_transport::load_dotenv();
+    let part = scenario::Part::of(skate_multiplayer::PARTS, args.part.as_deref())?;
     if args.seed.is_some() || args.replay.is_some() {
         return Err("skate_multiplayer takes no --seed or --replay".into());
     }
@@ -1059,13 +1118,14 @@ fn run_skate_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
         let root = Path::new(root);
         root.join("rig.json").is_file() && root.join("board.json").is_file()
     });
-    let run_id = format!("{}-{}", utc_stamp(), skate_multiplayer::NAME);
+    let run_id = format!("{}-{}", utc_stamp(), part.run_name(skate_multiplayer::NAME));
     let run_dir = root.join("iw4l-artifacts/approved-tests").join(&run_id);
     std::fs::create_dir_all(run_dir.parent().expect("has parent"))
         .map_err(|e| format!("create run root: {e}"))?;
     std::fs::create_dir(&run_dir).map_err(|e| format!("create {}: {e}", run_dir.display()))?;
     let mut manifest = json!({
         "scenario": skate_multiplayer::NAME,
+        "part": part.0,
         "run_id": run_id,
         "result": "running",
         "build": report::build_facts(root, &args.bin),
@@ -1114,14 +1174,24 @@ fn run_skate_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
     let master = duo::Master::start(&master_bin, &run_dir.join("master"))?;
     let mut facts = skate_multiplayer::Facts::default();
     let mut peaks = Vec::new();
-    let failure = skate_sessions(&bin, &master, &dirs, &skate_assets, &mut facts, &mut peaks).err();
+    let failure = skate_sessions(
+        &bin,
+        &master,
+        &dirs,
+        &skate_assets,
+        part,
+        &mut facts,
+        &mut peaks,
+    )
+    .err();
     drop(master);
     for dir in &dirs {
         keep_minecraft_files(root, dir);
     }
     manifest["memory"] = peaks.into();
     manifest["bandwidth"] = json!(skate_multiplayer::bandwidth(&facts));
-    let checks = skate_multiplayer::judge(&facts);
+    let mut checks = skate_multiplayer::judge(&facts);
+    checks.retain(|c| part.judges(skate_multiplayer::PARTS, c.label));
     for check in &checks {
         match check.failures.as_slice() {
             [] => println!("  pass  {}", check.label),

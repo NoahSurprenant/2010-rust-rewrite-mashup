@@ -32,9 +32,56 @@ use std::time::{Duration, Instant};
 
 use crate::duo::{Pair, Player, cpu_secs, field};
 use crate::runner::Event;
+use crate::scenario::Parts;
 use crate::scenarios::mob_steps;
 
 pub const NAME: &str = "dedicated_server";
+/// The rooms with and without the client, its keys and admin rights, and
+/// the restarts: both server lives.
+pub const VISITS: &str = "visits";
+/// Far from the spawn, the mobs: one visit of the first life.
+pub const MOBS: &str = "mobs";
+/// Each part's checks.
+pub const PARTS: Parts = &[
+    (
+        VISITS,
+        &[
+            "server_has_no_player",
+            "seed_shared",
+            "non_admin_refused",
+            "admin_allowed",
+            "player_joined_by_key",
+            "admin_transfer_on_server",
+            "client_block_on_server",
+            "client_inventory",
+            "room_kept_empty",
+            "rejoin_world_kept",
+            "sigterm_saves_and_exits",
+            "restart_world_kept",
+            "second_sigterm",
+        ],
+    ),
+    (
+        MOBS,
+        &[
+            "server_has_no_player",
+            "seed_shared",
+            "player_joined_by_key",
+            "mob_seen_with_no_server_player",
+            "mob_hurts_client",
+            "client_kills_mob_server_sees",
+            "mob_states_sent",
+            "client_hears_mob_sounds",
+            "client_knifes_mob_host_sees",
+            "client_punches_mob_host_sees",
+            "client_sees_witch_potion",
+            "client_gets_potion_effect",
+            "mobs_live_beyond_48_blocks",
+            "spawns_in_vanilla_range",
+            "despawns_beyond_128",
+        ],
+    ),
+];
 pub const MAP: &str = "minecraft:overworld";
 /// The room's name on the master, longer than the 16 characters a master
 /// keeps of a player's name: the list shows it whole.
@@ -311,6 +358,14 @@ pub fn first_visit(pair: &mut Pair, facts: &mut Facts, room: &str) -> Result<(),
     )?;
     facts.notes.insert("s_gold", gold);
     Ok(())
+}
+
+/// Part `mobs`'s visit: the client joins (an admin, as `IW4L_ADMIN_KEYS`
+/// made it) and goes straight to the mobs.
+pub fn mobs_visit(pair: &mut Pair, facts: &mut Facts, room: &str) -> Result<(), String> {
+    let ready = join(pair, room, "c_ready")?;
+    facts.keep("c_ready", ready);
+    mob_visit(pair, facts)
 }
 
 /// Far from the world's spawn, in a walled arena on a platform the client
@@ -820,6 +875,12 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_parts_keep_every_check() {
+        let judged: Vec<&str> = judge(&Facts::default()).iter().map(|c| c.label).collect();
+        crate::scenario::assert_parts_cover(PARTS, &judged);
+    }
 
     fn event(prefix: &str, fields: &str) -> Event {
         crate::runner::parse(&format!("{prefix} {fields}"), prefix, 0).unwrap()

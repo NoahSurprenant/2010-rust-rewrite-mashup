@@ -62,7 +62,20 @@ make approved SCENARIO=crafting_table           # the crafting table scenario
 make approved SCENARIO=minecraft_multiplayer    # a host and a client through a local master
 make approved SCENARIO=dedicated_server         # a dedicated server, and a client that comes and goes
 make approved SCENARIO=skate_multiplayer        # skaters with a listen host and a dedicated server
+make approved SCENARIO=minecraft_multiplayer ARGS='--part mobs'   # one part of a split scenario
 ```
+
+`minecraft_multiplayer`, `dedicated_server` and `skate_multiplayer` come in
+parts, which CI runs as jobs of their own so that none holds the runner long
+and none runs more than two games: `--part world` (blocks, the client's hand,
+the restart) or `--part mobs` (far from the host, its mobs) for
+`minecraft_multiplayer`; `--part visits` (admin rights, the empty room,
+SIGTERM and the restart) or `--part mobs` for `dedicated_server`; `--part
+listen` or `--part dedicated` for `skate_multiplayer`. A part plays only its
+steps and judges only its checks (each scenario's `PARTS`; every check is in
+a part). With no `--part` the whole scenario runs, as before. `IW4L_REPO_ROOT`
+points the runner at a checkout other than the one it was built in (CI builds
+it on GitHub's runners and plays on the in-cluster one).
 
 The runner builds nothing; `make approved` builds `target/play/iw4l` (and `target/play/iw4l-master`, which `minecraft_multiplayer`, `dedicated_server` and `skate_multiplayer` run) first.
 Each run owns one directory, `iw4l-artifacts/approved-tests/<run-id>/`. The
