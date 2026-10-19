@@ -277,7 +277,10 @@ pub struct Shot {
 }
 
 /// The client raises a bullet gun (not the launcher or a grenade, which
-/// would take it with the mob): the first hotbar slot that holds one.
+/// would take it with the mob): the first hotbar slot that holds one. The
+/// key is pressed twice, a second apart: once, on 2 CPUs, it did not take,
+/// and the client fired its launcher at the husk beside it and died of the
+/// blast (run 39272980932 attempt 3).
 pub fn draw_gun(pair: &mut Pair) -> Result<u32, String> {
     let held = census(pair, true, "c_guns", Some("-"))?;
     let slot = guns(&held)
@@ -287,7 +290,7 @@ pub fn draw_gun(pair: &mut Pair) -> Result<u32, String> {
     pair.client
         .as_mut()
         .ok_or("no client")?
-        .send(&format!("key {slot}; wait 1.5s"))?;
+        .send(&format!("key {slot}; wait 1s; key {slot}; wait 1.5s"))?;
     Ok(slot)
 }
 
