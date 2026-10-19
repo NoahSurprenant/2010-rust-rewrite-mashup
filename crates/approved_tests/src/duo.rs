@@ -460,7 +460,7 @@ impl Pair {
         let start = Instant::now();
         loop {
             let script = format!("mc block {label} {} {} {}", at[0], at[1], at[2]);
-            let event = self.ask(client, &script, label, Duration::from_secs(30))?;
+            let event = self.ask(client, &script, label, Duration::from_secs(60))?;
             let block = event.get("block").unwrap_or("").to_owned();
             if block == want || start.elapsed() > timeout {
                 return Ok(block);

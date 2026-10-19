@@ -544,7 +544,7 @@ fn open_duo(
 /// Both games end through the normal exit: the client first, so the host
 /// keeps its inventory, then the host, which saves its world.
 fn close_duo(pair: &mut duo::Pair) -> Result<(), String> {
-    let quit = Duration::from_secs(120);
+    let quit = Duration::from_secs(240);
     if let Some(client) = pair.client.as_mut() {
         client.send("finish_run")?;
     }
@@ -1079,7 +1079,7 @@ fn skate_sessions(
         pair.host.terminate()
     })();
     let start = std::time::Instant::now();
-    while pair.host.exited().is_none() && start.elapsed() < Duration::from_secs(30) {
+    while pair.host.exited().is_none() && start.elapsed() < Duration::from_secs(60) {
         pair.sample();
         std::thread::sleep(Duration::from_millis(100));
     }

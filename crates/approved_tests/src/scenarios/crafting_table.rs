@@ -17,8 +17,8 @@ use crate::runner::Event;
 pub const NAME: &str = "crafting_table";
 pub const MAP: &str = "minecraft:overworld";
 pub const SEED: &str = "12345";
-pub const PHASE_TIMEOUT_SECS: u64 = 300;
-pub const QUIT_TIMEOUT_SECS: u64 = 30;
+pub const PHASE_TIMEOUT_SECS: u64 = 600;
+pub const QUIT_TIMEOUT_SECS: u64 = 60;
 
 /// The class the player spawns with, written as the run's class file: a
 /// fresh profile draws its classes at random, and an akimbo gun fires on a

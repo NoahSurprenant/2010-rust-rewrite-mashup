@@ -79,11 +79,11 @@ pub const MAP: &str = "minecraft:overworld";
 /// The same class as `crafting_table`'s: guns fill the first hotbar slots.
 pub const CLASSES: &str = crate::scenarios::crafting_table::CLASSES;
 /// Loading a game and its world, on a CPU renderer.
-pub const LOAD_SECS: u64 = 600;
+pub const LOAD_SECS: u64 = 900;
 /// One step's answer.
-pub const STEP_SECS: u64 = 60;
+pub const STEP_SECS: u64 = 120;
 /// A change reaching the other game.
-pub const SYNC_SECS: u64 = 30;
+pub const SYNC_SECS: u64 = 60;
 
 const GOLD: [i32; 3] = [2, 5, 0];
 const DIAMOND: [i32; 3] = [3, 6, 0];
@@ -248,7 +248,7 @@ fn world_steps(pair: &mut Pair, facts: &mut Facts, client: &Event) -> Result<(),
         "key {}; wait 1s; look 0 23; wait 0.2s; key mouse1 4",
         empty + 1
     ))?;
-    let broken = pair.poll_block(false, "h_plank_gone", plank, "air", Duration::from_secs(20))?;
+    let broken = pair.poll_block(false, "h_plank_gone", plank, "air", Duration::from_secs(40))?;
     facts.notes.insert("h_plank_gone", broken);
     // It walks onto the plank the break dropped, on the host, and picks it up.
     let picked = pair.ask(

@@ -59,14 +59,14 @@ pub const CLASSES: &str = crate::scenarios::crafting_table::CLASSES;
 pub const ROOM: &str = "approved skate";
 pub const CLIENT: &str = "client";
 /// Loading a game and its world, on a CPU renderer.
-pub const LOAD_SECS: u64 = 600;
-pub const STEP_SECS: u64 = 60;
+pub const LOAD_SECS: u64 = 900;
+pub const STEP_SECS: u64 = 120;
 /// The skate session's preparation for the map, after the world loads.
-pub const READY_SECS: u64 = 300;
+pub const READY_SECS: u64 = 600;
 /// How long a skater pushes before the others are asked.
 pub const PUSH_SECS: u64 = 4;
 /// A skater's movement reaching the host.
-pub const SYNC_SECS: u64 = 20;
+pub const SYNC_SECS: u64 = 40;
 /// How far down the runway (map units) a skater must have gone: about 4 m,
 /// half what pushing for `PUSH_SECS` covers.
 pub const MOVED_UNITS: f64 = 160.0;

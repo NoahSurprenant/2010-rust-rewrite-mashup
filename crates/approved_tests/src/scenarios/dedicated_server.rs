@@ -90,19 +90,19 @@ pub const ROOM: &str = "approved dedicated server";
 pub const CLIENT: &str = "client";
 pub const CLASSES: &str = crate::scenarios::crafting_table::CLASSES;
 /// Loading a game and its world, on a CPU renderer.
-pub const LOAD_SECS: u64 = 600;
-pub const STEP_SECS: u64 = 60;
-pub const SYNC_SECS: u64 = 30;
+pub const LOAD_SECS: u64 = 900;
+pub const STEP_SECS: u64 = 120;
+pub const SYNC_SECS: u64 = 60;
 /// A rejoining client's whole edit history: the level's own changes (the
 /// leaves of a mangrove swamp settling) can run to a hundred thousand.
-pub const REJOIN_SECS: u64 = 120;
+pub const REJOIN_SECS: u64 = 240;
 /// The room left empty: longer than a master session's 60 s without
 /// authority progress, after which a stalled host is dropped.
 pub const EMPTY_SECS: u64 = 75;
 /// How long the server's CPU use is sampled at each point.
 pub const CPU_SECS: u64 = 20;
 /// SIGTERM to exit.
-pub const STOP_SECS: u64 = 30;
+pub const STOP_SECS: u64 = 60;
 
 /// A block the client sets, from the world's spawn block.
 const GOLD: [i32; 3] = [2, 5, 0];
@@ -432,7 +432,7 @@ pub fn mob_visit(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
 /// The client leaves through the normal exit and the server's room stays.
 pub fn leave(pair: &mut Pair) -> Result<(), String> {
     client(pair)?.send("wait 3s; finish_run")?;
-    pair.until("the client to exit", Duration::from_secs(120), |pair| {
+    pair.until("the client to exit", Duration::from_secs(240), |pair| {
         pair.client.as_mut().is_none_or(|c| c.exited().is_some())
     })
     .or_else(|e| {

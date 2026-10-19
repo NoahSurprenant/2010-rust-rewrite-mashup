@@ -12,11 +12,11 @@ use crate::duo::Pair;
 use crate::runner::Event;
 
 /// How long a mob summoned through the host takes to reach the client's view.
-pub const SEE_SECS: u64 = 30;
+pub const SEE_SECS: u64 = 60;
 /// How long a mob has to hurt the client.
-pub const HURT_SECS: u64 = 30;
+pub const HURT_SECS: u64 = 60;
 /// How long the client has to shoot a mob dead.
-pub const KILL_SECS: u64 = 60;
+pub const KILL_SECS: u64 = 120;
 /// How far apart the host's and the client's copies of a mob may stand at
 /// one moment, in blocks: the client draws a few ticks behind the host.
 pub const TRACK_BLOCKS: f64 = 1.5;
@@ -139,7 +139,7 @@ pub fn census(
         Some(kind) => format!("mc mobs {label} {kind}"),
         None => format!("mc mobs {label}"),
     };
-    pair.ask(client, &script, label, Duration::from_secs(30))
+    pair.ask(client, &script, label, Duration::from_secs(60))
 }
 
 /// Whether `mob` is alive within the arena around the player of a census
@@ -211,7 +211,7 @@ pub fn poll_drop(pair: &mut Pair, id: &str, timeout: Duration) -> Result<String,
             true,
             "mc state c_drop_state",
             "c_drop_state",
-            Duration::from_secs(30),
+            Duration::from_secs(60),
         )?;
         if state
             .get("slots")
@@ -283,7 +283,7 @@ pub fn shoot(
             let script = format!(
                 "look {yaw:.2} {pitch:.2}; wait 0.1s; press +attack 0.6; wait 0.7s; mc mobs c_aim {kind}"
             );
-            seen = pair.ask(true, &script, "c_aim", Duration::from_secs(30))?;
+            seen = pair.ask(true, &script, "c_aim", Duration::from_secs(60))?;
             bursts += 1;
         }
         let host = census(pair, false, "h_shot", Some(kind))?;
@@ -303,11 +303,11 @@ pub fn shoot(
 }
 
 /// How long a mob has to come within a knife's reach of the client.
-pub const CLOSE_SECS: u64 = 30;
+pub const CLOSE_SECS: u64 = 60;
 /// How long the client has to punch a mob dead.
-pub const PUNCH_SECS: u64 = 60;
+pub const PUNCH_SECS: u64 = 120;
 /// How long a witch has to land a potion on the client.
-pub const WITCH_SECS: u64 = 60;
+pub const WITCH_SECS: u64 = 120;
 /// How far a knife reaches from the eye, in blocks (MW2's 64 units),
 /// with room for the mob's half width.
 pub const KNIFE_BLOCKS: f64 = 1.3;
@@ -434,7 +434,7 @@ pub fn knife(
                         "look {yaw:.2} {pitch:.2}; wait 0.1s; press +melee 0.1; wait 1.2s; mc mobs c_struck {kind}"
                     ),
                     "c_struck",
-                    Duration::from_secs(30),
+                    Duration::from_secs(60),
                 )?;
                 blows += 1;
             }
@@ -485,7 +485,7 @@ pub fn punch(
                     "look {yaw:.2} {pitch:.2}; wait 0.1s; key mouse1 0; wait 0.6s; mc mobs c_punched {kind}"
                 ),
                 "c_punched",
-                Duration::from_secs(30),
+                Duration::from_secs(60),
             )?;
             blows += 1;
         }
@@ -544,7 +544,7 @@ pub fn beyond_the_gun(
     lines: &mut std::collections::BTreeMap<String, Event>,
     notes: &mut std::collections::BTreeMap<&'static str, String>,
 ) -> Result<(), String> {
-    let step = Duration::from_secs(60);
+    let step = Duration::from_secs(120);
     let see = Duration::from_secs(SEE_SECS);
     let heard = pair.ask(true, "mc sounds c_sounds", "c_sounds", step)?;
     lines.insert("c_sounds".into(), heard);
@@ -652,7 +652,7 @@ pub fn beyond_the_gun(
 }
 
 /// How long `beyond_the_gun` asks for mobs far from the client.
-pub const RANGE_SECS: u64 = 90;
+pub const RANGE_SECS: u64 = 180;
 
 /// Asks `script` for the line `label` until its `key` counts one or more or
 /// `RANGE_SECS` pass: the last answer either way.

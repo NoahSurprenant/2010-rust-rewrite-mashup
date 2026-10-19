@@ -132,18 +132,25 @@ jobs:
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
+      # One at a time: the runner has 2 CPUs, and its node is shared.
+      max-parallel: 1
       matrix:
         include:
-          - { scenario: crafting_table, part: '', games: 'MW2 + Minecraft', timeout: 30 }
-          - { scenario: minecraft_multiplayer, part: world, games: 'listen host + client', timeout: 45 }
-          - { scenario: minecraft_multiplayer, part: mobs, games: 'listen host + client', timeout: 45 }
-          - { scenario: dedicated_server, part: visits, games: 'dedicated server + client', timeout: 45 }
-          - { scenario: dedicated_server, part: mobs, games: 'dedicated server + client', timeout: 45 }
-          - { scenario: skate_multiplayer, part: listen, games: 'listen host + client', timeout: 45, skate: true }
-          - { scenario: skate_multiplayer, part: dedicated, games: 'dedicated server + client', timeout: 45, skate: true }
+          - { scenario: crafting_table, part: '', games: 'MW2 + Minecraft', timeout: 60 }
+          - { scenario: minecraft_multiplayer, part: world, games: 'listen host + client', timeout: 90 }
+          - { scenario: minecraft_multiplayer, part: mobs, games: 'listen host + client', timeout: 90 }
+          - { scenario: dedicated_server, part: visits, games: 'dedicated server + client', timeout: 90 }
+          - { scenario: dedicated_server, part: mobs, games: 'dedicated server + client', timeout: 90 }
+          - { scenario: skate_multiplayer, part: listen, games: 'listen host + client', timeout: 90, skate: true }
+          - { scenario: skate_multiplayer, part: dedicated, games: 'dedicated server + client', timeout: 90, skate: true }
     env:
       VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
       WGPU_BACKEND: vulkan
+      # lavapipe sizes its render threads from the host's cores, not the
+      # runner's CPU limit (2); the game's own pools (Bevy's task pools, the
+      # terrain's generation and section threads, asset loading) already
+      # follow the limit through available_parallelism.
+      LP_NUM_THREADS: 2
       # The checkout, not where the binaries were built.
       IW4L_REPO_ROOT: ${{ github.workspace }}
     steps:
