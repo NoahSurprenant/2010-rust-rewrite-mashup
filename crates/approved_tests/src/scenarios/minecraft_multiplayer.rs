@@ -323,6 +323,7 @@ fn far_mobs(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     client.send(&format!("{}; wait 2s", mob_steps::arena(FAR)))?;
     // A bullet gun up before the husk comes.
     mob_steps::draw_gun(pair)?;
+    mob_steps::arena_floor(pair, FAR, Duration::from_secs(mob_steps::SEE_SECS))?;
     pair.client
         .as_mut()
         .ok_or("no client")?

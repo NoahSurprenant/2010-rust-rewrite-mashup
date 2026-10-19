@@ -106,6 +106,19 @@ pub fn apart(a: [f64; 3], b: [f64; 3]) -> f64 {
     (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt()
 }
 
+/// Asks the host until the arena around `centre` has its floor under the
+/// spot a husk is summoned on (three blocks along +X from the centre). A host
+/// that generates the chunks there late sets the arena late, and a mob
+/// summoned before it falls through to the ground below.
+pub fn arena_floor(pair: &mut Pair, centre: [i32; 3], timeout: Duration) -> Result<(), String> {
+    let [x, y, z] = centre;
+    let stone = "minecraft:stone";
+    match pair.poll_block(false, "h_arena", [x + 3, y, z], stone, timeout)? {
+        block if block == stone => Ok(()),
+        block => Err(format!("the host never had the arena's floor: {block}")),
+    }
+}
+
 /// `mc set` lines for a stone arena around `centre` (blocks from the
 /// world's spawn block): a 9 x 9 floor one block under the centre's feet
 /// level, and a wall two blocks high around it, so the mobs stay in.
