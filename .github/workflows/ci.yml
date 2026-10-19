@@ -169,7 +169,27 @@ jobs:
       IW4L_REPO_ROOT: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v5
+      # download-artifact@v4 can end without an error on a cut-off
+      # download (a truncated play-bins.tar); the tar is checked and
+      # fetched again, up to twice, before the job gives up.
       - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: play-bins
+      - name: Check play-bins
+        id: bins1
+        run: if tar -tf play-bins.tar >/dev/null; then echo ok=true >> "$GITHUB_OUTPUT"; else rm -f play-bins.tar; echo "::warning::play-bins.tar incomplete, downloading again"; fi
+      - if: steps.bins1.outputs.ok != 'true'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: play-bins
+      - name: Check play-bins again
+        id: bins2
+        if: steps.bins1.outputs.ok != 'true'
+        run: if tar -tf play-bins.tar >/dev/null; then echo ok=true >> "$GITHUB_OUTPUT"; else rm -f play-bins.tar; echo "::warning::play-bins.tar incomplete, downloading a third time"; fi
+      - if: steps.bins1.outputs.ok != 'true' && steps.bins2.outputs.ok != 'true'
+        uses: actions/download-artifact@v4
         with:
           name: play-bins
       - name: Binaries
