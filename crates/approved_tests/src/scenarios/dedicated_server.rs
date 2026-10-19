@@ -387,10 +387,9 @@ pub fn mob_visit(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     // A bullet gun up before the husk comes.
     mob_steps::draw_gun(pair)?;
     mob_steps::arena_floor(pair, FAR, Duration::from_secs(mob_steps::SEE_SECS))?;
-    client(pair)?.send("mc summon husk 3 0 0")?;
     let see = Duration::from_secs(mob_steps::SEE_SECS);
-    let (seen, husk) =
-        mob_steps::poll(pair, true, "c_husk", Some("husk"), see, mob_steps::summoned)?;
+    let (seen, husk, summons) = mob_steps::summon_seen(pair, "husk", "3 0 0", "c_husk", see)?;
+    facts.notes.insert("husk_summons", summons.to_string());
     facts.keep("c_husk", seen);
     let husk = husk.ok_or("the client never saw the husk")?;
     facts.notes.insert("husk_id", husk.id.to_string());
