@@ -265,6 +265,14 @@ fn world_steps(pair: &mut Pair, facts: &mut Facts, client: &Event) -> Result<(),
     {
         picked = pair.ask(true, "wait 1s; mc state c_picked", "c_picked", step)?;
     }
+    if slots(&picked).get(planks).map(String::as_str) != Some("minecraft:oak_planks*4") {
+        // Not picked up: what lies on the ground, as each side sees it, for
+        // the run's record.
+        let ground = mob_steps::census(pair, true, "c_ground", Some("-"))?;
+        facts.keep("c_ground", ground);
+        let ground = mob_steps::census(pair, false, "h_ground", Some("-"))?;
+        facts.keep("h_ground", ground);
+    }
     facts.keep("c_picked", picked);
     let last = pair.ask(true, "key 1; wait 1s; mc state c_final", "c_final", step)?;
     facts.keep("c_final", last);
