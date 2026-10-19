@@ -63,12 +63,14 @@ pub const LOAD_SECS: u64 = 900;
 pub const STEP_SECS: u64 = 120;
 /// The skate session's preparation for the map, after the world loads.
 pub const READY_SECS: u64 = 600;
-/// How long a skater pushes before the others are asked.
-pub const PUSH_SECS: u64 = 4;
+/// How long a skater pushes before the others are asked: long enough for the
+/// 20 states the judges want from a game that draws 3 to 4 frames a second
+/// (a listen host and its client on 2 CPUs).
+pub const PUSH_SECS: u64 = 10;
 /// A skater's movement reaching the host.
 pub const SYNC_SECS: u64 = 40;
 /// How far down the runway (map units) a skater must have gone: about 4 m,
-/// half what pushing for `PUSH_SECS` covers.
+/// well short of what pushing for `PUSH_SECS` covers.
 pub const MOVED_UNITS: f64 = 160.0;
 
 /// A stone runway high over the world (blocks from the world's spawn block):

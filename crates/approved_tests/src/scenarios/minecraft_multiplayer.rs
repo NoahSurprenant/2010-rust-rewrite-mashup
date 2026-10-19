@@ -20,7 +20,7 @@
 //! the host's inventory and the client's (kept by player name).
 
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::duo::Pair;
 use crate::runner::Event;
@@ -251,12 +251,20 @@ fn world_steps(pair: &mut Pair, facts: &mut Facts, client: &Event) -> Result<(),
     let broken = pair.poll_block(false, "h_plank_gone", plank, "air", Duration::from_secs(40))?;
     facts.notes.insert("h_plank_gone", broken);
     // It walks onto the plank the break dropped, on the host, and picks it up.
-    let picked = pair.ask(
+    // On a loaded machine the drop and the pick-up come back late: it stays
+    // on the spot and asks again until it has the plank or `sync` passes.
+    let mut picked = pair.ask(
         true,
         "hold +forward; wait 0.4s; release +forward; wait 3s; mc state c_picked",
         "c_picked",
         step,
     )?;
+    let start = Instant::now();
+    while slots(&picked).get(planks).map(String::as_str) != Some("minecraft:oak_planks*4")
+        && start.elapsed() < sync
+    {
+        picked = pair.ask(true, "wait 1s; mc state c_picked", "c_picked", step)?;
+    }
     facts.keep("c_picked", picked);
     let last = pair.ask(true, "key 1; wait 1s; mc state c_final", "c_final", step)?;
     facts.keep("c_final", last);
