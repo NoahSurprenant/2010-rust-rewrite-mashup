@@ -124,6 +124,11 @@ jobs:
   #
   # run.json records each game's peak memory; the job's last step prints the
   # runner container's (cgroup) peak, page cache included.
+  #
+  # The games of a run share one loading cache (--cache shared): on 2 CPUs a
+  # listen host that compiles every shader itself while its client does the
+  # same can pass its own 120 s load deadline; with the cache shared, the
+  # second game reads what the first one compiled.
   scenario:
     name: ${{ matrix.scenario }}${{ matrix.part && format(' {0}', matrix.part) || '' }} (${{ matrix.games }}, in-cluster)
     needs: play-build
@@ -178,7 +183,7 @@ jobs:
             echo "IW4L_SKATE_ASSETS=/skate-assets/skate-data/assets" >> "$GITHUB_ENV"
           fi
       - name: ${{ matrix.scenario }}${{ matrix.part && format(' --part {0}', matrix.part) || '' }}
-        run: scripts/headless-display.sh target/play/approved_tests ${{ matrix.scenario }} ${{ matrix.part && format('--part {0}', matrix.part) || '' }}
+        run: scripts/headless-display.sh target/play/approved_tests ${{ matrix.scenario }} ${{ matrix.part && format('--part {0}', matrix.part) || '' }} --cache shared
       - name: Job peak memory (runner container cgroup)
         if: always()
         run: |

@@ -1307,8 +1307,12 @@ fn prepare_cache(root: &Path, run_dir: &Path, mode: CacheMode) -> Result<Value, 
         }
         CacheMode::Shared => {
             let shared = root.join("iw4l-artifacts/cache");
-            std::fs::create_dir_all(&child_artifacts)
-                .map_err(|e| format!("create {}: {e}", child_artifacts.display()))?;
+            // A fresh checkout has no cache yet, and a link to nothing would
+            // leave the games unable to create theirs.
+            for dir in [&shared, &child_artifacts] {
+                std::fs::create_dir_all(dir)
+                    .map_err(|e| format!("create {}: {e}", dir.display()))?;
+            }
             #[cfg(unix)]
             let linked = std::os::unix::fs::symlink(&shared, &child_cache);
             #[cfg(windows)]
@@ -1347,4 +1351,23 @@ fn utc_stamp() -> String {
         rem % 3600 / 60,
         rem % 60
     )
+}
+
+#[cfg(all(test, unix))]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn a_shared_cache_is_made_on_a_fresh_checkout() {
+        let root =
+            std::env::temp_dir().join(format!("iw4l-shared-cache-{}", std::process::id()));
+        let run_dir = root.join("iw4l-artifacts/approved-tests/run");
+        let _ = std::fs::remove_dir_all(&root);
+        prepare_cache(&root, &run_dir, CacheMode::Shared).expect("shared cache");
+        let child_cache = run_dir.join("iw4l-artifacts/cache");
+        assert!(child_cache.is_dir(), "the run's cache leads to a directory");
+        std::fs::create_dir_all(child_cache.join("wgsl/ab")).expect("a game makes its cache");
+        assert!(root.join("iw4l-artifacts/cache/wgsl/ab").is_dir());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
