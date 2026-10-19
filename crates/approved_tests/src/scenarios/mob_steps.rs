@@ -570,14 +570,18 @@ pub fn beyond_the_gun(
 ) -> Result<(), String> {
     let step = Duration::from_secs(120);
     let see = Duration::from_secs(SEE_SECS);
-    let heard = pair.ask(true, "mc sounds c_sounds", "c_sounds", step)?;
-    lines.insert("c_sounds".into(), heard);
     // The middle of the platform, a gun up for the knife.
     let [x, y, z] = block_centre_map(far);
     pair.client
         .as_mut()
         .ok_or("no client")?
         .send(&format!("tp {x} {y} {z}; wait 3s"))?;
+    // What it heard of the husk, measured from there: a client the husk
+    // killed before its gun did (a headless server runs its mobs at full
+    // speed, a game drawing 3-4 frames a second shoots slowly) stood at the
+    // world's spawn until now (run 39246128209).
+    let heard = pair.ask(true, "mc sounds c_sounds", "c_sounds", step)?;
+    lines.insert("c_sounds".into(), heard);
     draw_gun(pair)?;
     pair.client
         .as_mut()
