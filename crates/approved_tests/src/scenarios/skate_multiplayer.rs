@@ -1,4 +1,16 @@
-//! `skate_multiplayer` — owner-approved. This file is the one place its
+//! `skate    let at = Instant::now();
+    pair.until("pushing", Duration::from_secs(PUSH_SECS + 5), |_| {
+        at.elapsed() >= Duration::from_secs(PUSH_SECS)
+    })?;
+    let mut event = state(pair, client, pushing)?;
+    while number(&event, "sent") < PUSH_STATES && at.elapsed() < Duration::from_secs(PUSH_MAX_SECS) {
+        let pause = Instant::now();
+        pair.until("pushing on", Duration::from_secs(5), |_| {
+            pause.elapsed() >= Duration::from_secs(2)
+        })?;
+        event = state(pair, client, pushing)?;
+    }
+    Ok(facts.keep(pushing, event))multiplayer` — owner-approved. This file is the one place its
 //! steps and what each checkpoint must show live.
 //!
 //! Skating with other players on the Minecraft map, through a master of the
@@ -63,10 +75,13 @@ pub const LOAD_SECS: u64 = 900;
 pub const STEP_SECS: u64 = 120;
 /// The skate session's preparation for the map, after the world loads.
 pub const READY_SECS: u64 = 600;
-/// How long a skater pushes before the others are asked: long enough for the
-/// 20 states the judges want from a game that draws 3 to 4 frames a second
-/// (a listen host and its client on 2 CPUs).
-pub const PUSH_SECS: u64 = 10;
+/// How long a skater pushes before the others are asked, at least.
+pub const PUSH_SECS: u64 = 4;
+/// It pushes on until it has sent `PUSH_STATES` states (it sends one a
+/// frame at most, and a game on 2 CPUs draws 2 to 4 a second: 14 to 18 in
+/// 4 to 10 s in runs 39217075456 and 39264289901), or `PUSH_MAX_SECS` pass.
+pub const PUSH_STATES: f64 = 24.0;
+pub const PUSH_MAX_SECS: u64 = 25;
 /// A skater's movement reaching the host.
 pub const SYNC_SECS: u64 = 40;
 /// How far down the runway (map units) a skater must have gone: about 4 m,
@@ -313,7 +328,17 @@ fn skate_on(
     pair.until("pushing", Duration::from_secs(PUSH_SECS + 5), |_| {
         at.elapsed() >= Duration::from_secs(PUSH_SECS)
     })?;
-    let event = state(pair, client, pushing)?;
+    let mut event = state(pair, client, pushing)?;
+    // NaN (no `sent`) ends it too: the judges say what is missing.
+    while number(&event, "sent") < PUSH_STATES
+        && at.elapsed() < Duration::from_secs(PUSH_MAX_SECS)
+    {
+        let pause = Instant::now();
+        pair.until("pushing on", Duration::from_secs(5), |_| {
+            pause.elapsed() >= Duration::from_secs(2)
+        })?;
+        event = state(pair, client, pushing)?;
+    }
     Ok(facts.keep(pushing, event))
 }
 
