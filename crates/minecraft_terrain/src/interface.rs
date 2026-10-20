@@ -34,7 +34,7 @@ pub(crate) fn item_model_tints(
     model: &serde_json::Value,
 ) -> Result<Vec<[u8; 3]>> {
     let Some(tints) = model.get("tints").and_then(serde_json::Value::as_array) else {
-        return Ok(Vec::new());
+        return Ok(crate::special_item::special_tints(model));
     };
     tints
         .iter()

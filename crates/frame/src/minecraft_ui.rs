@@ -144,6 +144,14 @@ pub struct MinecraftUi {
     pub empty_hand: bool,
     /// How far through its swing the hand is, 0 to 1.
     pub hand_swing: f32,
+    /// The item in view in the player's hand and how many faces its model
+    /// drew.
+    pub hand: Option<(String, usize)>,
+    /// The items lying in the world, by id.
+    pub ground_items: Vec<String>,
+    /// The items lying in the world or held by mobs whose model draws no
+    /// face.
+    pub no_model: Vec<String>,
     /// The minimap's picture of the world and the map points of its
     /// north-west and south-east corners.
     pub minimap: Option<(Handle<Image>, [f32; 2], [f32; 2])>,

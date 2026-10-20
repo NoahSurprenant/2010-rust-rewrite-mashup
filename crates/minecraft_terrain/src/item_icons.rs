@@ -21,9 +21,9 @@ pub fn item_icon(packs: &PackStack, key: &str, icon_size: usize) -> Result<Optio
     // special renderer rather than a model.
     let special = definition
         .as_ref()
-        .and_then(|value| crate::special_icon::special_model(&value["model"]));
+        .and_then(|value| crate::special_item::special_model(&value["model"]));
     if let (None, Some(special)) = (model, special) {
-        return crate::special_icon::special_icon(packs, special, icon_size);
+        return crate::special_item::special_icon(packs, special, icon_size);
     }
     if let Some(icon) = model
         .map(|model| crate::item_icon::block_icon(packs, model, &tints, icon_size))

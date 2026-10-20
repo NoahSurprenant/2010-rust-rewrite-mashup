@@ -10,9 +10,11 @@
 //! finds that a right click with a gun aims instead, opens it with a right
 //! click holding an item, places a plank against it crouched (and opens it
 //! crouched with an empty hand), opens it with
-//! a key rebound to Use, and sees the screen close when the table is broken
-//! and when the player is moved away. Last, the multiplayer options page
-//! shows the player key and its button copies the whole key.
+//! a key rebound to Use, and sees the screen close when the table is broken,
+//! holds the crafted chest (drawn in the hand as its model) and throws it
+//! (drawn on the ground), and sees the screen close when the player is moved
+//! away. Last, the multiplayer options page shows the player key and its
+//! button copies the whole key.
 
 use crate::runner::Event;
 
@@ -49,6 +51,11 @@ pub enum Expect {
     TableInView(bool),
     /// The inventory draws this item's icon (it is not in `no_icon`).
     Icon(&'static str),
+    /// The hand in view holds this item, drawn as a model with faces.
+    Hand(&'static str),
+    /// An item of this id lies in the world, drawn as a model (it is not
+    /// in `no_model`).
+    Dropped(&'static str),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -189,6 +196,28 @@ pub const STEPS: &[Step] = &[
     Step {
         commands: "mc fill 3 0 0 3 0 0 crafting_table; wait 1s; look 0 23; wait 2t; key e; wait 1s",
         label: "reopened",
+        expect: &[Expect::Screen(Screen::Table)],
+    },
+    // The crafted chest, moved to the hotbar and held, shows in the hand
+    // as its box model (a `minecraft:special` item: a block entity's
+    // renderer), then thrown, on the ground.
+    Step {
+        commands: "mc click inv 20; wait 2t; mc click inv 7; wait 2t; key e; wait 1s; key 8; wait 1s",
+        label: "chest_held",
+        expect: &[
+            Expect::Screen(Screen::None),
+            Expect::Slot(7, "minecraft:chest*1"),
+            Expect::Hand("minecraft:chest"),
+        ],
+    },
+    Step {
+        commands: "screenshot approved/04_chest_held; key q; wait 10t",
+        label: "chest_dropped",
+        expect: &[Expect::Slot(7, "-"), Expect::Dropped("minecraft:chest")],
+    },
+    Step {
+        commands: "screenshot approved/05_chest_dropped; key 1; wait 1s; look 0 23; wait 2t; key e; wait 1s",
+        label: "reopened_after_drop",
         expect: &[Expect::Screen(Screen::Table)],
     },
     Step {
@@ -358,6 +387,19 @@ fn failure(state: &Event, expect: &Expect) -> Option<String> {
             format!("an icon for {id}"),
             format!("no_icon={}", field("no_icon")),
         ),
+        Expect::Hand(id) => (
+            field("hand").rsplit_once(':').is_some_and(|(held, faces)| {
+                held == *id && faces.parse::<usize>().is_ok_and(|n| n > 0)
+            }),
+            format!("{id} in hand with faces"),
+            format!("hand={}", field("hand")),
+        ),
+        Expect::Dropped(id) => (
+            list(state, "ground").iter().any(|item| item == id)
+                && !list(state, "no_model").iter().any(|missing| missing == id),
+            format!("{id} on the ground with a model"),
+            format!("ground={} no_model={}", field("ground"), field("no_model")),
+        ),
     };
     (!held).then(|| format!("want {want}, got {got}"))
 }
@@ -372,14 +414,15 @@ mod tests {
 
     fn passing_states() -> Vec<Event> {
         let guns = "iw4:weapon/1*1,iw4:weapon/2*1,iw4:weapon/3*1,iw4:weapon/4*1,iw4:weapon/5*1";
-        let slots = |p: &str, extra: &str| {
+        let slots_at = |p: &str, at: usize, extra: &str| {
             let mut s: Vec<String> = vec!["-".into(); 41];
             s[PLANKS] = p.into();
             if !extra.is_empty() {
-                s[20] = extra.into();
+                s[at] = extra.into();
             }
             format!("{guns},{}", s[5..].join(","))
         };
+        let slots = |p: &str, extra: &str| slots_at(p, 20, extra);
         let grid9 = |cells: &[&str]| cells.join(",");
         let empty9 = grid9(&["-"; 9]);
         let empty4 = grid9(&["-"; 4]);
@@ -523,6 +566,42 @@ mod tests {
             ),
             line(
                 "reopened",
+                "stand",
+                table,
+                &empty9,
+                "-",
+                slots("minecraft:oak_planks*7", ""),
+            ),
+            {
+                let mut held = line(
+                    "chest_held",
+                    "stand",
+                    "none",
+                    &empty4,
+                    "-",
+                    slots_at("minecraft:oak_planks*7", 7, "minecraft:chest*1"),
+                );
+                held.fields
+                    .insert("hand".into(), "minecraft:chest:18".into());
+                held
+            },
+            {
+                let mut dropped = line(
+                    "chest_dropped",
+                    "stand",
+                    "none",
+                    &empty4,
+                    "-",
+                    slots("minecraft:oak_planks*7", ""),
+                );
+                dropped
+                    .fields
+                    .insert("ground".into(), "minecraft:chest".into());
+                dropped.fields.insert("no_model".into(), "-".into());
+                dropped
+            },
+            line(
+                "reopened_after_drop",
                 "stand",
                 table,
                 &empty9,
@@ -695,6 +774,63 @@ mod tests {
             check.failures,
             ["want an icon for minecraft:chest, got no_icon=minecraft:chest"]
         );
+    }
+
+    #[test]
+    fn a_chest_with_no_model_in_hand_fails() {
+        let mut states = passing_states();
+        let i = states
+            .iter()
+            .position(|s| s.get("label") == Some("chest_held"))
+            .unwrap();
+        states[i]
+            .fields
+            .insert("hand".into(), "minecraft:chest:0".into());
+        let check = judge(&states)
+            .into_iter()
+            .find(|c| c.label == "chest_held")
+            .unwrap();
+        assert_eq!(
+            check.failures,
+            ["want minecraft:chest in hand with faces, got hand=minecraft:chest:0"]
+        );
+    }
+
+    #[test]
+    fn a_dropped_chest_with_no_model_fails() {
+        let mut states = passing_states();
+        let i = states
+            .iter()
+            .position(|s| s.get("label") == Some("chest_dropped"))
+            .unwrap();
+        states[i]
+            .fields
+            .insert("no_model".into(), "minecraft:chest".into());
+        let check = judge(&states)
+            .into_iter()
+            .find(|c| c.label == "chest_dropped")
+            .unwrap();
+        assert_eq!(
+            check.failures,
+            [
+                "want minecraft:chest on the ground with a model, got ground=minecraft:chest no_model=minecraft:chest"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_chest_that_never_landed_fails() {
+        let mut states = passing_states();
+        let i = states
+            .iter()
+            .position(|s| s.get("label") == Some("chest_dropped"))
+            .unwrap();
+        states[i].fields.insert("ground".into(), "-".into());
+        let check = judge(&states)
+            .into_iter()
+            .find(|c| c.label == "chest_dropped")
+            .unwrap();
+        assert_eq!(check.failures.len(), 1);
     }
 
     #[test]

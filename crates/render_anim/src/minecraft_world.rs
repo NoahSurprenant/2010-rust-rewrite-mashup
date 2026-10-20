@@ -2111,6 +2111,7 @@ fn update(
         }
         // The held item in view; an empty hand is MW2's own hands.
         view.hand = Default::default();
+        ui.hand = None;
         let swing = hand.swing.map_or(0.0, |t| (t / crate::minecraft_hand::SWING_TICKS).clamp(0.0, 1.0));
         ui.hand_swing = swing;
         if ui.holding_item
@@ -2124,6 +2125,7 @@ fn update(
                 .unwrap_or(glam::Mat4::IDENTITY);
             let pose = crate::minecraft_hand::item_pose(display, swing, 0.0);
             let mesh = entities.held_item_mesh(&stack.id, pose, eye_light_at, &world.packs, &world.atlas, light);
+            ui.hand = Some((stack.id.clone(), mesh.faces));
             let vertices: Vec<minecraft_terrain::mesh::SectionVertex> =
                 mesh.vertices.iter().map(minecraft_terrain::mesh::SectionVertex::from_vertex).collect();
             view.hand = (bytemuck::cast_slice(&vertices).to_vec(), mesh.indices);
@@ -2161,6 +2163,13 @@ fn update(
                 raw(&meshes.translucent),
                 raw(&meshes.shadows),
             ];
+            ui.ground_items = entities
+                .world_items
+                .entities
+                .iter()
+                .map(|entity| entity.stack.id.clone())
+                .collect();
+            ui.no_model = meshes.no_model;
             let mesh = meshes.items;
             let (bytes, indices) = &mut view.particles;
             let base = (bytes.len() / std::mem::size_of::<minecraft_terrain::mesh::SectionVertex>()) as u32;

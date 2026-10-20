@@ -170,6 +170,8 @@ pub(crate) struct MobMeshes {
     pub translucent: ChunkMesh,
     pub shadows: ChunkMesh,
     pub items: ChunkMesh,
+    /// The dropped and mob-held items whose model drew no face.
+    pub no_model: Vec<String>,
 }
 
 /// The player as the mobs see it this frame.
@@ -525,7 +527,13 @@ impl Entities {
         light: &SkyLight,
     ) -> ChunkMesh {
         let mut mesh = ChunkMesh::default();
-        let _ = self.items.append_posed_blocks(&mut mesh, &[(pose, light_at, id.to_owned())], packs, atlas, light);
+        let _ = self.items.append_posed_items(
+            &mut mesh,
+            &[(pose, light_at, id.to_owned())],
+            packs,
+            atlas,
+            light,
+        );
         mesh
     }
 
@@ -1080,6 +1088,17 @@ impl Entities {
         let _ = self.items.append_held_items(&mut out.items, &held, packs, atlas, light);
         let carried: Vec<_> = carried.into_iter().chain(poppies).collect();
         let _ = self.items.append_posed_blocks(&mut out.items, &carried, packs, atlas, light);
+        let shown = self
+            .world_items
+            .entities
+            .iter()
+            .map(|entity| &entity.stack.id)
+            .chain(held.iter().map(|item| &item.id));
+        for id in shown {
+            if !out.no_model.contains(id) && self.items.drawn_faces(id, packs, atlas) == 0 {
+                out.no_model.push(id.clone());
+            }
+        }
         // Their shadows, at `getMaxLocalRawBrightness`.
         let casters = client_mobs::shadow_casters(w, poses, camera, partial);
         let raw = |pos: (i32, i32, i32)| light.get(pos).saturating_sub(sky_darken).max(light.get_block(pos));

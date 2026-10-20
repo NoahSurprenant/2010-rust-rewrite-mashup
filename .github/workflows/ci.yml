@@ -28,6 +28,9 @@ jobs:
       - run: cargo test -p minecraft_terrain --lib mob_sync
       # Inventory icons, the `minecraft:special` ones (chests, heads) included.
       - run: cargo test -p minecraft_terrain --lib icon
+      # Special items (chests, shulker boxes, heads, banners, shields) as 3D
+      # models in hand and on the ground.
+      - run: cargo test -p minecraft_terrain --lib special
       # The update manifest a GitHub release publishes and the launcher reads.
       - run: cargo test -p updater
       # How the master lists a room (a dedicated server by its whole name).
