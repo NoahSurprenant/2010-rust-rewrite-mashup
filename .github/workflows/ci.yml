@@ -106,6 +106,9 @@ jobs:
           cargo test --profile play -p net --lib admins
           cargo test --profile play -p console --lib debug_admins
           cargo test --profile play -p console --lib control
+      # The player key on the multiplayer options page, and `whoami copy`.
+      - name: player key page unit tests (ui menu)
+        run: cargo test --profile play -p ui --lib menu
       - name: skate unit tests (net::skate, console skate)
         run: |
           cargo test --profile play -p net --lib skate

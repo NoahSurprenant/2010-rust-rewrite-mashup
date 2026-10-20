@@ -262,7 +262,7 @@ pub fn register_feature_commands(registry: &mut crate::ConsoleRegistry, maps: &[
         ),
         (
             "menu",
-            "menu [open <screen> | nav up|down | accept | back | dump] — shell surface; back/device remain typed gaps (S2/S4)",
+            "menu [open <screen> | focus <screen> <item> | nav up|down | accept | back | dump] — shell surface; back/device remain typed gaps (S2/S4)",
         ),
         ("hurt", "hurt — stamp one undirected damage-feedback punch"),
         (

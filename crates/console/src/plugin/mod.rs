@@ -82,6 +82,7 @@ impl Plugin for ConsolePlugin {
         app.add_systems(Update, crate::debug_move::update_skate_overlay.in_set(ClientSet::Ui));
         crate::startup::install_stdin(app);
         crate::control::install(app);
+        app.add_systems(Update, crate::debug_admins::show_player_key);
         app.init_resource::<ConsoleSettings>()
             .init_resource::<ConsoleState>()
             .init_resource::<frame::HudInputView>()

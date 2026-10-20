@@ -127,6 +127,9 @@ pub(crate) fn route_ui_commands(
                 Ok(MenuVerb::Open(name)) => {
                     menu_requests.write(frame::UiMenuRequest::Open(name));
                 }
+                Ok(MenuVerb::Focus { menu, item }) => {
+                    menu_requests.write(frame::UiMenuRequest::Focus { menu, item });
+                }
                 Ok(MenuVerb::Nav(dir)) => {
                     let key = match dir.as_str() {
                         "up" => frame::UiMenuKey::Up,
@@ -148,13 +151,15 @@ pub(crate) fn route_ui_commands(
 }
 
 
-const MENU_USAGE: &str = "usage: menu [open <screen> | nav up|down | accept | back | dump]";
+const MENU_USAGE: &str =
+    "usage: menu [open <screen> | focus <screen> <item> | nav up|down | accept | back | dump]";
 
 #[derive(Debug, PartialEq)]
 enum MenuVerb {
     Status,
     Dump,
     Open(String),
+    Focus { menu: String, item: String },
     Nav(String),
     Accept,
     Back,
@@ -180,6 +185,13 @@ fn parse_menu_args(args: &[String]) -> Result<MenuVerb, String> {
             }
             Ok(MenuVerb::Open(name))
         }
+        "focus" => match args {
+            [_, menu, item] => Ok(MenuVerb::Focus {
+                menu: menu.clone(),
+                item: item.clone(),
+            }),
+            _ => Err("usage: menu focus <screen> <item>".into()),
+        },
         "nav" => {
             let dir = args.get(1).map(String::as_str).unwrap_or("");
             match dir {
@@ -191,5 +203,27 @@ fn parse_menu_args(args: &[String]) -> Result<MenuVerb, String> {
         "back" if args.len() == 1 => Ok(MenuVerb::Back),
         "accept" | "back" => Err(MENU_USAGE.into()),
         _ => Err(MENU_USAGE.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(line: &str) -> Vec<String> {
+        line.split_whitespace().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn menu_focus_names_the_screen_and_the_item() {
+        assert_eq!(
+            parse_menu_args(&args("focus options_multi player_key")),
+            Ok(MenuVerb::Focus {
+                menu: "options_multi".into(),
+                item: "player_key".into(),
+            })
+        );
+        assert!(parse_menu_args(&args("focus options_multi")).is_err());
+        assert!(parse_menu_args(&args("focus a b c")).is_err());
     }
 }

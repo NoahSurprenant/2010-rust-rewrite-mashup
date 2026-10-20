@@ -66,7 +66,9 @@ leaves the machine: on joining a room the game signs that room's id and the
 member id the master gave it for this join, and the host checks the
 signature, so a key cannot be borrowed or replayed. The key's **fingerprint**
 (SHA-256 of the public key, 64 hex digits) is who the player is to every
-host: `whoami` on the console prints it, and a host logs every join as
+host: the multiplayer options page shows it short, with a button that copies
+all of it to the clipboard to send to a server's owner; `whoami` on the console
+prints it (`whoami copy` copies it); and a host logs every join as
 `player joined: name=<name> key=<fingerprint>` (in the dedicated server's
 log, so `kubectl logs` and Loki have it). A game without a valid proof plays
 as a **guest** (`key=guest`): never an admin, and its inventory is not kept.
