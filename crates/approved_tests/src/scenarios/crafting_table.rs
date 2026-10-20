@@ -200,8 +200,8 @@ pub const STEPS: &[Step] = &[
     // the whole key (`player-key: copied`), and `whoami` names what the page
     // shows (`shown=`).
     Step {
-        commands: "menu open options_multi; wait 1s; menu; menu nav down; wait 0.5s; menu; \
-                   menu accept; wait 1s; whoami; menu back; wait 1s",
+        commands: "menu open options_multi; wait 1s; menu focus options_multi player_key; \
+                   wait 0.5s; menu; menu accept; wait 1s; whoami; menu back; wait 1s",
         label: "options_closed",
         expect: &[Expect::Menu(false), Expect::Screen(Screen::None)],
     },
