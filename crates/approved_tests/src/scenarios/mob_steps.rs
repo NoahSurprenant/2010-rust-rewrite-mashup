@@ -75,6 +75,12 @@ pub fn guns(event: &Event) -> Vec<u32> {
         .collect()
 }
 
+/// The hotbar slot (from 1) of the weapon the player holds in a
+/// `minecraft-mobs:` line.
+pub fn held(event: &Event) -> Option<u32> {
+    event.get("held")?.parse().ok()
+}
+
 /// The player's MW2 health in a `minecraft-mobs:` line.
 pub fn health(event: &Event) -> Option<f64> {
     event.get("health")?.parse().ok()
@@ -277,22 +283,39 @@ pub struct Shot {
 }
 
 /// The client raises a bullet gun (not the launcher or a grenade, which
-/// would take it with the mob): the first hotbar slot that holds one. The
-/// key is pressed twice, a second apart: once, on 2 CPUs, it did not take,
-/// and the client fired its launcher at the husk beside it and died of the
-/// blast (run 39272980932 attempt 3).
+/// would take it with the mob): the first hotbar slot that holds one. Its
+/// key is pressed again only while the census says another slot is held:
+/// once, on 2 CPUs, a press did not take and the client fired its launcher
+/// at the husk beside it (run 39272980932 attempt 3), and a second press
+/// made blindly, after the first had taken, put the launcher back in its
+/// hands (run 39340605035).
 pub fn draw_gun(pair: &mut Pair) -> Result<u32, String> {
-    let held = census(pair, true, "c_guns", Some("-"))?;
-    let slot = guns(&held)
+    let mut seen = census(pair, true, "c_guns", Some("-"))?;
+    let slot = guns(&seen)
         .first()
         .copied()
         .ok_or("the client holds no bullet gun")?;
-    pair.client
-        .as_mut()
-        .ok_or("no client")?
-        .send(&format!("key {slot}; wait 1s; key {slot}; wait 1.5s"))?;
-    Ok(slot)
+    for _ in 0..DRAW_TRIES {
+        if held(&seen) == Some(slot) {
+            return Ok(slot);
+        }
+        pair.client
+            .as_mut()
+            .ok_or("no client")?
+            .send(&format!("key {slot}; wait 2s"))?;
+        seen = census(pair, true, "c_guns", Some("-"))?;
+    }
+    if held(&seen) == Some(slot) {
+        return Ok(slot);
+    }
+    Err(format!(
+        "the client never raised the gun in slot {slot} (holds slot {})",
+        seen.get("held").unwrap_or("-")
+    ))
 }
+
+/// How many times the client presses a gun's key before `draw_gun` gives up.
+pub const DRAW_TRIES: u32 = 4;
 
 /// The client shoots the mob `id` with the gun it holds (`draw_gun`),
 /// starting from `seen`, a census of its in which it has the mob: it aims at
@@ -908,7 +931,7 @@ mod tests {
     #[test]
     fn a_census_line_reads_back() {
         let e = event(
-            "label=c role=client health=85 eye=320.50,62.62,0.50 guns=2,5 count=2 \
+            "label=c role=client health=85 eye=320.50,62.62,0.50 guns=2,5 held=1 count=2 \
              mobs=husk:41:323.20,61.00,0.40:20.0:alive;pig:7:-3.00,70.50,2.00:0.0:dead \
              items=minecraft:porkchop*2,minecraft:stone*1",
         );
@@ -934,10 +957,12 @@ mod tests {
         assert_eq!(eye(&e), Some([320.5, 62.62, 0.5]));
         assert_eq!(health(&e), Some(85.0));
         assert_eq!(guns(&e), [2, 5]);
+        assert_eq!(held(&e), Some(1));
         assert_eq!(items(&e), ["minecraft:porkchop*2", "minecraft:stone*1"]);
         let none = event("label=c mobs=- items=-");
         assert!(mobs(&none).is_empty());
         assert!(items(&none).is_empty());
+        assert_eq!(held(&none), None);
     }
 
     #[test]
