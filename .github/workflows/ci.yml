@@ -154,7 +154,7 @@ jobs:
     strategy:
       fail-fast: false
       # One at a time: the runner has 2 CPUs, and its node is shared.
-      max-parallel: 1
+      max-parallel: 2
       matrix:
         include:
           - { scenario: crafting_table, part: '', games: 'MW2 + Minecraft', timeout: 60 }
@@ -171,7 +171,7 @@ jobs:
       # runner's CPU limit (2); the game's own pools (Bevy's task pools, the
       # terrain's generation and section threads, asset loading) already
       # follow the limit through available_parallelism.
-      LP_NUM_THREADS: 2
+      LP_NUM_THREADS: 4
       # The checkout, not where the binaries were built.
       IW4L_REPO_ROOT: ${{ github.workspace }}
     steps:
