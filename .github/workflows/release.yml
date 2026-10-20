@@ -182,6 +182,20 @@ jobs:
           cat update/manifest.json
           rm update/iw4l.exe
           ls -l update
+      # What the Windows job below updates from (file://): this run's game,
+      # and its launcher with bytes appended (an overlay: the PE still runs),
+      # so the launcher has to replace itself while it runs.
+      - name: Update test
+        run: |
+          mkdir -p update-test
+          cp artifacts/iw4l-exe/iw4l.exe artifacts/iw4l-exe/iw4launcher.exe update-test/
+          printf 'iw4l update test\n' >> update-test/iw4launcher.exe
+          zstd -q -3 -T0 update-test/iw4l.exe -o update-test/iw4l.exe.zst
+          cargo run -q --locked -p updater --bin iw4l-update-manifest -- write \
+            --git "$GITHUB_SHA" --build 999999 --dir update-test --out update-test/manifest.json
+          cargo run -q --locked -p updater --bin iw4l-update-manifest -- check --dir update-test update-test/manifest.json
+          rm update-test/iw4l.exe
+          ls -l update-test
       - name: Assemble
         run: |
           dir="$RUNNER_TEMP/$PACKAGE"
@@ -229,6 +243,49 @@ jobs:
           path: update/
           if-no-files-found: error
           retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: update-test
+          path: update-test/
+          if-no-files-found: error
+          retention-days: 3
+
+  # The self-update on real Windows (scripts/windows-update-handoff.ps1):
+  # Build 49, the first release with iw4launcher.exe, stands in for an
+  # installed older build that names the newest release as its update URL.
+  windows-update:
+    name: Windows update hand-off (windows-2025)
+    needs: package
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-zip
+          path: zip
+      - uses: actions/download-artifact@v4
+        with:
+          name: update-test
+          path: update-test
+      - name: Releases
+        run: |
+          gh release download build-49 --pattern "$env:PACKAGE-windows-x64.zip" --dir old
+          gh release download --pattern manifest.json --dir latest
+          Get-Content latest/manifest.json
+      - name: This run's update, from an older iw4l.exe (file://)
+        run: ./scripts/windows-update-handoff.ps1 -Test local
+      - name: The newest release, from Build 49 as published (GitHub)
+        run: ./scripts/windows-update-handoff.ps1 -Test github
 
   release:
     name: Publish release

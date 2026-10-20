@@ -22,6 +22,7 @@ console.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 rfd = { version = "0.15", default-features = false }
+updater = { path = "../updater" }
 
 [lints]
 workspace = true

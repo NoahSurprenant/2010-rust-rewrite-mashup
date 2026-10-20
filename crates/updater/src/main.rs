@@ -66,10 +66,13 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let asked = args.iter().any(|arg| arg == "update" || arg == "--update");
     let update_env = std::env::var("IW4L_UPDATE").ok();
+    let environment_url = std::env::var("IW4L_UPDATE_URL")
+        .ok()
+        .filter(|_| !from_sidecar.iter().any(|name| name == "IW4L_UPDATE_URL"));
     let wanted = updater::update_wanted(
         &args,
         update_env.as_deref(),
-        built_in_update_url().is_some(),
+        updater::updates_by_default(built_in_update_url().is_some(), environment_url.as_deref()),
     );
 
     let release_env = if wanted {
@@ -116,16 +119,19 @@ fn own_ca() -> bool {
 
 /// Fetch the manifest, install what it names, and hand back its env defaults.
 fn update(install_dir: &Path) -> Result<BTreeMap<String, String>, String> {
-    let update_base = update_base()?;
+    update_from(&update_base()?, install_dir)
+}
+
+fn update_from(update_base: &str, install_dir: &Path) -> Result<BTreeMap<String, String>, String> {
     println!("[iw4launcher] channel {update_base}");
 
-    let manifest_bytes = https_get(&format!("{update_base}/{MANIFEST_NAME}"))?;
+    let manifest_bytes = fetch(&format!("{update_base}/{MANIFEST_NAME}"))?;
     let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|error| format!("manifest parse: {error}"))?;
     manifest.validate(own_ca())?;
 
     for entry in &manifest.files {
-        install_entry(&update_base, install_dir, entry)?;
+        install_entry(update_base, install_dir, entry)?;
     }
     install_default_sidecar(install_dir, &manifest.env)?;
     println!(
@@ -279,7 +285,7 @@ fn install_entry(base: &str, dir: &Path, entry: &ManifestFile) -> Result<(), Str
     }
     let remote = require_file_name(entry.download.as_deref().unwrap_or(&entry.path))?;
     println!("[iw4launcher] downloading {remote}");
-    let blob = https_get(&format!("{base}/{remote}"))?;
+    let blob = fetch(&format!("{base}/{remote}"))?;
     if let Some(size) = entry.download_size
         && blob.len() as u64 != size
     {
@@ -337,6 +343,20 @@ fn root_store() -> Result<rustls::RootCertStore, String> {
             .map_err(|error| format!("embedded CA: {error}"))?;
     }
     Ok(roots)
+}
+
+/// A file of the update: from disk for a `file://` URL, else over HTTPS.
+fn fetch(url: &str) -> Result<Vec<u8>, String> {
+    let Some(path) = updater::local_source(url)? else {
+        return https_get(url);
+    };
+    let size = fs::metadata(&path)
+        .map_err(|error| format!("read {}: {error}", path.display()))?
+        .len();
+    if size > MAX_DOWNLOAD_BYTES as u64 {
+        return Err(format!("{}: exceeds limit", path.display()));
+    }
+    fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))
 }
 
 /// A GET, following redirects only within GitHub (a release download
@@ -561,6 +581,84 @@ mod tests {
             parse_update_url(Some(" https://example.test/prod/ ".into())).unwrap(),
             "https://example.test/prod"
         );
+    }
+
+    fn folder(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("iw4launcher-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A release folder as `release.yml` publishes one, and its `file://` URL.
+    fn release(name: &str, game: &[u8], launcher: &[u8]) -> (PathBuf, String) {
+        let source = folder(name);
+        fs::write(source.join(GAME_NAME), game).unwrap();
+        fs::write(
+            source.join(updater::release::GAME_BLOB),
+            zstd::encode_all(game, 3).unwrap(),
+        )
+        .unwrap();
+        fs::write(source.join(updater::LAUNCHER_NAME), launcher).unwrap();
+        updater::release::write(&source, "0123abcd", 9999, &source.join(MANIFEST_NAME)).unwrap();
+        fs::remove_file(source.join(GAME_NAME)).unwrap();
+        let url = format!("file://{}", source.display());
+        (source, url)
+    }
+
+    #[test]
+    fn a_local_release_replaces_the_game_and_the_launcher() {
+        let (source, url) = release("local-source", b"new game", b"new launcher");
+        let install = folder("local-install");
+        fs::write(install.join(GAME_NAME), b"old game").unwrap();
+        fs::write(install.join(updater::LAUNCHER_NAME), b"old launcher").unwrap();
+        fs::write(
+            install.join("iw4launcher.bak"),
+            b"left by an earlier update",
+        )
+        .unwrap();
+
+        assert!(update_from(&url, &install).unwrap().is_empty());
+        assert_eq!(fs::read(install.join(GAME_NAME)).unwrap(), b"new game");
+        assert_eq!(
+            fs::read(install.join(updater::LAUNCHER_NAME)).unwrap(),
+            b"new launcher"
+        );
+        let mut left: Vec<String> = fs::read_dir(&install)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, [GAME_NAME, updater::LAUNCHER_NAME]);
+        // Installed is up to date: nothing is read but the manifest.
+        fs::remove_file(source.join(updater::release::GAME_BLOB)).unwrap();
+        update_from(&url, &install).unwrap();
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(install);
+    }
+
+    #[test]
+    fn a_local_release_that_does_not_match_its_manifest_installs_nothing() {
+        let (source, url) = release("tampered-source", b"new game", b"new launcher");
+        fs::write(
+            source.join(updater::release::GAME_BLOB),
+            zstd::encode_all(b"another game".as_slice(), 3).unwrap(),
+        )
+        .unwrap();
+        let install = folder("tampered-install");
+        fs::write(install.join(GAME_NAME), b"old game").unwrap();
+        let error = update_from(&url, &install).unwrap_err();
+        assert!(error.contains("iw4l.exe.zst"), "{error}");
+        assert_eq!(fs::read(install.join(GAME_NAME)).unwrap(), b"old game");
+        assert!(!install.join("iw4l.part").exists());
+        assert!(!install.join(updater::LAUNCHER_NAME).exists());
+        assert!(
+            update_from(&format!("{url}/missing"), &install)
+                .unwrap_err()
+                .contains("manifest.json")
+        );
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(install);
     }
 
     /// A release asset fetched from GitHub through its redirect to the asset

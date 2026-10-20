@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 pub mod release;
 
@@ -151,19 +152,62 @@ pub fn github_redirect_allowed(from: &str, to: &str) -> bool {
 }
 
 /// Whether to fetch an update before starting the game: asked for
-/// (`update`, `IW4L_UPDATE=1`), or by default in a build that names its own
-/// update URL (this fork's releases), unless `IW4L_UPDATE` says no.
-pub fn update_wanted(args: &[String], update_env: Option<&str>, built_in_url: bool) -> bool {
+/// (`update`, `IW4L_UPDATE=1`), or by default (`updates_by_default`), unless
+/// `IW4L_UPDATE` says no.
+pub fn update_wanted(args: &[String], update_env: Option<&str>, by_default: bool) -> bool {
     if args.iter().any(|arg| arg == "update" || arg == "--update") {
         return true;
     }
-    match update_env.map(str::trim) {
-        Some(value) if value.is_empty() || value == "0" || value.eq_ignore_ascii_case("false") => {
-            false
-        }
-        Some(_) => true,
-        None => built_in_url,
+    match update_env {
+        Some(value) => !switched_off(value),
+        None => by_default,
     }
+}
+
+/// A build that names its own update URL (this fork's releases) checks on
+/// every start, and so does any build started with `IW4L_UPDATE_URL` in its
+/// environment (not from `.env`, where upstream's bundles keep theirs).
+pub fn updates_by_default(built_in_url: bool, environment_url: Option<&str>) -> bool {
+    built_in_url || environment_url.is_some_and(|url| !url.trim().is_empty())
+}
+
+/// Whether `iw4l.exe` hands its start to `iw4launcher.exe`: it updates by
+/// default, the launcher did not start it, and `IW4L_UPDATE` does not say no.
+pub fn hands_off(by_default: bool, from_launcher: bool, update_env: Option<&str>) -> bool {
+    by_default && !from_launcher && !update_env.is_some_and(switched_off)
+}
+
+fn switched_off(value: &str) -> bool {
+    let value = value.trim();
+    value.is_empty() || value == "0" || value.eq_ignore_ascii_case("false")
+}
+
+/// The folder a `file://` update URL names (`file:///D:/updates`,
+/// `file:///srv/updates`), read with the same checks as a download; `None`
+/// for any other URL.
+pub fn local_source(url: &str) -> Result<Option<PathBuf>, String> {
+    let Some(rest) = url.strip_prefix("file://") else {
+        return Ok(None);
+    };
+    let Some(after_root) = rest.strip_prefix('/') else {
+        return Err(format!("file URL must be absolute (file:///...): `{url}`"));
+    };
+    if rest.contains('%') {
+        return Err(format!(
+            "percent-encoded file URLs are unsupported: `{url}`"
+        ));
+    }
+    let drive = after_root.as_bytes();
+    let path = if drive.len() >= 3
+        && drive[0].is_ascii_alphabetic()
+        && drive[1] == b':'
+        && matches!(drive[2], b'/' | b'\\')
+    {
+        after_root
+    } else {
+        rest
+    };
+    Ok(Some(PathBuf::from(path)))
 }
 
 /// The launcher's arguments the game gets: all but `update`, or `menu`.
@@ -341,6 +385,49 @@ mod tests {
         // Upstream's builds: only when asked.
         assert!(!update_wanted(&[], None, false));
         assert!(update_wanted(&args(&["update"]), None, false));
+    }
+
+    #[test]
+    fn an_update_url_in_the_environment_updates_a_build_without_one() {
+        assert!(updates_by_default(true, None));
+        assert!(updates_by_default(false, Some("file:///D:/update-test")));
+        assert!(!updates_by_default(false, Some(" ")));
+        assert!(!updates_by_default(false, None));
+        assert!(update_wanted(
+            &[],
+            None,
+            updates_by_default(false, Some("https://x.test"))
+        ));
+    }
+
+    #[test]
+    fn the_game_hands_off_unless_the_launcher_started_it_or_updates_are_off() {
+        assert!(hands_off(true, false, None));
+        assert!(hands_off(true, false, Some("1")));
+        assert!(!hands_off(true, true, None));
+        assert!(!hands_off(true, false, Some("0")));
+        assert!(!hands_off(true, false, Some(" FALSE ")));
+        assert!(!hands_off(true, false, Some("")));
+        assert!(!hands_off(false, false, Some("1")));
+    }
+
+    #[test]
+    fn a_file_url_names_a_local_folder() {
+        assert_eq!(
+            local_source("file:///D:/a/repo/update-test").unwrap(),
+            Some(PathBuf::from("D:/a/repo/update-test"))
+        );
+        assert_eq!(
+            local_source(r"file:///c:\updates").unwrap(),
+            Some(PathBuf::from(r"c:\updates"))
+        );
+        assert_eq!(
+            local_source("file:///srv/updates/manifest.json").unwrap(),
+            Some(PathBuf::from("/srv/updates/manifest.json"))
+        );
+        assert_eq!(local_source("https://github.com/x").unwrap(), None);
+        assert!(local_source("file://host/share").is_err());
+        assert!(local_source("file:///D:/with%20space").is_err());
     }
 
     #[test]

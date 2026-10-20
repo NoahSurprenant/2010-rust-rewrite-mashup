@@ -9,19 +9,28 @@ mod first_run;
 static PROCESS_ALLOCATOR: diag::ProcessCountingAllocator = diag::ProcessCountingAllocator;
 
 fn main() {
-    let mut cli = std::env::args().skip(1);
-    if cli.next().as_deref() == Some("dedicated-console") {
-        dedicated_console(cli.collect::<Vec<_>>().join(" "));
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("dedicated-console") {
+        dedicated_console(args[1..].join(" "));
+    }
+    if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
+        println!("{}", bootstrap::args::version());
+        return;
     }
     bootstrap::bench::arm();
     prepare_process_root().unwrap_or_else(|e| {
         diag::exit_launch_error(&e);
     });
-    #[cfg_attr(not(windows), allow(unused_mut))]
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(windows)]
+    hand_to_launcher(&args);
+    // Before first-run setup, which asks for the game folders.
+    if matches!(args.first().map(String::as_str), Some("--help" | "-h")) {
+        println!("{}", bootstrap::args::USAGE);
+        return;
+    }
     #[cfg(windows)]
     {
-        hand_to_launcher(&args);
         // Also for a shortcut that names a map, so it works on first launch.
         first_run::prepare().unwrap_or_else(|e| first_run::fail(&e));
         if args.is_empty() {
@@ -37,19 +46,22 @@ fn main() {
 }
 
 /// A release build that updates itself (this fork's, built with
-/// `IW4L_DEFAULT_UPDATE_URL`) starts through `iw4launcher.exe` beside it,
+/// `IW4L_DEFAULT_UPDATE_URL`), or any build started with `IW4L_UPDATE_URL`
+/// in its environment, starts through `iw4launcher.exe` beside it,
 /// which fetches a newer build first and starts this one again with the same
 /// arguments (`IW4L_LAUNCHER=1`). `IW4L_UPDATE=0`, or no launcher beside
 /// it, starts the game here.
 #[cfg(windows)]
 fn hand_to_launcher(args: &[String]) {
-    if option_env!("IW4L_DEFAULT_UPDATE_URL").is_none_or(|url| url.trim().is_empty())
-        || std::env::var_os("IW4L_LAUNCHER").is_some()
-        || std::env::var("IW4L_UPDATE").is_ok_and(|value| {
-            let value = value.trim();
-            value.is_empty() || value == "0" || value.eq_ignore_ascii_case("false")
-        })
-    {
+    let by_default = updater::updates_by_default(
+        option_env!("IW4L_DEFAULT_UPDATE_URL").is_some_and(|url| !url.trim().is_empty()),
+        std::env::var("IW4L_UPDATE_URL").ok().as_deref(),
+    );
+    if !updater::hands_off(
+        by_default,
+        std::env::var_os("IW4L_LAUNCHER").is_some(),
+        std::env::var("IW4L_UPDATE").ok().as_deref(),
+    ) {
         return;
     }
     let Ok(dir) = std::env::current_dir() else {
