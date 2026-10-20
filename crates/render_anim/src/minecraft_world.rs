@@ -2350,6 +2350,10 @@ fn update(
             .as_ref()
             .and_then(|entities| held_slot(&entities.inventory.slots[..frame::minecraft_ui::MC_HOTBAR], ps.weapon as u32))
             .map_or_else(|| "-".to_owned(), |slot| slot.to_string());
+        // And the selected hotbar slot (from 1), a gun or not.
+        let selected_slot = entities
+            .as_ref()
+            .map_or_else(|| "-".to_owned(), |entities| (entities.selected + 1).to_string());
         // The player's status effects (effect:level:ticks left), and the
         // arrows and potions this game has drawn so far.
         let effects: Vec<String> = entities
@@ -2367,7 +2371,7 @@ fn update(
             .map(|entities| entities.projectiles_seen().iter().map(|(kind, n)| format!("{kind}:{n}")).collect())
             .unwrap_or_default();
         let line = format!(
-            "minecraft-mobs: label={label} role={} health={} eye={:.2},{:.2},{:.2} guns={} held={held} count={} far={far} mobs={} items={} effects={} flown={}",
+            "minecraft-mobs: label={label} role={} health={} eye={:.2},{:.2},{:.2} guns={} held={held} selected={selected_slot} count={} far={far} mobs={} items={} effects={} flown={}",
             ui.net_role,
             ps.health,
             eye[0] - base[0],

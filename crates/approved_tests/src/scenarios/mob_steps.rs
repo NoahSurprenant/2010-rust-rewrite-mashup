@@ -81,6 +81,12 @@ pub fn held(event: &Event) -> Option<u32> {
     event.get("held")?.parse().ok()
 }
 
+/// The selected hotbar slot (from 1), a gun or not, in a `minecraft-mobs:`
+/// line.
+pub fn selected(event: &Event) -> Option<u32> {
+    event.get("selected")?.parse().ok()
+}
+
 /// The player's MW2 health in a `minecraft-mobs:` line.
 pub fn health(event: &Event) -> Option<f64> {
     event.get("health")?.parse().ok()
@@ -290,32 +296,48 @@ pub struct Shot {
 /// made blindly, after the first had taken, put the launcher back in its
 /// hands (run 39340605035).
 pub fn draw_gun(pair: &mut Pair) -> Result<u32, String> {
-    let mut seen = census(pair, true, "c_guns", Some("-"))?;
+    let seen = census(pair, true, "c_guns", Some("-"))?;
     let slot = guns(&seen)
         .first()
         .copied()
         .ok_or("the client holds no bullet gun")?;
-    for _ in 0..DRAW_TRIES {
-        if held(&seen) == Some(slot) {
-            return Ok(slot);
+    select_slot(pair, slot, seen, |seen| held(seen) == Some(slot))?;
+    Ok(slot)
+}
+
+/// Presses the client's hotbar key `slot` until a census (`seen` first)
+/// passes `done`, at most `SELECT_TRIES` times: a press can fail to take on
+/// a game drawing a few frames a second, and pressing a gun's key while it
+/// is held puts the previous weapon back, so the key is never pressed
+/// blindly.
+pub fn select_slot(
+    pair: &mut Pair,
+    slot: u32,
+    mut seen: Event,
+    done: impl Fn(&Event) -> bool,
+) -> Result<Event, String> {
+    for _ in 0..SELECT_TRIES {
+        if done(&seen) {
+            return Ok(seen);
         }
         pair.client
             .as_mut()
             .ok_or("no client")?
             .send(&format!("key {slot}; wait 2s"))?;
-        seen = census(pair, true, "c_guns", Some("-"))?;
+        seen = census(pair, true, "c_slot", Some("-"))?;
     }
-    if held(&seen) == Some(slot) {
-        return Ok(slot);
+    if done(&seen) {
+        return Ok(seen);
     }
     Err(format!(
-        "the client never raised the gun in slot {slot} (holds slot {})",
+        "the client's hotbar never took slot {slot} (selected {}, holds {})",
+        seen.get("selected").unwrap_or("-"),
         seen.get("held").unwrap_or("-")
     ))
 }
 
-/// How many times the client presses a gun's key before `draw_gun` gives up.
-pub const DRAW_TRIES: u32 = 4;
+/// How many times `select_slot` presses a hotbar key before it gives up.
+pub const SELECT_TRIES: u32 = 4;
 
 /// The client shoots the mob `id` with the gun it holds (`draw_gun`),
 /// starting from `seen`, a census of its in which it has the mob: it aims at
@@ -535,10 +557,10 @@ pub fn punch(
     timeout: Duration,
 ) -> Result<Blows, String> {
     let start = Instant::now();
-    pair.client
-        .as_mut()
-        .ok_or("no client")?
-        .send(&format!("key {slot}; wait 1s"))?;
+    // The empty hand selected: once its key did not take, and the client
+    // clicked the pig with its gun up (run 39358944533).
+    let seen = census(pair, true, "c_slot", Some("-"))?;
+    select_slot(pair, slot, seen, |seen| selected(seen) == Some(slot))?;
     let mut blows = 0;
     loop {
         let seen = census(pair, true, "c_punch", Some(kind))?;
@@ -931,7 +953,7 @@ mod tests {
     #[test]
     fn a_census_line_reads_back() {
         let e = event(
-            "label=c role=client health=85 eye=320.50,62.62,0.50 guns=2,5 held=1 count=2 \
+            "label=c role=client health=85 eye=320.50,62.62,0.50 guns=2,5 held=1 selected=4 count=2 \
              mobs=husk:41:323.20,61.00,0.40:20.0:alive;pig:7:-3.00,70.50,2.00:0.0:dead \
              items=minecraft:porkchop*2,minecraft:stone*1",
         );
@@ -958,11 +980,13 @@ mod tests {
         assert_eq!(health(&e), Some(85.0));
         assert_eq!(guns(&e), [2, 5]);
         assert_eq!(held(&e), Some(1));
+        assert_eq!(selected(&e), Some(4));
         assert_eq!(items(&e), ["minecraft:porkchop*2", "minecraft:stone*1"]);
         let none = event("label=c mobs=- items=-");
         assert!(mobs(&none).is_empty());
         assert!(items(&none).is_empty());
         assert_eq!(held(&none), None);
+        assert_eq!(selected(&none), None);
     }
 
     #[test]
