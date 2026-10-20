@@ -5,12 +5,19 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # The in-cluster scenarios on main, nightly (a push to main runs only the
+  # checks on GitHub's runners).
+  schedule:
+    - cron: '0 9 * * *'
 
 permissions:
   contents: read
+  # The scenario selection reads a pull request's changed files.
+  pull-requests: read
 
+# By event as well, so that a push to main does not cancel the nightly run.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
@@ -67,6 +74,43 @@ jobs:
           path: play-bins.tar
           retention-days: 3
           if-no-files-found: error
+
+  # Which in-cluster scenario jobs to run (scripts/ci-scenarios.sh): on a pull
+  # request, those its changed files can affect (every job for shared code
+  # or a path the script does not name; none for docs, charts, packaging or
+  # the Windows updater); every job nightly and on a manual run; none on a
+  # push to main.
+  select:
+    name: scenario selection
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+      any: ${{ steps.pick.outputs.any }}
+    steps:
+      - uses: actions/checkout@v5
+      - run: scripts/ci-scenarios.sh --self-test
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          case $EVENT in
+            pull_request)
+              # The files endpoint lists at most 3000; more runs every job.
+              files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" --jq '.[].filename')
+              if [ "$(printf '%s\n' "$files" | wc -l)" -ge 3000 ]; then
+                matrix=$(scripts/ci-scenarios.sh all)
+              else
+                matrix=$(printf '%s\n' "$files" | scripts/ci-scenarios.sh)
+              fi ;;
+            schedule | workflow_dispatch) matrix=$(scripts/ci-scenarios.sh all) ;;
+            *) matrix='{"include":[]}' ;;
+          esac
+          echo "$matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          if [ "$matrix" = '{"include":[]}' ]; then echo any=false; else echo any=true; fi >> "$GITHUB_OUTPUT"
 
   # The unit tests of what the in-cluster scenarios play, beside the build
   # rather than after it, so the scenarios need not wait for them.
@@ -147,23 +191,18 @@ jobs:
   # second game reads what the first one compiled.
   scenario:
     name: ${{ matrix.scenario }}${{ matrix.part && format(' {0}', matrix.part) || '' }} (${{ matrix.games }}, in-cluster)
-    needs: play-build
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: [play-build, select]
+    if: >-
+      needs.select.outputs.any == 'true' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: iw4l-k8s
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       # One at a time: the runner has 2 CPUs, and its node is shared.
       max-parallel: 2
-      matrix:
-        include:
-          - { scenario: crafting_table, part: '', games: 'MW2 + Minecraft', timeout: 60 }
-          - { scenario: minecraft_multiplayer, part: world, games: 'listen host + client', timeout: 90 }
-          - { scenario: minecraft_multiplayer, part: mobs, games: 'listen host + client', timeout: 90 }
-          - { scenario: dedicated_server, part: visits, games: 'dedicated server + client', timeout: 90 }
-          - { scenario: dedicated_server, part: mobs, games: 'dedicated server + client', timeout: 90 }
-          - { scenario: skate_multiplayer, part: listen, games: 'listen host + client', timeout: 90, skate: true }
-          - { scenario: skate_multiplayer, part: dedicated, games: 'dedicated server + client', timeout: 90, skate: true }
+      # The jobs, their parts and timeouts: scripts/ci-scenarios.sh (JOBS).
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     env:
       VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
       WGPU_BACKEND: vulkan

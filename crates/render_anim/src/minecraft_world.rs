@@ -504,6 +504,21 @@ fn chunk_collision(
     ids
 }
 
+/// The hotbar slot (from 1) that holds the weapon `weapon`
+/// (`iw4:weapon/<weapon>`), for the console's mob census.
+fn held_slot(hotbar: &[Option<minecraftoss_player::inventory::ItemStack>], weapon: u32) -> Option<usize> {
+    hotbar
+        .iter()
+        .position(|stack| {
+            stack
+                .as_ref()
+                .and_then(|stack| stack.id.strip_prefix("iw4:weapon/"))
+                .and_then(|id| id.parse::<u32>().ok())
+                == Some(weapon)
+        })
+        .map(|index| index + 1)
+}
+
 /// The positions the host's log changed in chunk `pos`, each once.
 fn logged_in(
     log: &minecraft_terrain::multiplayer::EditLog,
@@ -2330,6 +2345,15 @@ fn update(
                     .collect()
             })
             .unwrap_or_default();
+        // And the hotbar slot (from 1) of the weapon the player holds.
+        let held = entities
+            .as_ref()
+            .and_then(|entities| held_slot(&entities.inventory.slots[..frame::minecraft_ui::MC_HOTBAR], ps.weapon as u32))
+            .map_or_else(|| "-".to_owned(), |slot| slot.to_string());
+        // And the selected hotbar slot (from 1), a gun or not.
+        let selected_slot = entities
+            .as_ref()
+            .map_or_else(|| "-".to_owned(), |entities| (entities.selected + 1).to_string());
         // The player's status effects (effect:level:ticks left), and the
         // arrows and potions this game has drawn so far.
         let effects: Vec<String> = entities
@@ -2347,7 +2371,7 @@ fn update(
             .map(|entities| entities.projectiles_seen().iter().map(|(kind, n)| format!("{kind}:{n}")).collect())
             .unwrap_or_default();
         let line = format!(
-            "minecraft-mobs: label={label} role={} health={} eye={:.2},{:.2},{:.2} guns={} count={} far={far} mobs={} items={} effects={} flown={}",
+            "minecraft-mobs: label={label} role={} health={} eye={:.2},{:.2},{:.2} guns={} held={held} selected={selected_slot} count={} far={far} mobs={} items={} effects={} flown={}",
             ui.net_role,
             ps.health,
             eye[0] - base[0],
@@ -2640,6 +2664,21 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_held_slot_is_the_one_with_the_held_weapon() {
+        use minecraftoss_player::inventory::ItemStack;
+        let hotbar = [
+            Some(ItemStack::new("iw4:weapon/79", 1)),
+            Some(ItemStack::new("iw4:weapon/713", 1)),
+            None,
+            Some(ItemStack::new("minecraft:oak_planks", 4)),
+        ];
+        assert_eq!(held_slot(&hotbar, 713), Some(2));
+        assert_eq!(held_slot(&hotbar, 79), Some(1));
+        assert_eq!(held_slot(&hotbar, 7130), None);
+        assert_eq!(held_slot(&[], 79), None);
+    }
 
     #[test]
     fn a_chunk_s_logged_changes_are_each_position_once() {

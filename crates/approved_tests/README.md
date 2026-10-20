@@ -77,6 +77,13 @@ a part). With no `--part` the whole scenario runs, as before. `IW4L_REPO_ROOT`
 points the runner at a checkout other than the one it was built in (CI builds
 it on GitHub's runners and plays on the in-cluster one).
 
+CI plays a pull request's scenario jobs only where its changed files can
+reach (`scripts/ci-scenarios.sh`: every job for shared code or a path the
+script does not name, a scenario's own jobs for its file, none for docs,
+charts, packaging or the Windows updater; `--self-test` checks the rules),
+and every job on main nightly or on a manual run of the CI workflow; a push
+to main runs only the checks on GitHub's runners.
+
 The scenarios on the Minecraft map (`crafting_table`, `minecraft_multiplayer`,
 `dedicated_server`, `skate_multiplayer`) play one fixed world (`src/world.rs`):
 seed 12345, its first player at `90.5 130 -30.5` (feet, Minecraft block
