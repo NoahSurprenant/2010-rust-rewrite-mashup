@@ -230,6 +230,13 @@ jobs:
       LP_NUM_THREADS: 4
       # The checkout, not where the binaries were built.
       IW4L_REPO_ROOT: ${{ github.workspace }}
+      # No game is checked on what it plays aloud (there is no sound device
+      # here either): no clips decoded, no samples kept.
+      IW4L_SOUND: 'off'
+      # A game that draws (crafting_table's) keeps every texture in memory on
+      # lavapipe: MW2's at most 256 pixels a side. Its checks read item icons
+      # and screens drawn from Minecraft's own files, which this leaves whole.
+      IW4L_TEXTURE_MAX_SIZE: 256
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4

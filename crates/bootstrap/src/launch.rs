@@ -131,6 +131,9 @@ pub fn launch(games: asset_transport::GamesRoot, artifacts: PathBuf, cli: Cli) {
     if headless {
         diag::info!(Launch, "headless: no window, no renderer, no sound");
         load_for_no_screen();
+    } else if audio::AudioSilent::active() {
+        // IW4L_SOUND=off: a game that plays no sound keeps no samples.
+        asset_audio::keep_sound_samples(false);
     }
 
     if let Some(plan) = crate::frame_owner::prefer_performance_cores() {
@@ -346,8 +349,8 @@ fn run_menu(games: asset_transport::GamesRoot, artifacts: PathBuf, headless: boo
     }
     let menu_iwd = std::sync::Arc::new(menu_iwd);
     app.insert_resource(SoundIwd(std::sync::Arc::clone(&menu_iwd)));
-    // A headless game plays no sound: no clips are decoded for it.
-    if let Some(bank) = menu_bank.filter(|_| !headless) {
+    // A headless or silent game plays no sound: no clips are decoded for it.
+    if let Some(bank) = menu_bank.filter(|_| !headless && !audio::AudioSilent::active()) {
         app.insert_resource(audio::ClipStore::start(
             std::sync::Arc::clone(&bank),
             Some(std::sync::Arc::clone(&menu_iwd)),
