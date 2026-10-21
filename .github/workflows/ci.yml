@@ -168,6 +168,10 @@ jobs:
           cargo test --profile play -p bootstrap --lib args
           cargo test --profile play -p hud --lib minecraft_inventory
           cargo test --profile play -p render_anim --lib skate::rig
+      # A zone read once (its file's cache dropped) and inflated to no spare
+      # room: what a game holds while it walks a zone's assets.
+      - name: zone read unit tests (asset_transport read_once, zone)
+        run: cargo test --profile play -p asset_transport --lib -- read_once zone::tests
 
   # The approved scenarios that play the real game on the Minecraft map,
   # each in parts a job of its own (approved_tests <scenario> --part <part>),
@@ -250,6 +254,11 @@ jobs:
           if [ "${{ matrix.skate }}" = true ]; then
             echo "IW4L_SKATE_ASSETS=/skate-assets/skate-data/assets" >> "$GITHUB_ENV"
           fi
+      # What the steps above wrote or unpacked (the binaries, Minecraft's files)
+      # stays in the page cache, which this job's memory counts: drop it
+      # before the games start.
+      - name: Drop the setup's file cache
+        run: scripts/drop-file-cache.sh target/play iw4l-artifacts/minecraft-26.3
       - name: ${{ matrix.scenario }}${{ matrix.part && format(' --part {0}', matrix.part) || '' }}
         run: scripts/headless-display.sh target/play/approved_tests ${{ matrix.scenario }} ${{ matrix.part && format('--part {0}', matrix.part) || '' }} --cache shared
       - name: Job peak memory and CPU (runner container cgroup)
@@ -259,6 +268,7 @@ jobs:
             usec=$(awk '$1 == "usage_usec" {print $2}' /sys/fs/cgroup/cpu.stat)
             echo "cpu.stat usage_usec $usec ($((usec / 1000000)) CPU-seconds)"
           fi
+          [ -r /sys/fs/cgroup/memory.stat ] && grep -E '^(anon|file|shmem) ' /sys/fs/cgroup/memory.stat || true
           for f in memory.peak memory.max memory.current; do
             [ -r "/sys/fs/cgroup/$f" ] || continue
             v=$(cat "/sys/fs/cgroup/$f")

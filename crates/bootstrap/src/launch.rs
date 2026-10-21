@@ -129,9 +129,8 @@ pub fn launch(games: asset_transport::GamesRoot, artifacts: PathBuf, cli: Cli) {
     } = cli;
     diag::info!(Launch, "{}", asset_transport::games_root_report(&games));
     if headless {
-        // Nothing is drawn: textures are read for their sizes, not decoded.
         diag::info!(Launch, "headless: no window, no renderer, no sound");
-        assets::decode_images(false);
+        load_for_no_screen();
     }
 
     if let Some(plan) = crate::frame_owner::prefer_performance_cores() {
@@ -165,7 +164,7 @@ pub fn launch(games: asset_transport::GamesRoot, artifacts: PathBuf, cli: Cli) {
         ),
         LaunchMode::Dedicated(zone) => {
             diag::mirror_to_stdout();
-            assets::decode_images(false);
+            load_for_no_screen();
             run_map(games, artifacts, zone, None, Role::Dedicated, None, true)
         }
         LaunchMode::ExportGltf(zone) => {
@@ -179,6 +178,16 @@ pub fn launch(games: asset_transport::GamesRoot, artifacts: PathBuf, cli: Cli) {
             zone_override,
         } => run_play(games, artifacts, name, zone_override, acceptance, headless),
     }
+}
+
+/// What a game that draws and plays nothing loads of its assets: textures
+/// read for their sizes (not decoded), models without their meshes, sounds
+/// without their samples, menus without their images. Its simulation reads none of them.
+fn load_for_no_screen() {
+    assets::decode_images(false);
+    asset_model::capture_meshes(false);
+    asset_audio::keep_sound_samples(false);
+    asset_game::decode_ui_images(false);
 }
 
 /// A game that draws nothing: Bevy without a window, a GPU or a frame

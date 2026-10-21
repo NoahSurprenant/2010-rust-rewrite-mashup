@@ -223,9 +223,9 @@ fn flight_for(key: &ZoneSourceKey) -> Arc<Mutex<()>> {
 
 pub fn open_zone(path: impl AsRef<Path>) -> Result<ZoneImage, ZoneOpenError> {
     let path = path.as_ref();
-    let result = std::fs::read(path)
+    let result = crate::read_once(path)
         .map_err(ZoneOpenError::Io)
-        .and_then(|bytes| parse_zone_image(&bytes));
+        .and_then(parse_zone_image_owned);
     let image = result.map_err(|source| ZoneOpenError::AtPath {
         path: path.to_owned(),
         source: Box::new(source),
@@ -257,6 +257,28 @@ pub fn parse_zone_image(bytes: &[u8]) -> Result<ZoneImage, ZoneOpenError> {
     }
 }
 
+/// `parse_zone_image` for a file read whole: a signed IW4 zone lets go of the
+/// file's bytes once they are dechunked, before the larger inflate.
+fn parse_zone_image_owned(bytes: Vec<u8>) -> Result<ZoneImage, ZoneOpenError> {
+    if bytes.len() < 12 {
+        return Err(ZoneOpenError::Truncated);
+    }
+    let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    if version != fastfile_iw4::ZONE_VERSION_PC {
+        return parse_zone_image(&bytes);
+    }
+    let header = parse_iw4_header(&bytes).map_err(ZoneOpenError::Iw4Header)?;
+    let image = match header.signing {
+        Iw4Signing::Unsigned => inflate_zone(&bytes[fastfile_iw4::FILE_PREAMBLE_LEN..])?,
+        Iw4Signing::Signed => {
+            let compressed = dechunk_authed(&bytes[fastfile_iw4::FILE_PREAMBLE_LEN..])?;
+            drop(bytes);
+            inflate_zone(&compressed)?
+        }
+    };
+    finish_iw4_zone_image(header.version, image)
+}
+
 fn inflate_zone(bytes: &[u8]) -> Result<Vec<u8>, ZoneOpenError> {
     let mut decoder = flate2::Decompress::new(true);
     let mut out = Vec::with_capacity(bytes.len());
@@ -271,6 +293,8 @@ fn inflate_zone(bytes: &[u8]) -> Result<Vec<u8>, ZoneOpenError> {
             )
             .map_err(|e| ZoneOpenError::Inflate(e.to_string()))?;
         if status == flate2::Status::StreamEnd {
+            // The growth left up to half the image again unused.
+            out.shrink_to_fit();
             return Ok(out);
         }
         if before == (decoder.total_in(), decoder.total_out()) {
@@ -289,15 +313,17 @@ fn parse_iw4_zone_image(bytes: &[u8]) -> Result<ZoneImage, ZoneOpenError> {
     };
 
     let image = inflate_zone(&compressed)?;
+    finish_iw4_zone_image(header.version, image)
+}
 
+fn finish_iw4_zone_image(version: u32, image: Vec<u8>) -> Result<ZoneImage, ZoneOpenError> {
     if image.len() < fastfile_iw4::XFILE_HEADER_LEN {
         return Err(ZoneOpenError::Truncated);
     }
-
     let iw4_wire_format = Some(select_iw4_table(&image)?.format());
     Ok(ZoneImage {
         game: ZoneGame::Iw4,
-        version: header.version,
+        version,
         bytes: image,
         iw4_wire_format,
     })
@@ -492,5 +518,42 @@ impl Iw5ZoneMemory {
             b8.as_mut_slice(),
         ];
         fastfile_iw5::ZoneStream::new(image, blocks, &mut self.insert_map)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    /// A zone image is kept for as long as its assets are walked: it holds
+    /// what it inflated to, not the room its growth reserved.
+    #[test]
+    fn an_inflated_zone_holds_no_spare_room() {
+        let data: Vec<u8> = (0..5_000_000u32).map(|i| (i % 7) as u8).collect();
+        let image = inflate_zone(&zlib(&data)).unwrap();
+        assert_eq!(image, data);
+        assert_eq!(image.capacity(), image.len());
+    }
+
+    #[test]
+    fn a_truncated_stream_is_refused() {
+        let data: Vec<u8> = (0..100_000u32).map(|i| (i * 31 % 251) as u8).collect();
+        let packed = zlib(&data);
+        assert!(inflate_zone(&packed[..packed.len() / 2]).is_err());
+    }
+
+    #[test]
+    fn an_owned_short_file_is_truncated() {
+        assert!(matches!(
+            parse_zone_image_owned(vec![0; 8]),
+            Err(ZoneOpenError::Truncated)
+        ));
     }
 }

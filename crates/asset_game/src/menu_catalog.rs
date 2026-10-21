@@ -927,6 +927,9 @@ impl MenuSink {
     }
 
     fn finish_ui_images(&mut self, games: Option<&Path>) {
+        if !decodes_ui_images() {
+            return;
+        }
         let mut materials = Vec::new();
         for font in self.catalog.fonts.values() {
             if !font.material.is_empty() {
@@ -1714,4 +1717,17 @@ impl AssetLinkSink for MenuSink {
         );
         Ok(())
     }
+}
+
+static DECODE_UI_IMAGES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Whether the menu catalog decodes the images its menus, fonts and HUD
+/// draw. A game that draws nothing (a dedicated server, `--headless`) runs
+/// its menus' scripts and commands without them.
+pub fn decode_ui_images(decode: bool) {
+    DECODE_UI_IMAGES.store(decode, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn decodes_ui_images() -> bool {
+    DECODE_UI_IMAGES.load(std::sync::atomic::Ordering::Relaxed)
 }

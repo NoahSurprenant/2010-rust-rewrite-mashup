@@ -287,10 +287,28 @@ mod tests {
         for name in BODY_BONES {
             assert!(
                 [
-                    "j_mainroot", "j_spinelower", "j_spineupper", "j_spine4", "j_neck", "j_head",
-                    "j_clavicle_le", "j_shoulder_le", "j_elbow_le", "j_wrist_le", "j_clavicle_ri",
-                    "j_shoulder_ri", "j_elbow_ri", "j_wrist_ri", "j_hip_le", "j_knee_le",
-                    "j_ankle_le", "j_ball_le", "j_hip_ri", "j_knee_ri", "j_ankle_ri", "j_ball_ri",
+                    "j_mainroot",
+                    "j_spinelower",
+                    "j_spineupper",
+                    "j_spine4",
+                    "j_neck",
+                    "j_head",
+                    "j_clavicle_le",
+                    "j_shoulder_le",
+                    "j_elbow_le",
+                    "j_wrist_le",
+                    "j_clavicle_ri",
+                    "j_shoulder_ri",
+                    "j_elbow_ri",
+                    "j_wrist_ri",
+                    "j_hip_le",
+                    "j_knee_le",
+                    "j_ankle_le",
+                    "j_ball_le",
+                    "j_hip_ri",
+                    "j_knee_ri",
+                    "j_ankle_ri",
+                    "j_ball_ri",
                 ]
                 .iter()
                 .any(|iw| mapping(iw).is_some_and(|(skate, _)| skate == name)),
@@ -320,7 +338,11 @@ mod tests {
         assert!(body_bones(&short, &vec![Mat4::IDENTITY; 21], &all).is_err());
         let mut bones = vec![Mat4::IDENTITY; all.len()];
         bones[3] = Mat4::from_translation(Vec3::splat(f32::NAN));
-        assert!(body_bones(&all, &bones, &all).unwrap_err().contains("SPINE3"));
+        assert!(
+            body_bones(&all, &bones, &all)
+                .unwrap_err()
+                .contains("SPINE3")
+        );
         assert!(body_bones(&all, &vec![Mat4::IDENTITY; 22], &short).is_err());
     }
 }

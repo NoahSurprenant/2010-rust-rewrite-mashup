@@ -29,3 +29,16 @@ pub mod discover {
 pub mod zone {
     pub use asset_transport::*;
 }
+
+static KEEP_SOUND_SAMPLES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Whether loaded sounds keep their samples. A game that plays no sound (a
+/// dedicated server, `--headless`) keeps every alias and what each loaded
+/// sound is (format, rate, length), not the samples only playback reads.
+pub fn keep_sound_samples(keep: bool) {
+    KEEP_SOUND_SAMPLES.store(keep, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn keeps_sound_samples() -> bool {
+    KEEP_SOUND_SAMPLES.load(std::sync::atomic::Ordering::Relaxed)
+}
