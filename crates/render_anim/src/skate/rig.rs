@@ -217,3 +217,110 @@ pub fn board(names: &[String], bones: &[Mat4], geom: &mut CpuBodyGeom) -> Result
     geom.decoded_n = geom.packed.len();
     Ok(())
 }
+
+/// The Skate 3 bones a soldier's body follows (`mapping`'s targets).
+pub const BODY_BONES: [&str; 22] = [
+    "HIPS",
+    "SPINE",
+    "SPINE1",
+    "SPINE3",
+    "NECK",
+    "HEAD",
+    "LEFTSHOULDER",
+    "LEFTARM",
+    "LEFTFOREARM",
+    "LEFTHAND",
+    "RIGHTSHOULDER",
+    "RIGHTARM",
+    "RIGHTFOREARM",
+    "RIGHTHAND",
+    "LEFTUPLEG",
+    "LEFTLEG",
+    "LEFTFOOT",
+    "LEFTTOEBASE",
+    "RIGHTUPLEG",
+    "RIGHTLEG",
+    "RIGHTFOOT",
+    "RIGHTTOEBASE",
+];
+
+/// What `pose` takes from a skater for a body, without the body: every bone
+/// the body follows, posed (finite) and in the reference rig. A game that
+/// draws nothing checks a skater this far; one that draws goes on to
+/// `pose` its soldier with it.
+pub fn body_bones(names: &[String], bones: &[Mat4], reference: &[String]) -> Result<usize, String> {
+    for name in BODY_BONES {
+        let index = names
+            .iter()
+            .position(|n| n == name)
+            .ok_or_else(|| format!("skater has no `{name}`"))?;
+        let bone = bones
+            .get(index)
+            .ok_or_else(|| format!("skater bone `{name}` missing"))?;
+        if !bone.is_finite() {
+            return Err(format!("skater bone `{name}` not finite"));
+        }
+        if !reference.iter().any(|r| r == name) {
+            return Err(format!("reference rig has no `{name}`"));
+        }
+    }
+    Ok(BODY_BONES.len())
+}
+
+/// The reference rig's bone names.
+pub fn reference_names() -> Vec<String> {
+    reference()
+        .map(|rig| rig.iter().map(|b| b.name.clone()).collect())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn every_mapped_body_bone_is_listed() {
+        for name in BODY_BONES {
+            assert!(
+                [
+                    "j_mainroot", "j_spinelower", "j_spineupper", "j_spine4", "j_neck", "j_head",
+                    "j_clavicle_le", "j_shoulder_le", "j_elbow_le", "j_wrist_le", "j_clavicle_ri",
+                    "j_shoulder_ri", "j_elbow_ri", "j_wrist_ri", "j_hip_le", "j_knee_le",
+                    "j_ankle_le", "j_ball_le", "j_hip_ri", "j_knee_ri", "j_ankle_ri", "j_ball_ri",
+                ]
+                .iter()
+                .any(|iw| mapping(iw).is_some_and(|(skate, _)| skate == name)),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_wire_carries_every_body_bone() {
+        for name in BODY_BONES {
+            assert!(net::skate::BONES.contains(&name), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_full_skater_poses_a_body() {
+        let all = names(&BODY_BONES);
+        let bones = vec![Mat4::IDENTITY; all.len()];
+        assert_eq!(body_bones(&all, &bones, &all), Ok(22));
+    }
+
+    #[test]
+    fn a_skater_missing_a_bone_or_posed_wrong_does_not() {
+        let all = names(&BODY_BONES);
+        let short = names(&BODY_BONES[..21]);
+        assert!(body_bones(&short, &vec![Mat4::IDENTITY; 21], &all).is_err());
+        let mut bones = vec![Mat4::IDENTITY; all.len()];
+        bones[3] = Mat4::from_translation(Vec3::splat(f32::NAN));
+        assert!(body_bones(&all, &bones, &all).unwrap_err().contains("SPINE3"));
+        assert!(body_bones(&all, &vec![Mat4::IDENTITY; 22], &short).is_err());
+    }
+}

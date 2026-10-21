@@ -42,14 +42,15 @@ games root and fetches Minecraft's files once into `iw4l-artifacts/minecraft-26.
 On a headless machine run it through `scripts/headless-display.sh`.
 
 A game draws only where a check needs a picture of it. `crafting_table`'s
-game (its icons, the crafting screen, its screenshots) and the listen host of
-`skate_multiplayer` (checked on the skater it draws for the client) draw;
-every other game of the two-game scenarios runs `iw4l --headless` (`duo::Display`,
+game (its icons, the crafting screen, its screenshots) draws; every game of
+the two-game scenarios runs `iw4l --headless` (`duo::Display`,
 each scenario's `DISPLAYS` / `CLIENT_DISPLAY`): no window, no renderer, no
 sound, as a dedicated server always is. It plays all the same (simulation,
 networking, the Minecraft world and its mobs, the console and its `key`,
 `look`, `hold` input) and prints the same state lines; a `screenshot` it is
-asked for is skipped. run.json's `memory` rows name each game's display and
+asked for is skipped. A headless listen host still poses another
+player's skater (its body's bones, its board skinned) as the draw path does,
+which `skate_multiplayer` checks (`remote=` entries' `posed`). run.json's `memory` rows name each game's display and
 the CPU seconds it used.
 
 The scenario's steps are in `src/scenarios/heavy_gameplay_lifecycle.rs` and

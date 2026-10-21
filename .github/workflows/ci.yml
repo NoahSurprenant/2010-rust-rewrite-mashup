@@ -161,11 +161,13 @@ jobs:
           cargo test --profile play -p net --lib skate
           cargo test --profile play -p console --lib debug_skate
       # `iw4l --headless`: the flag, IW4L_HEADLESS and what it refuses; the
-      # Minecraft screen and hotbar keys a headless player still has.
-      - name: headless unit tests (bootstrap args, hud minecraft_inventory)
+      # Minecraft screen and hotbar keys a headless player still has; the
+      # skater bones a headless host poses a body from.
+      - name: headless unit tests (bootstrap args, hud minecraft_inventory, render_anim skate::rig)
         run: |
           cargo test --profile play -p bootstrap --lib args
           cargo test --profile play -p hud --lib minecraft_inventory
+          cargo test --profile play -p render_anim --lib skate::rig
 
   # The approved scenarios that play the real game on the Minecraft map,
   # each in parts a job of its own (approved_tests <scenario> --part <part>),
@@ -188,8 +190,9 @@ jobs:
   # - dedicated_server: `iw4l dedicated` (headless, no player of its own) and
   #   a headless client. `visits`: admin rights, the empty room, SIGTERM and the
   #   restart. `mobs`: far from the spawn, the server's mobs.
-  # - skate_multiplayer: `listen`, a listen host (drawn: it is checked on the
-  #   skater it draws) and a headless client, both with the Skate 3 files;
+  # - skate_multiplayer: `listen`, a headless listen host (it poses the
+  #   client's skater as the draw path does) and a headless client, both
+  #   with the Skate 3 files;
   #   `dedicated`, a dedicated server (without them) and a headless client.
   #
   # run.json records each game's peak memory; the job's last step prints the

@@ -551,9 +551,8 @@ mod tests {
         assert_eq!(Display::Drawn.args(&["menu"]), ["menu"]);
     }
 
-    /// Which games of the two-game scenarios draw: only the listen skate
-    /// host, whose check counts the frames it drew the client's skater in.
-    /// Every other check reads game state, so those games run headless.
+    /// No game of the two-game scenarios draws: every check reads game state
+    /// (the skate listen host's pose of the client's skater included).
     #[test]
     fn only_a_check_of_what_is_drawn_draws() {
         assert_eq!(
@@ -563,7 +562,7 @@ mod tests {
         assert_eq!(dedicated_server::CLIENT_DISPLAY, Display::Headless);
         assert_eq!(
             skate_multiplayer::LISTEN_DISPLAYS,
-            [Display::Drawn, Display::Headless]
+            [Display::Headless, Display::Headless]
         );
         assert_eq!(
             skate_multiplayer::DEDICATED_CLIENT_DISPLAY,

@@ -56,6 +56,10 @@ pub struct RemoteSkaters {
     /// Times each skater was drawn on its board, by client (the renderer
     /// counts, through a shared reference).
     pub drawn: std::sync::Mutex<std::collections::BTreeMap<u32, u64>>,
+    /// Times a game that draws nothing (`frame::Headless`) posed each skater
+    /// for its body: its root placed and its board skinned from its bones, as
+    /// the renderer's path does before it draws, by client.
+    pub posed: std::sync::Mutex<std::collections::BTreeMap<u32, u64>>,
 }
 
 impl RemoteSkaters {
@@ -63,6 +67,19 @@ impl RemoteSkaters {
         if let Ok(mut drawn) = self.drawn.lock() {
             *drawn.entry(client).or_default() += 1;
         }
+    }
+
+    pub fn note_posed(&self, client: u32) {
+        if let Ok(mut posed) = self.posed.lock() {
+            *posed.entry(client).or_default() += 1;
+        }
+    }
+
+    pub fn posed(&self, client: u32) -> u64 {
+        self.posed
+            .lock()
+            .map(|p| p.get(&client).copied().unwrap_or(0))
+            .unwrap_or(0)
     }
 
     pub fn drawn(&self, client: u32) -> u64 {
