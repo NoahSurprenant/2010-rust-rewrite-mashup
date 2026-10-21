@@ -223,14 +223,138 @@ fn flight_for(key: &ZoneSourceKey) -> Arc<Mutex<()>> {
 
 pub fn open_zone(path: impl AsRef<Path>) -> Result<ZoneImage, ZoneOpenError> {
     let path = path.as_ref();
-    let result = crate::read_once(path)
-        .map_err(ZoneOpenError::Io)
-        .and_then(parse_zone_image_owned);
+    let result = read_zone_file(path);
     let image = result.map_err(|source| ZoneOpenError::AtPath {
         path: path.to_owned(),
         source: Box::new(source),
     })?;
     Ok(image)
+}
+
+/// A zone file to its image. A signed IW4 zone (every MW2 zone) is inflated as
+/// it is read, auth chunks skipped on the way: neither the file's bytes nor
+/// the dechunked stream are ever whole in memory, only the image. Its page
+/// cache is dropped after (`read_once`).
+fn read_zone_file(path: &Path) -> Result<ZoneImage, ZoneOpenError> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(ZoneOpenError::Io)?;
+    let mut preamble = vec![0u8; fastfile_iw4::FILE_PREAMBLE_LEN];
+    let n = read_full(&mut file, &mut preamble).map_err(ZoneOpenError::Io)?;
+    preamble.truncate(n);
+    let signed_iw4 = n >= 12
+        && u32::from_le_bytes(preamble[8..12].try_into().unwrap()) == fastfile_iw4::ZONE_VERSION_PC
+        && parse_iw4_header(&preamble).is_ok_and(|h| matches!(h.signing, Iw4Signing::Signed));
+    let result = if signed_iw4 {
+        let header = parse_iw4_header(&preamble).map_err(ZoneOpenError::Iw4Header)?;
+        let hint = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
+        inflate_authed(&mut file, hint)
+            .and_then(|image| finish_iw4_zone_image(header.version, image))
+    } else {
+        let mut bytes = preamble;
+        file.read_to_end(&mut bytes).map_err(ZoneOpenError::Io)?;
+        parse_zone_image_owned(bytes)
+    };
+    crate::read_once::forget_cached(&file);
+    result
+}
+
+/// Reads until `buf` is full or the file ends; how much it read.
+fn read_full(reader: &mut impl std::io::Read, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(filled)
+}
+
+/// `dechunk_authed` and `inflate_zone` in one pass over a reader: the
+/// body's chunks as they come, the first and every group's auth chunk
+/// skipped, the rest inflated.
+fn inflate_authed(
+    reader: &mut impl std::io::Read,
+    size_hint: usize,
+) -> Result<Vec<u8>, ZoneOpenError> {
+    let mut chunk = vec![0u8; AUTHED_CHUNK_SIZE];
+    let mut inflater = Inflater::new(size_hint);
+    let mut index = 0usize;
+    loop {
+        let n = read_full(reader, &mut chunk).map_err(ZoneOpenError::Io)?;
+        if index == 0 {
+            if n < 8 || &chunk[0..8] != MAGIC_AUTH_HEADER {
+                return Err(ZoneOpenError::BadAuthHeader);
+            }
+        } else if (index - 1) % (AUTHED_CHUNKS_PER_GROUP + 1) != 0 {
+            inflater.feed(&chunk[..n])?;
+        }
+        index += 1;
+        if n < AUTHED_CHUNK_SIZE {
+            break;
+        }
+    }
+    inflater.finish()
+}
+
+/// A zlib stream inflated as it is fed, through a small scratch buffer: the
+/// image grows only by what was inflated (its spare room never touched, so
+/// never resident) and ends at its length exactly.
+struct Inflater {
+    decoder: flate2::Decompress,
+    out: Vec<u8>,
+    scratch: Vec<u8>,
+    done: bool,
+}
+
+impl Inflater {
+    fn new(size_hint: usize) -> Self {
+        Self {
+            decoder: flate2::Decompress::new(true),
+            out: Vec::with_capacity(size_hint),
+            scratch: vec![0; 256 * 1024],
+            done: false,
+        }
+    }
+
+    /// One step on `input`: how much of it was taken, and whether anything
+    /// moved.
+    fn step(&mut self, input: &[u8]) -> Result<(usize, bool), ZoneOpenError> {
+        let (in0, out0) = (self.decoder.total_in(), self.decoder.total_out());
+        let status = self
+            .decoder
+            .decompress(input, &mut self.scratch, flate2::FlushDecompress::None)
+            .map_err(|e| ZoneOpenError::Inflate(e.to_string()))?;
+        self.done = status == flate2::Status::StreamEnd;
+        let used = (self.decoder.total_in() - in0) as usize;
+        let made = (self.decoder.total_out() - out0) as usize;
+        self.out.extend_from_slice(&self.scratch[..made]);
+        Ok((used, used > 0 || made > 0))
+    }
+
+    fn feed(&mut self, mut input: &[u8]) -> Result<(), ZoneOpenError> {
+        while !input.is_empty() && !self.done {
+            let (used, moved) = self.step(input)?;
+            input = &input[used..];
+            if !moved {
+                return Err(ZoneOpenError::Inflate("zlib stream stalled".into()));
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<Vec<u8>, ZoneOpenError> {
+        while !self.done {
+            let (_, moved) = self.step(&[])?;
+            if !moved && !self.done {
+                return Err(ZoneOpenError::Inflate("truncated zlib stream".into()));
+            }
+        }
+        self.out.shrink_to_fit();
+        Ok(self.out)
+    }
 }
 
 fn select_iw4_table(image: &[u8]) -> Result<WireAssetTable<'_>, ZoneOpenError> {
@@ -280,27 +404,9 @@ fn parse_zone_image_owned(bytes: Vec<u8>) -> Result<ZoneImage, ZoneOpenError> {
 }
 
 fn inflate_zone(bytes: &[u8]) -> Result<Vec<u8>, ZoneOpenError> {
-    let mut decoder = flate2::Decompress::new(true);
-    let mut out = Vec::with_capacity(bytes.len());
-    loop {
-        out.reserve((out.len() / 2).max(1024 * 1024));
-        let before = (decoder.total_in(), decoder.total_out());
-        let status = decoder
-            .decompress_vec(
-                &bytes[decoder.total_in() as usize..],
-                &mut out,
-                flate2::FlushDecompress::None,
-            )
-            .map_err(|e| ZoneOpenError::Inflate(e.to_string()))?;
-        if status == flate2::Status::StreamEnd {
-            // The growth left up to half the image again unused.
-            out.shrink_to_fit();
-            return Ok(out);
-        }
-        if before == (decoder.total_in(), decoder.total_out()) {
-            return Err(ZoneOpenError::Inflate("truncated zlib stream".into()));
-        }
-    }
+    let mut inflater = Inflater::new(bytes.len());
+    inflater.feed(bytes)?;
+    inflater.finish()
 }
 
 fn parse_iw4_zone_image(bytes: &[u8]) -> Result<ZoneImage, ZoneOpenError> {
@@ -547,6 +653,61 @@ mod tests {
         let data: Vec<u8> = (0..100_000u32).map(|i| (i * 31 % 251) as u8).collect();
         let packed = zlib(&data);
         assert!(inflate_zone(&packed[..packed.len() / 2]).is_err());
+    }
+
+    /// An authed body: its auth header chunk, then each group's auth chunk
+    /// (junk here) ahead of its data chunks.
+    fn authed(compressed: &[u8]) -> Vec<u8> {
+        let mut body = vec![0u8; AUTHED_CHUNK_SIZE];
+        body[..8].copy_from_slice(MAGIC_AUTH_HEADER);
+        for (i, data) in compressed.chunks(AUTHED_CHUNK_SIZE).enumerate() {
+            if i % AUTHED_CHUNKS_PER_GROUP == 0 {
+                body.extend(std::iter::repeat_n(0xA5, AUTHED_CHUNK_SIZE));
+            }
+            body.extend_from_slice(data);
+        }
+        body
+    }
+
+    /// Data that does not compress, so it spans more than one chunk group.
+    fn noise(len: usize) -> Vec<u8> {
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x >> 24) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn read_as_it_streams_is_the_same_image() {
+        let data = noise(3 * 1024 * 1024);
+        let body = authed(&zlib(&data));
+        assert!(body.len() > (AUTHED_CHUNKS_PER_GROUP + 2) * AUTHED_CHUNK_SIZE);
+        let whole = inflate_zone(&dechunk_authed(&body).unwrap()).unwrap();
+        let streamed = inflate_authed(&mut &body[..], body.len()).unwrap();
+        assert_eq!(whole, data);
+        assert_eq!(streamed, data);
+        assert_eq!(streamed.capacity(), streamed.len());
+    }
+
+    #[test]
+    fn a_body_without_its_auth_header_is_refused() {
+        let body = vec![0u8; 3 * AUTHED_CHUNK_SIZE];
+        assert!(matches!(
+            inflate_authed(&mut &body[..], 0),
+            Err(ZoneOpenError::BadAuthHeader)
+        ));
+    }
+
+    #[test]
+    fn a_cut_authed_body_is_refused() {
+        let body = authed(&zlib(&noise(1024 * 1024)));
+        let cut = &body[..body.len() - 3 * AUTHED_CHUNK_SIZE];
+        assert!(inflate_authed(&mut &cut[..], 0).is_err());
     }
 
     #[test]

@@ -17,7 +17,7 @@ pub fn read_once(path: &Path) -> std::io::Result<Vec<u8>> {
 }
 
 #[cfg(target_os = "linux")]
-fn forget_cached(file: &std::fs::File) {
+pub(crate) fn forget_cached(file: &std::fs::File) {
     use std::os::fd::AsRawFd;
     // SAFETY: an advisory call on a descriptor this function owns.
     unsafe {
@@ -26,7 +26,7 @@ fn forget_cached(file: &std::fs::File) {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn forget_cached(_: &std::fs::File) {}
+pub(crate) fn forget_cached(_: &std::fs::File) {}
 
 #[cfg(test)]
 mod tests {
