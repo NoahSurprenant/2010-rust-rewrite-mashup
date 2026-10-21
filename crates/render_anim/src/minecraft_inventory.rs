@@ -158,7 +158,8 @@ impl InventoryUi {
         self.pending_weapon
     }
 
-    /// Publishes the inventory for the HUD, with icons for every item in it.
+    /// Publishes the inventory for the HUD, with icons for every item in it
+    /// when this game draws (`icons`); a headless one has the stacks only.
     pub(crate) fn publish(
         &mut self,
         ui: &mut MinecraftUi,
@@ -166,6 +167,7 @@ impl InventoryUi {
         selected: usize,
         packs: &PackStack,
         images: &mut Assets<Image>,
+        icons: bool,
     ) {
         let language = self
             .language
@@ -205,6 +207,9 @@ impl InventoryUi {
             }
             if !ui.names.contains_key(&id) {
                 ui.names.insert(id.clone(), minecraft_terrain::item_icons::item_name(language, &id));
+            }
+            if !icons {
+                continue;
             }
             if self.cells.contains_key(&id) || self.failed.contains(&id) {
                 continue;

@@ -33,7 +33,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use crate::duo::{Pair, Player, cpu_secs, field};
+use crate::duo::{Display, Pair, Player, cpu_secs, field};
 use crate::runner::Event;
 use crate::scenario::Parts;
 use crate::scenarios::mob_steps;
@@ -87,6 +87,9 @@ pub const PARTS: Parts = &[
     ),
 ];
 pub const MAP: &str = "minecraft:overworld";
+/// The client: it draws nothing (the server never does). Every check reads
+/// what the games print or the master lists, none a picture.
+pub const CLIENT_DISPLAY: Display = Display::Headless;
 /// The room's name on the master, longer than the 16 characters a master
 /// keeps of a player's name: the list shows it whole.
 pub const ROOM: &str = "approved dedicated server";

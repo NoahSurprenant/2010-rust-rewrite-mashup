@@ -1415,7 +1415,7 @@ impl AssetLinkSink for SoundCatalog {
                     s.u32_at(header, 32)?,
                 )
             };
-        let pcm_bytes = s.slice_at(pcm, 0, data_len)?.to_vec();
+        let pcm_bytes = s.slice_at(pcm, 0, data_len)?;
 
         if name.is_empty() {
             self.capture_gaps += 1;
@@ -1429,6 +1429,12 @@ impl AssetLinkSink for SoundCatalog {
             }
             return Ok(());
         }
+        // A game that plays no sound keeps what the sound is, not its samples.
+        let pcm: std::sync::Arc<[u8]> = if crate::keeps_sound_samples() {
+            pcm_bytes.into()
+        } else {
+            std::sync::Arc::from([])
+        };
         self.register_loaded(LoadedSoundPcm {
             name,
             game: self.capture_game,
@@ -1438,7 +1444,7 @@ impl AssetLinkSink for SoundCatalog {
             channels,
             samples,
             block_size,
-            pcm: pcm_bytes.into(),
+            pcm,
             zone: self.capture_zone,
             ..Default::default()
         });

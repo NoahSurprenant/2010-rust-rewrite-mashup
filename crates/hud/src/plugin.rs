@@ -74,7 +74,8 @@ impl Plugin for HudPlugin {
                     sync_games_root,
                     sync_map_zone_tree,
                     sync_zone_atlases,
-                    warm_hud_images,
+                    // A game that draws nothing uploads no HUD images.
+                    warm_hud_images.run_if(not(resource_exists::<frame::Headless>)),
                     ensure_hud_root,
                     sync_frontend_camera,
                     hud_stamp_setup,

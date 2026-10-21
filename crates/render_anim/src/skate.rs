@@ -44,7 +44,57 @@ pub fn register(app: &mut App) {
                 .before(crate::sync_camera_from_presented)
                 .before(render_scene::GfxSceneAdd)
                 .in_set(frame::ClientSet::Present),
+        )
+        .add_systems(
+            Update,
+            pose_remote_skaters_headless
+                .after(frame::PresentedPublished)
+                .in_set(frame::ClientSet::Present)
+                .run_if(resource_exists::<frame::Headless>)
+                .run_if(not(resource_exists::<frame::DedicatedServer>)),
         );
+}
+
+/// A game that draws nothing still poses each other player on its board,
+/// as far as the renderer's path does before it draws: the skater's body
+/// bones (every one a soldier follows, in the reference rig) and its board
+/// skinned from them, for a living player in its snapshot. Each one counts
+/// (`RemoteSkaters::posed`, `skate state`'s `remote=`).
+fn pose_remote_skaters_headless(
+    skaters: Res<frame::RemoteSkaters>,
+    presented: Res<net::PresentedSnapshot>,
+    local: Res<net::LocalPresentClient>,
+    mut reference: Local<Option<Vec<String>>>,
+    mut warned: Local<std::collections::BTreeSet<u32>>,
+) {
+    if skaters.poses.is_empty() {
+        return;
+    }
+    let reference = reference.get_or_insert_with(rig::reference_names);
+    for &client in skaters.poses.keys() {
+        if client == local.0.0 || presented.alive_player(sim::ClientId(client)).is_none() {
+            continue;
+        }
+        let Some(skater) = remote_pose(&skaters, client) else {
+            continue;
+        };
+        if !skater.root.is_finite() {
+            continue;
+        }
+        let mut board = crate::anim::remote_body::CpuBodyGeom::default();
+        let posed = rig::body_bones(&skaters.names, &skater.bones, reference)
+            .and_then(|_| rig::board(&skaters.names, &skater.bones, &mut board));
+        match posed {
+            Ok(()) if !board.indices.is_empty() => skaters.note_posed(client),
+            Ok(()) if warned.insert(client) => {
+                diag::warn!(World, "skater {client}: its board skinned to nothing")
+            }
+            Err(error) if warned.insert(client) => {
+                diag::warn!(World, "skater {client}: not posed: {error}")
+            }
+            _ => {}
+        }
+    }
 }
 
 fn preload_assets(mut mode: ResMut<SkateMode>) {

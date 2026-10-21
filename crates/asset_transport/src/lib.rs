@@ -4,6 +4,7 @@ pub mod iwd;
 pub mod load_jobs;
 pub mod namespace_trees;
 pub mod progress;
+mod read_once;
 pub mod zone;
 
 pub use artifact_cache::{CacheFlight, cache_flight, cache_get, cache_put, fnv1a64, fnv1a64_more};
@@ -27,6 +28,7 @@ pub use progress::{
     StageOutcome, StageScope, StageSnapshot, WorkCount, peak_resident_bytes,
     process_resident_bytes,
 };
+pub use read_once::read_once;
 pub use zone::{
     Iw4WireFormat, Iw5ZoneMemory, T5ZoneMemory, ZoneImage, ZoneMemory, ZoneOpenError, open_zone,
     open_zone_shared, parse_zone_image, xfile_arena_row, zone_share_counts,

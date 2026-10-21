@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use crate::duo::Pair;
+use crate::duo::{Display, Pair};
 use crate::runner::Event;
 use crate::scenario::Parts;
 
@@ -54,6 +54,14 @@ pub const PARTS: Parts = &[
     ),
 ];
 pub const MAP: &str = "minecraft:overworld";
+/// The listen room's host and client: neither draws. `host_draws_client_pose`
+/// takes the frames the host posed the client's skater for its body (every
+/// bone a soldier follows, its board skinned), which a headless game does as
+/// the renderer's path does before it draws (`posed`), or a drawn one's drawn
+/// frames (`drawn`).
+pub const LISTEN_DISPLAYS: [Display; 2] = [Display::Headless, Display::Headless];
+/// The dedicated room's client: it draws nothing (the server never does).
+pub const DEDICATED_CLIENT_DISPLAY: Display = Display::Headless;
 pub const CLASSES: &str = crate::scenarios::crafting_table::CLASSES;
 /// The dedicated server's room on the master (16 characters at most).
 pub const ROOM: &str = "approved skate";
@@ -194,15 +202,28 @@ pub fn peers(event: &Event) -> Vec<Peer> {
         .collect()
 }
 
-/// A skater as a game's `remote=` lists it (one it draws).
+/// A skater as a game's `remote=` lists it (one it draws, or a headless
+/// game poses): `client:at:bones:received:drawn:posed:label`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Remote {
     pub client: u32,
     pub at: [f64; 3],
     pub bones: usize,
     pub received: u64,
+    /// Frames the renderer drew it in, on its board.
     pub drawn: u64,
+    /// Frames a game that draws nothing posed it (its body's bones and its
+    /// board skinned), as the renderer's path does before it draws.
+    pub posed: u64,
     pub label: String,
+}
+
+impl Remote {
+    /// Shown on its board in place of its MW2 body, drawn or (headless)
+    /// posed for it.
+    pub fn shown(&self) -> bool {
+        self.drawn > 0 || self.posed > 0
+    }
 }
 
 pub fn remotes(event: &Event) -> Vec<Remote> {
@@ -212,7 +233,7 @@ pub fn remotes(event: &Event) -> Vec<Remote> {
         .split('|')
         .filter_map(|entry| {
             let p: Vec<&str> = entry.split(':').collect();
-            let [client, at, bones, received, drawn, label] = p.as_slice() else {
+            let [client, at, bones, received, drawn, posed, label] = p.as_slice() else {
                 return None;
             };
             Some(Remote {
@@ -221,6 +242,7 @@ pub fn remotes(event: &Event) -> Vec<Remote> {
                 bones: bones.parse().ok()?,
                 received: received.parse().ok()?,
                 drawn: drawn.parse().ok()?,
+                posed: posed.parse().ok()?,
                 label: (*label).to_owned(),
             })
         })
@@ -382,7 +404,7 @@ pub fn listen_session(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> 
         .ok_or("h_before lists no client")?;
     let seen = poll(pair, false, "h_seen", sync, |e| {
         peer(e, client_id).is_some_and(|p| p.skating && along(start, p.origin) > MOVED_UNITS)
-            && remote(e, client_id).is_some_and(|r| r.drawn > 0)
+            && remote(e, client_id).is_some_and(|r| r.shown())
     })?;
     facts.keep("h_seen", seen);
     let pushed = state(pair, true, "c_pushed")?;
@@ -542,8 +564,8 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
             if seen.bones != 35 {
                 return Err(format!("`h_seen`: {} bones", seen.bones));
             }
-            if seen.drawn == 0 {
-                return Err("`h_seen`: the skater was never drawn".into());
+            if !seen.shown() {
+                return Err("`h_seen`: the skater was never drawn or posed".into());
             }
             Ok(())
         }),
@@ -697,7 +719,7 @@ mod tests {
             ("c_pushing", skating),
             (
                 "h_seen",
-                "role=listen client=0 remote=1:22400,0,5454:35:60:40:PhysicsGround peers=0:21600,180,5454:0:0:0:0:0|1:22400,0,5454:1:60:0:23000:0",
+                "role=listen client=0 remote=1:22400,0,5454:35:60:40:0:PhysicsGround peers=0:21600,180,5454:0:0:0:0:0|1:22400,0,5454:1:60:0:23000:0",
             ),
             ("c_off", "role=client client=1 active=0 ready=1"),
             (
@@ -707,7 +729,7 @@ mod tests {
             ("h_pushing", skating),
             (
                 "c_watched",
-                "role=client client=1 received_bytes=20000 remote=0:22000,0,5454:35:40:30:PhysicsGround",
+                "role=client client=1 received_bytes=20000 remote=0:22000,0,5454:35:40:30:0:PhysicsGround",
             ),
             (
                 "c_after",
@@ -761,7 +783,7 @@ mod tests {
         f.lines.insert(
             "h_seen".into(),
             event(
-                "remote=1:21744,0,5454:35:60:40:PhysicsGround peers=1:21744,0,5454:1:60:0:23000:0",
+                "remote=1:21744,0,5454:35:60:40:0:PhysicsGround peers=1:21744,0,5454:1:60:0:23000:0",
             ),
         );
         assert_eq!(failed(&f), ["host_moves_skating_client"]);
@@ -773,7 +795,7 @@ mod tests {
         f.lines.insert(
             "h_seen".into(),
             event(
-                "remote=1:22400,0,5454:35:60:0:PhysicsGround peers=1:22400,0,5454:1:60:0:23000:0",
+                "remote=1:22400,0,5454:35:60:0:0:PhysicsGround peers=1:22400,0,5454:1:60:0:23000:0",
             ),
         );
         assert_eq!(failed(&f), ["host_draws_client_pose"]);
@@ -824,9 +846,32 @@ mod tests {
     }
 
     #[test]
+    fn a_headless_host_that_poses_the_skater_passes() {
+        let mut f = passing();
+        f.lines.insert(
+            "h_seen".into(),
+            event(
+                "remote=1:22400,0,5454:35:60:0:120:PhysicsGround peers=1:22400,0,5454:1:60:0:23000:0",
+            ),
+        );
+        assert!(failed(&f).is_empty(), "{:?}", failed(&f));
+    }
+
+    #[test]
+    fn a_skater_neither_drawn_nor_posed_is_not_shown() {
+        let e = event("remote=1:22400,0,5454:35:60:0:0:PhysicsGround");
+        let r = remotes(&e).remove(0);
+        assert!(!r.shown());
+        let e = event("remote=1:22400,0,5454:35:60:0:7:PhysicsGround");
+        let r = remotes(&e).remove(0);
+        assert_eq!((r.drawn, r.posed), (0, 7));
+        assert!(r.shown());
+    }
+
+    #[test]
     fn lines_parse() {
         let e = event(
-            "remote=1:22400,0,5454:35:60:40:PhysicsGround|3:1,2,3:35:1:0:- peers=1:22400,-5,5454:1:60:2:23000:9",
+            "remote=1:22400,0,5454:35:60:40:0:PhysicsGround|3:1,2,3:35:1:0:0:- peers=1:22400,-5,5454:1:60:2:23000:9",
         );
         assert_eq!(remotes(&e).len(), 2);
         assert_eq!(

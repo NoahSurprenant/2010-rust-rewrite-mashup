@@ -160,6 +160,19 @@ jobs:
         run: |
           cargo test --profile play -p net --lib skate
           cargo test --profile play -p console --lib debug_skate
+      # `iw4l --headless`: the flag, IW4L_HEADLESS and what it refuses; the
+      # Minecraft screen and hotbar keys a headless player still has; the
+      # skater bones a headless host poses a body from.
+      - name: headless unit tests (bootstrap args, hud minecraft_inventory, render_anim skate::rig)
+        run: |
+          cargo test --profile play -p bootstrap --lib args
+          cargo test --profile play -p hud --lib minecraft_inventory
+          cargo test --profile play -p render_anim --lib skate::rig
+          cargo test --profile play -p console --lib accepts_tests
+      # A zone read once (its file's cache dropped) and inflated to no spare
+      # room: what a game holds while it walks a zone's assets.
+      - name: zone read unit tests (asset_transport read_once, zone)
+        run: cargo test --profile play -p asset_transport --lib -- read_once zone::tests
 
   # The approved scenarios that play the real game on the Minecraft map,
   # each in parts a job of its own (approved_tests <scenario> --part <part>),
@@ -170,17 +183,22 @@ jobs:
   # internet, so a pull request from a fork never runs here; the repository
   # also requires approval before an outside contributor's workflow runs.
   #
-  # - crafting_table: one game.
-  # - minecraft_multiplayer: a listen host and a client through an
-  #   iw4l-master the run starts on the loopback. `world`: blocks both ways,
+  # Only a game a check needs a picture of draws (on lavapipe); the others
+  # run `iw4l --headless`, as a dedicated server always does: no window, no
+  # renderer, no sound, a third of the memory and far less CPU.
+  #
+  # - crafting_table: one game, drawn (icons, the crafting screen).
+  # - minecraft_multiplayer: a listen host and a client, both headless,
+  #   through an iw4l-master the run starts on the loopback. `world`: blocks both ways,
   #   the client's hand, then both again on the same settings to see the
   #   host's world kept. `mobs`: far from the host, its mobs.
   # - dedicated_server: `iw4l dedicated` (headless, no player of its own) and
-  #   a client. `visits`: admin rights, the empty room, SIGTERM and the
+  #   a headless client. `visits`: admin rights, the empty room, SIGTERM and the
   #   restart. `mobs`: far from the spawn, the server's mobs.
-  # - skate_multiplayer: `listen`, a listen host and a client, both with the
-  #   Skate 3 files; `dedicated`, a dedicated server (without them) and a
-  #   client.
+  # - skate_multiplayer: `listen`, a headless listen host (it poses the
+  #   client's skater as the draw path does) and a headless client, both
+  #   with the Skate 3 files;
+  #   `dedicated`, a dedicated server (without them) and a headless client.
   #
   # run.json records each game's peak memory; the job's last step prints the
   # runner container's (cgroup) peak, page cache included.
@@ -213,6 +231,18 @@ jobs:
       LP_NUM_THREADS: 4
       # The checkout, not where the binaries were built.
       IW4L_REPO_ROOT: ${{ github.workspace }}
+      # No game is checked on what it plays aloud (there is no sound device
+      # here either): no clips decoded, no samples kept.
+      IW4L_SOUND: 'off'
+      # A game that draws (crafting_table's) keeps every texture in memory on
+      # lavapipe: MW2's at most 256 pixels a side. Its checks read item icons
+      # and screens drawn from Minecraft's own files, which this leaves whole.
+      IW4L_TEXTURE_MAX_SIZE: 256
+      # And draws MW2's models (guns, bodies) without their meshes: none of its
+      # checks reads one off the screen.
+      IW4L_XMODEL_MESHES: 'off'
+      # Two glibc arenas, not one a thread: less freed memory held back.
+      MALLOC_ARENA_MAX: 2
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
@@ -237,11 +267,21 @@ jobs:
           if [ "${{ matrix.skate }}" = true ]; then
             echo "IW4L_SKATE_ASSETS=/skate-assets/skate-data/assets" >> "$GITHUB_ENV"
           fi
+      # What the steps above wrote or unpacked (the binaries, Minecraft's files)
+      # stays in the page cache, which this job's memory counts: drop it
+      # before the games start.
+      - name: Drop the setup's file cache
+        run: scripts/drop-file-cache.sh target/play iw4l-artifacts/minecraft-26.3
       - name: ${{ matrix.scenario }}${{ matrix.part && format(' --part {0}', matrix.part) || '' }}
         run: scripts/headless-display.sh target/play/approved_tests ${{ matrix.scenario }} ${{ matrix.part && format('--part {0}', matrix.part) || '' }} --cache shared
-      - name: Job peak memory (runner container cgroup)
+      - name: Job peak memory and CPU (runner container cgroup)
         if: always()
         run: |
+          if [ -r /sys/fs/cgroup/cpu.stat ]; then
+            usec=$(awk '$1 == "usage_usec" {print $2}' /sys/fs/cgroup/cpu.stat)
+            echo "cpu.stat usage_usec $usec ($((usec / 1000000)) CPU-seconds)"
+          fi
+          [ -r /sys/fs/cgroup/memory.stat ] && grep -E '^(anon|file|shmem) ' /sys/fs/cgroup/memory.stat || true
           for f in memory.peak memory.max memory.current; do
             [ -r "/sys/fs/cgroup/$f" ] || continue
             v=$(cat "/sys/fs/cgroup/$f")

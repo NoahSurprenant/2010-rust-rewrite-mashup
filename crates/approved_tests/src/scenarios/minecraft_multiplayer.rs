@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use crate::duo::Pair;
+use crate::duo::{Display, Pair};
 use crate::runner::Event;
 use crate::scenario::{Part, Parts};
 use crate::scenarios::mob_steps;
@@ -76,6 +76,11 @@ pub const PARTS: Parts = &[
     ),
 ];
 pub const MAP: &str = "minecraft:overworld";
+/// Host and client, as `open_duo` starts them: neither draws. Every check
+/// reads what the games print (blocks, inventories, mobs, sounds), none a
+/// picture, and two games that draw on a CPU renderer were this job's
+/// memory.
+pub const DISPLAYS: [Display; 2] = [Display::Headless, Display::Headless];
 /// The same class as `crafting_table`'s: guns fill the first hotbar slots.
 pub const CLASSES: &str = crate::scenarios::crafting_table::CLASSES;
 /// Loading a game and its world, on a CPU renderer.

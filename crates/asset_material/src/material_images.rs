@@ -75,6 +75,36 @@ impl DecodedMips {
         }
     }
 
+    /// Without its top levels while either side is over `max` (and the level
+    /// below stays a whole number of 4x4 blocks): a texture drawn smaller,
+    /// for a game that is asked to hold less (`IW4L_TEXTURE_MAX_SIZE`). One
+    /// level alone stays as it is.
+    fn capped(mut self, max: Option<u32>) -> Self {
+        let Some(max) = max else {
+            return self;
+        };
+        let mut drop = 0usize;
+        let (mut w, mut h) = (self.width, self.height);
+        while drop + 1 < self.level_sizes.len() && w.max(h) > max {
+            let (nw, nh) = ((w >> 1).max(1), (h >> 1).max(1));
+            if self.storage != MipStorage::Rgba8 && (nw % 4 != 0 || nh % 4 != 0) {
+                break;
+            }
+            (w, h) = (nw, nh);
+            drop += 1;
+        }
+        if drop == 0 {
+            return self;
+        }
+        let skip: usize = self.level_sizes[..drop].iter().map(|s| *s as usize).sum();
+        self.packed.drain(..skip);
+        self.packed.shrink_to_fit();
+        self.level_sizes.drain(..drop);
+        self.width = w;
+        self.height = h;
+        self
+    }
+
     fn level_count(&self) -> u32 {
         self.level_sizes.len() as u32
     }
@@ -1462,8 +1492,15 @@ fn mip_cache_key(crc: u32, size: u64, entry: &str) -> String {
     )
 }
 
+/// An entry's mips, capped (`IW4L_TEXTURE_MAX_SIZE`) before they are cached:
+/// a capped run reads and writes only the levels it keeps, under keys of
+/// its own.
 fn load_or_decode_mips(candidate: &asset_transport::IwdFile) -> Result<DecodedMips, String> {
-    let key = mip_cache_key(candidate.crc32(), candidate.size(), candidate.entry());
+    let max = texture_max_size();
+    let mut key = mip_cache_key(candidate.crc32(), candidate.size(), candidate.entry());
+    if let Some(max) = max {
+        key.push_str(&format!("-max{max}"));
+    }
     let io_at = std::time::Instant::now();
     if let Some(mips) = read_cached_mips(&key, io_at) {
         return Ok(mips);
@@ -1474,7 +1511,7 @@ fn load_or_decode_mips(candidate: &asset_transport::IwdFile) -> Result<DecodedMi
         return Ok(mips);
     }
     let bytes = candidate.read()?;
-    let mips = decode_iwi_mips(&bytes)?;
+    let mips = decode_iwi_mips(&bytes)?.capped(max);
     let blob = mips.cache_encode();
     let store_at = std::time::Instant::now();
     if let Err(error) = crate::cache_put("mips", &key, &blob) {
@@ -2937,4 +2974,75 @@ fn decode_inline(
         }
     }
     stats
+}
+
+const TEXTURE_MAX_SIZE_ENV: &str = "IW4L_TEXTURE_MAX_SIZE";
+
+/// `IW4L_TEXTURE_MAX_SIZE=<pixels>`: MW2 textures drawn at most this size
+/// on a side (their top mip levels dropped). Unset, every texture is whole.
+/// For a test game on a CPU renderer, which keeps every texture in memory.
+fn texture_max_size() -> Option<u32> {
+    static MAX: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *MAX.get_or_init(|| parse_texture_max_size(std::env::var(TEXTURE_MAX_SIZE_ENV).ok().as_deref()))
+}
+
+fn parse_texture_max_size(value: Option<&str>) -> Option<u32> {
+    value?.trim().parse::<u32>().ok().filter(|&max| max >= 4)
+}
+
+#[cfg(test)]
+mod texture_cap_tests {
+    use super::*;
+
+    /// A BC1 chain from `size` down to 1, each level's bytes its level number.
+    fn bc1_chain(size: u32) -> DecodedMips {
+        let mut levels = Vec::new();
+        let mut s = size;
+        let mut n = 0u8;
+        loop {
+            let blocks = s.div_ceil(4).max(1) as usize;
+            levels.push(vec![n; blocks * blocks * 8]);
+            if s == 1 {
+                break;
+            }
+            s /= 2;
+            n += 1;
+        }
+        DecodedMips::from_levels(size, size, MipStorage::Bc1, levels)
+    }
+
+    #[test]
+    fn a_capped_chain_starts_at_the_cap() {
+        let mips = bc1_chain(1024).capped(Some(256));
+        assert_eq!((mips.width, mips.height), (256, 256));
+        assert_eq!(mips.level_count(), 9);
+        assert_eq!(mips.packed[0], 2, "the first level kept is 256");
+        assert_eq!(
+            mips.packed.len(),
+            mips.level_sizes.iter().map(|s| *s as usize).sum::<usize>()
+        );
+    }
+
+    #[test]
+    fn no_cap_or_a_small_texture_is_untouched() {
+        assert_eq!(bc1_chain(1024).capped(None).width, 1024);
+        assert_eq!(bc1_chain(128).capped(Some(256)).width, 128);
+        let single = DecodedMips::single(512, 512, vec![0; 512 * 512 * 4]).capped(Some(64));
+        assert_eq!(single.width, 512, "one level alone cannot shrink");
+    }
+
+    #[test]
+    fn block_compressed_levels_stay_whole_blocks() {
+        let mips = bc1_chain(16).capped(Some(1));
+        assert_eq!(mips.width, 4);
+    }
+
+    #[test]
+    fn the_setting_is_a_size_of_at_least_four() {
+        assert_eq!(parse_texture_max_size(Some("256")), Some(256));
+        assert_eq!(parse_texture_max_size(Some(" 64 ")), Some(64));
+        assert_eq!(parse_texture_max_size(Some("2")), None);
+        assert_eq!(parse_texture_max_size(Some("big")), None);
+        assert_eq!(parse_texture_max_size(None), None);
+    }
 }

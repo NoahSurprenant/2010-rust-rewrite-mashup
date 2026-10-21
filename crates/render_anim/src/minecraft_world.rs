@@ -607,6 +607,7 @@ pub(crate) struct MinecraftNet<'w, 's> {
     bridge: Option<Res<'w, net::MasterBridge>>,
     identity: Option<Res<'w, frame::LaunchIdentity>>,
     dedicated: Option<Res<'w, frame::DedicatedServer>>,
+    headless: Option<Res<'w, frame::Headless>>,
     admins: Option<ResMut<'w, net::DebugAdmins>>,
     notify: Option<ResMut<'w, net::PendingGameNotify>>,
     identities: Option<Res<'w, net::PlayerIdentities>>,
@@ -693,6 +694,10 @@ fn update(
     }
     let is_client = *net.role == frame::RuntimeRole::Client;
     let dedicated = net.dedicated.is_some();
+    // A game that draws nothing (a dedicated server, or a headless player's
+    // game) builds no meshes, light, icons or sounds: its world is blocks,
+    // mobs and items, and its player plays in it all the same.
+    let draws = net.headless.is_none() && !dedicated;
     let hosting = net.bridge.is_some() || dedicated;
     // A client's world arrives with the host's seed, mid-match: the loading
     // screen never waits on it.
@@ -737,7 +742,7 @@ fn update(
         let _ = std::thread::Builder::new()
             .name("minecraft-world-load".into())
             .spawn(move || {
-                let _ = send.send(load(seed, dir, origin, !dedicated));
+                let _ = send.send(load(seed, dir, origin, draws));
             });
         runtime.loading = Some(receive);
     }
@@ -764,7 +769,7 @@ fn update(
                         let _ = std::thread::Builder::new()
                             .name("minecraft-world-load".into())
                             .spawn(move || {
-                                let _ = send.send(load(seed, None, Some(origin), true));
+                                let _ = send.send(load(seed, None, Some(origin), draws));
                             });
                         runtime.loading = Some(receive);
                     }
@@ -1861,7 +1866,7 @@ fn update(
     let Some(light) = light.as_mut() else {
         return;
     };
-    if !dedicated {
+    if draws {
         let update = world
             .stream
             .frame(&world.scene, &camera, FADE_MILLIS, &world.atlas, &world.packs);
@@ -1877,7 +1882,7 @@ fn update(
         sound_queue.0.append(&mut sounds.queued);
     }
     // The minimap's picture, and its corners on the map.
-    ui.minimap = (!dedicated)
+    ui.minimap = draws
         .then(|| minimap.update(time.delta_secs_f64(), feet, &world.scene, &world.packs, &world.atlas, &mut images))
         .flatten()
         .map(|(image, [bx, bz])| {
@@ -1890,7 +1895,7 @@ fn update(
     // The Overworld clock and the environment attributes of MinecraftOSS.
     let dt = time.delta_secs_f64();
     let partial = mining.tick(&world.scene, dt);
-    if !dedicated {
+    if draws {
         view.particles = mining.particle_mesh(&world.atlas, forward, partial, light);
     }
 
@@ -2114,7 +2119,7 @@ fn update(
         }
         entities.selected = selected;
         if !dedicated {
-            inventory_ui.publish(&mut ui, &entities.inventory, selected, &world.packs, &mut images);
+            inventory_ui.publish(&mut ui, &entities.inventory, selected, &world.packs, &mut images, draws);
         }
 
         // A dedicated server plays none.
@@ -2129,7 +2134,8 @@ fn update(
         ui.hand = None;
         let swing = hand.swing.map_or(0.0, |t| (t / crate::minecraft_hand::SWING_TICKS).clamp(0.0, 1.0));
         ui.hand_swing = swing;
-        if ui.holding_item
+        if draws
+            && ui.holding_item
             && !puppet.active
             && let Some(stack) = entities.inventory.slots[entities.selected].clone()
         {
@@ -2159,6 +2165,14 @@ fn update(
         sim::voxel::set_mob_boxes(entities.boxes());
         entities.tick_scene(&world.scene, mob_ticks);
         if !dedicated {
+            ui.ground_items = entities
+                .world_items
+                .entities
+                .iter()
+                .map(|entity| entity.stack.id.clone())
+                .collect();
+        }
+        if draws {
             let sky_darken = (15.0 - world.environment.sky_light_level()).clamp(0.0, 15.0) as u8;
             let meshes = entities.meshes(
                 &world.scene,
@@ -2178,12 +2192,6 @@ fn update(
                 raw(&meshes.translucent),
                 raw(&meshes.shadows),
             ];
-            ui.ground_items = entities
-                .world_items
-                .entities
-                .iter()
-                .map(|entity| entity.stack.id.clone())
-                .collect();
             ui.no_model = meshes.no_model;
             let mesh = meshes.items;
             let (bytes, indices) = &mut view.particles;
@@ -2464,7 +2472,7 @@ fn update(
         diag::info!(Console, "{line}");
         println!("{line}");
     }
-    if dedicated {
+    if !draws {
         day.advance(dt);
         return;
     }

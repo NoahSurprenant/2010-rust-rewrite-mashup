@@ -141,11 +141,12 @@ fn state_line(
         .iter()
         .map(|(id, pose)| {
             format!(
-                "{id}:{}:{}:{}:{}:{}",
+                "{id}:{}:{}:{}:{}:{}:{}",
                 xyz(pose.root.w_axis.truncate()),
                 pose.bones.len(),
                 pose.received,
                 net.remote.drawn(**id),
+                net.remote.posed(**id),
                 word(&pose.label)
             )
         })

@@ -11,6 +11,20 @@ pub use xmodel_runtime::BoneCollision;
 
 const BONE_STRIDE: u16 = 64;
 
+static CAPTURE_MESHES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Whether XModels keep their meshes (vertices, triangles, skinning). A game
+/// that draws nothing (a dedicated server, `--headless`) keeps their bones,
+/// tags, poses, collision, bounds and surface list, which is all it reads of
+/// a model, and none of the vertex data only the renderer reads.
+pub fn capture_meshes(capture: bool) {
+    CAPTURE_MESHES.store(capture, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn captures_meshes() -> bool {
+    CAPTURE_MESHES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn packed_word(vertex: &[u8; sz::GFX_PACKED_VERTEX], offset: usize) -> u32 {
     u32::from_le_bytes([
         vertex[offset],
@@ -408,6 +422,7 @@ fn capture_model_skel_iw4(
     let mut packed_vertices = Vec::new();
     let mut lod_surf_span = [(0u16, 0u16); 4];
     let mut any_surf = false;
+    let meshes = captures_meshes();
 
     for lod in 0..4 {
         let Some(surfaces) = geometry.lod_xsurfaces[lod] else {
@@ -429,6 +444,7 @@ fn capture_model_skel_iw4(
                 let n = usize::from(first) + offset;
                 let (v, vn) = source.surface_vertex_ranges[n];
                 let (ix, ixn) = source.surface_index_ranges[n];
+                let (vn, ixn) = if meshes { (vn, ixn) } else { (0, 0) };
                 if source.vert_skin[v..v + vn].iter().any(|skin| {
                     skin.bones.iter().zip(skin.weights).any(|(bone, weight)| {
                         weight != 0.0 && usize::from(*bone) >= geometry.num_bones
@@ -493,33 +509,35 @@ fn capture_model_skel_iw4(
 
             let base = packed_vertices.len();
             let index_start = indices.len();
-            let surface_skins = decode_surface_skin(
-                stream,
-                surface,
-                vertex_count,
-                vert_list_count,
-                geometry.num_bones,
-            )?;
-
-            for vertex_index in 0..vertex_count {
-                let vertex = vertices.at(vertex_index * sz::GFX_PACKED_VERTEX);
-                packed_vertices.push(copy_packed_vertex_iw4(stream, vertex)?);
-                let skin = surface_skins[vertex_index];
-                if skin.weights[1] == 0.0 && skin.weights[0] == 1.0 {
-                    rigid_verts += 1;
-                } else {
-                    blend_verts += 1;
+            // Without meshes a surface keeps its place in the list, empty.
+            if meshes {
+                let surface_skins = decode_surface_skin(
+                    stream,
+                    surface,
+                    vertex_count,
+                    vert_list_count,
+                    geometry.num_bones,
+                )?;
+                for vertex_index in 0..vertex_count {
+                    let vertex = vertices.at(vertex_index * sz::GFX_PACKED_VERTEX);
+                    packed_vertices.push(copy_packed_vertex_iw4(stream, vertex)?);
+                    let skin = surface_skins[vertex_index];
+                    if skin.weights[1] == 0.0 && skin.weights[0] == 1.0 {
+                        rigid_verts += 1;
+                    } else {
+                        blend_verts += 1;
+                    }
+                    vert_skin.push(skin);
                 }
-                vert_skin.push(skin);
-            }
-            for index_offset in 0..tri_count * 3 {
-                let index = stream.u16_at(triangles, index_offset * 2).ok()?;
-                if usize::from(index) >= vertex_count {
-                    return None;
+                for index_offset in 0..tri_count * 3 {
+                    let index = stream.u16_at(triangles, index_offset * 2).ok()?;
+                    if usize::from(index) >= vertex_count {
+                        return None;
+                    }
+                    indices.push(base as u32 + u32::from(index));
                 }
-                indices.push(base as u32 + u32::from(index));
             }
-            surface_vertex_ranges.push((base, vertex_count));
+            surface_vertex_ranges.push((base, packed_vertices.len() - base));
             surface_index_ranges.push((index_start, indices.len() - index_start));
             surface_part_bits.push(part_bits);
             surface_deformed.push(Some(deformed));

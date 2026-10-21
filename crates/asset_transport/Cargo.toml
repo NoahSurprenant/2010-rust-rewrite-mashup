@@ -19,5 +19,8 @@ dotenvy.workspace = true
 [target.'cfg(windows)'.dependencies]
 lnk = "0.6.4"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true

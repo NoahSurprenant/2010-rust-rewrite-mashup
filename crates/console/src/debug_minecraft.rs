@@ -22,6 +22,23 @@ pub(crate) fn register_debug_minecraft_commands(registry: &mut ConsoleRegistry) 
     }
 }
 
+/// Whether `mc <verb>` is taken now. A world in play with its player alive
+/// (or a dedicated server's, which has none) takes every verb. Between the
+/// player's lives (dead, waiting to spawn again) the world is still there:
+/// a question about it (`state`, `block`, `mobs`, `sounds`, `mobrange`) is
+/// taken and answered, at once or once the player lives again, and only
+/// what the player would do waits for it to.
+fn accepts(verb: Option<&str>, active: bool, dedicated: bool, world: bool) -> bool {
+    if active || (dedicated && world) {
+        return true;
+    }
+    world
+        && matches!(
+            verb,
+            Some("state" | "block" | "mobs" | "sounds" | "mobrange")
+        )
+}
+
 /// Keys and mouse buttons `key` holds down, and the seconds left on each.
 #[derive(Default)]
 pub(crate) struct HeldDeviceButtons(Vec<(BindButton, f32)>);
@@ -47,9 +64,10 @@ pub(crate) fn route_debug_minecraft_commands(
 ) {
     let capacity = settings.log_capacity;
     let mut ui = ui;
-    let window = window.single().ok();
+    // A headless game has no window: its input still reaches the game,
+    // which reads keys and buttons whatever window they came from.
+    let window = window.single().unwrap_or(Entity::PLACEHOLDER);
     let mut send = |button: BindButton, state: ButtonState| {
-        let Some(window) = window else { return };
         match button {
             BindButton::Key(key_code) => {
                 keys.write(KeyboardInput {
@@ -131,10 +149,15 @@ pub(crate) fn route_debug_minecraft_commands(
                 );
             }
             "mc" => {
-                let Some(ui) = ui
-                    .as_mut()
-                    .filter(|ui| ui.active || (ui.net_role == "dedicated" && ui.seed.is_some()))
-                else {
+                let verb = cmd.args.first().map(String::as_str);
+                let Some(ui) = ui.as_mut().filter(|ui| {
+                    accepts(
+                        verb,
+                        ui.active,
+                        ui.net_role == "dedicated",
+                        ui.seed.is_some(),
+                    )
+                }) else {
                     console.echo("mc: no Minecraft world in play", capacity);
                     continue;
                 };
@@ -334,5 +357,38 @@ fn no_icon(ui: &MinecraftUi) -> String {
         "-".to_owned()
     } else {
         missing.join(",")
+    }
+}
+
+#[cfg(test)]
+mod accepts_tests {
+    use super::accepts;
+
+    #[test]
+    fn a_living_player_or_a_dedicated_world_takes_every_verb() {
+        for verb in ["give", "set", "summon", "state", "mobs", "click"] {
+            assert!(accepts(Some(verb), true, false, true), "{verb}");
+            assert!(accepts(Some(verb), false, true, true), "{verb}");
+        }
+    }
+
+    /// Run 39688016120: a client shot dead by a witch was asked `mc mobs`
+    /// before it spawned again, was refused, and its step waited forever.
+    #[test]
+    fn between_lives_a_question_is_taken_and_an_action_is_not() {
+        for verb in ["state", "block", "mobs", "sounds", "mobrange"] {
+            assert!(accepts(Some(verb), false, false, true), "{verb}");
+        }
+        for verb in ["give", "clear", "set", "fill", "summon", "click", "spawning"] {
+            assert!(!accepts(Some(verb), false, false, true), "{verb}");
+        }
+    }
+
+    #[test]
+    fn without_a_world_nothing_is_taken() {
+        for verb in [Some("state"), Some("mobs"), Some("give"), None] {
+            assert!(!accepts(verb, false, false, false), "{verb:?}");
+            assert!(!accepts(verb, false, true, false), "{verb:?}");
+        }
     }
 }

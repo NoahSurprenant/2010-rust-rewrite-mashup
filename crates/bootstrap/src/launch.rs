@@ -23,7 +23,7 @@ use ui::{
     UiLayer, UiLayers,
 };
 
-use crate::args::{AcceptanceLaunch, LaunchMode};
+use crate::args::{AcceptanceLaunch, Cli, LaunchMode};
 use crate::bench;
 use crate::plugins::{add_runtime_plugins, add_runtime_plugins_with_role};
 
@@ -121,13 +121,27 @@ fn fatal(msg: &str) -> ! {
     diag::exit_launch_error(msg);
 }
 
-pub fn launch(
-    games: asset_transport::GamesRoot,
-    artifacts: PathBuf,
-    mode: LaunchMode,
-    acceptance: Option<AcceptanceLaunch>,
-) {
+pub fn launch(games: asset_transport::GamesRoot, artifacts: PathBuf, cli: Cli) {
+    let Cli {
+        mode,
+        acceptance,
+        headless,
+    } = cli;
     diag::info!(Launch, "{}", asset_transport::games_root_report(&games));
+    if headless {
+        diag::info!(Launch, "headless: no window, no renderer, no sound");
+        load_for_no_screen();
+    } else if audio::AudioSilent::active() {
+        // IW4L_SOUND=off: a game that plays no sound keeps no samples.
+        asset_audio::keep_sound_samples(false);
+    }
+    if !headless && std::env::var(XMODEL_MESHES_ENV).is_ok_and(|v| v.trim() == "off") {
+        diag::info!(
+            Launch,
+            "{XMODEL_MESHES_ENV}=off: MW2 models are drawn without their meshes"
+        );
+        asset_model::capture_meshes(false);
+    }
 
     if let Some(plan) = crate::frame_owner::prefer_performance_cores() {
         assets::publish_process_cpus(plan.allowed.clone());
@@ -147,13 +161,21 @@ pub fn launch(
                     render::diag::acceptance::ACCEPTANCE_MAPS.join(", ")
                 ));
             }
-            run_menu(games, artifacts);
+            run_menu(games, artifacts, headless);
         }
-        LaunchMode::Map(zone) => run_map(games, artifacts, zone, acceptance, Role::Listen, None),
+        LaunchMode::Map(zone) => run_map(
+            games,
+            artifacts,
+            zone,
+            acceptance,
+            Role::Listen,
+            None,
+            headless,
+        ),
         LaunchMode::Dedicated(zone) => {
             diag::mirror_to_stdout();
-            assets::decode_images(false);
-            run_map(games, artifacts, zone, None, Role::Dedicated, None)
+            load_for_no_screen();
+            run_map(games, artifacts, zone, None, Role::Dedicated, None, true)
         }
         LaunchMode::ExportGltf(zone) => {
             if acceptance.is_some() {
@@ -164,8 +186,34 @@ pub fn launch(
         LaunchMode::Play {
             name,
             zone_override,
-        } => run_play(games, artifacts, name, zone_override, acceptance),
+        } => run_play(games, artifacts, name, zone_override, acceptance, headless),
     }
+}
+
+/// `IW4L_XMODEL_MESHES=off`: a game that draws keeps MW2's models without
+/// their meshes, as a headless one does: its guns, bodies and props are not
+/// drawn. For a test game whose checks read no MW2 model off the screen
+/// (crafting_table's are Minecraft's screens and icons).
+const XMODEL_MESHES_ENV: &str = "IW4L_XMODEL_MESHES";
+
+/// What a game that draws and plays nothing loads of its assets: textures
+/// read for their sizes (not decoded), models without their meshes, sounds
+/// without their samples, menus without their images. Its simulation reads none of them.
+fn load_for_no_screen() {
+    assets::decode_images(false);
+    asset_model::capture_meshes(false);
+    asset_audio::keep_sound_samples(false);
+    asset_game::decode_ui_images(false);
+}
+
+/// A game that draws nothing: Bevy without a window, a GPU or a frame
+/// pacer of the display's (`headless_default_plugins`), `frame::Headless`
+/// for the systems that would wait on a drawn world, and no sound. A
+/// dedicated server is one; `--headless` makes a player's game one too.
+fn add_headless(app: &mut App) {
+    app.insert_resource(frame::Headless)
+        .insert_resource(audio::AudioSilent)
+        .add_plugins(crate::plugins::headless_default_plugins());
 }
 
 fn run_export_gltf(games: asset_transport::GamesRoot, artifacts: PathBuf, zone_arg: String) {
@@ -201,7 +249,7 @@ fn run_export_gltf(games: asset_transport::GamesRoot, artifacts: PathBuf, zone_a
     diag::announce_stdout(&summary.report_line());
 }
 
-fn run_menu(games: asset_transport::GamesRoot, artifacts: PathBuf) {
+fn run_menu(games: asset_transport::GamesRoot, artifacts: PathBuf, headless: bool) {
     start_perf(None, "menu");
     let ui_games = asset_game::ui_games_root(&games).unwrap_or_else(|error| {
         let content = asset_transport::games_content_report(&games).join("\n");
@@ -264,16 +312,20 @@ fn run_menu(games: asset_transport::GamesRoot, artifacts: PathBuf) {
         })
     };
     app.insert_resource(master_intent);
-    app.add_plugins(crate::plugins::default_plugins_with_quiet_log(
-        WindowPlugin {
-            primary_window: Some(Window {
-                title: "iw4l".into(),
-                resolution: (1280, 720).into(),
+    if headless {
+        add_headless(&mut app);
+    } else {
+        app.add_plugins(crate::plugins::default_plugins_with_quiet_log(
+            WindowPlugin {
+                primary_window: Some(Window {
+                    title: "iw4l".into(),
+                    resolution: (1280, 720).into(),
+                    ..default()
+                }),
                 ..default()
-            }),
-            ..default()
-        },
-    ));
+            },
+        ));
+    }
     app.insert_resource(ShellCommonTask {
         task: shell_common,
         perk_table: menus.string_table("mp/perkTable.csv").cloned(),
@@ -310,7 +362,8 @@ fn run_menu(games: asset_transport::GamesRoot, artifacts: PathBuf) {
     }
     let menu_iwd = std::sync::Arc::new(menu_iwd);
     app.insert_resource(SoundIwd(std::sync::Arc::clone(&menu_iwd)));
-    if let Some(bank) = menu_bank {
+    // A headless or silent game plays no sound: no clips are decoded for it.
+    if let Some(bank) = menu_bank.filter(|_| !headless && !audio::AudioSilent::active()) {
         app.insert_resource(audio::ClipStore::start(
             std::sync::Arc::clone(&bank),
             Some(std::sync::Arc::clone(&menu_iwd)),
@@ -335,7 +388,7 @@ fn run_menu(games: asset_transport::GamesRoot, artifacts: PathBuf) {
             layers
         });
     add_runtime_plugins(&mut app);
-    if let Some(capture) = CaptureRequest::from_env() {
+    if let Some(capture) = CaptureRequest::from_env().filter(|_| !headless) {
         queue_launch_capture(
             &mut app,
             CaptureRequest {
@@ -354,6 +407,7 @@ fn run_play(
     name: String,
     zone_override: Option<String>,
     acceptance: Option<AcceptanceLaunch>,
+    headless: bool,
 ) {
     if acceptance.is_some() {
         fatal("render acceptance requires `iw4l map <zone>` (not play)");
@@ -371,7 +425,15 @@ fn run_play(
         });
     diag::info!(Launch, "play: {} zone={zone}", playback.path().display());
     let session = ReplayPlayback::new(playback);
-    run_map(games, artifacts, zone, None, Role::Replay, Some(session));
+    run_map(
+        games,
+        artifacts,
+        zone,
+        None,
+        Role::Replay,
+        Some(session),
+        headless,
+    );
 }
 
 fn run_map(
@@ -381,6 +443,7 @@ fn run_map(
     acceptance: Option<AcceptanceLaunch>,
     role: Role,
     playback: Option<ReplayPlayback>,
+    headless: bool,
 ) {
     let found = find_zone_file(&games, &zone_arg);
     let zone_alias = found.as_ref().ok().and_then(|z| z.alias_note.clone());
@@ -472,11 +535,11 @@ fn run_map(
     app.insert_resource(master_intent);
     let dedicated = config.role == Role::Dedicated;
     if dedicated {
-        app.insert_resource(frame::Headless)
-            .insert_resource(frame::DedicatedServer)
-            .insert_resource(audio::AudioSilent)
-            .add_plugins(crate::plugins::headless_default_plugins());
+        app.insert_resource(frame::DedicatedServer);
+        add_headless(&mut app);
         crate::dedicated::register(&mut app);
+    } else if headless {
+        add_headless(&mut app);
     } else {
         app.add_plugins(crate::plugins::default_plugins_with_quiet_log(
             WindowPlugin {
@@ -559,7 +622,7 @@ fn run_map(
     if let Some(playback) = playback {
         app.insert_resource(playback);
     }
-    if let Some(capture) = CaptureRequest::from_env() {
+    if let Some(capture) = CaptureRequest::from_env().filter(|_| !headless) {
         queue_launch_capture(&mut app, capture);
     }
     bench::announce_runtime(&mut app);

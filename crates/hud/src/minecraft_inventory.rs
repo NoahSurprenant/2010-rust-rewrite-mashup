@@ -294,11 +294,25 @@ pub(crate) fn update_minecraft_hud(
     (mut hud_images, mut images): (ResMut<HudImages>, ResMut<Assets<Image>>),
     mut gaps: ResMut<HudPresentationGaps>,
     mut pass: ResMut<HudTessPass>,
+    headless: Option<Res<frame::Headless>>,
 ) {
     let Some(mut ui) = ui else {
         pass.minecraft = TessJob::Hide;
         return;
     };
+    // A headless game has no surface to draw on, but its player still opens
+    // its screens and picks from its hotbar with the keys.
+    if ui.active && headless.is_some() {
+        pass.minecraft = TessJob::Hide;
+        ui.character_box = None;
+        open_or_close(&mut ui, &keys);
+        let steps = scroll_steps(&mut wheel);
+        if !ui.inventory_open {
+            let digit = digit_pressed(&keys);
+            hotbar_keys(&mut ui, &keys, steps, digit);
+        }
+        return;
+    }
     if !ui.active || !surface.is_ready() {
         pass.minecraft = TessJob::Hide;
         ui.character_box = None;
@@ -313,31 +327,11 @@ pub(crate) fn update_minecraft_hud(
     let mouse = window.and_then(Window::cursor_position);
 
     // Opening and closing, and the hotbar's keys.
-    let open_before = ui.inventory_open;
-    if keys.just_pressed(KeyCode::KeyE) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape)) {
-        ui.inventory_open = !ui.inventory_open && !keys.just_pressed(KeyCode::Escape);
-        if ui.inventory_open {
-            ui.workbench = ui.table_in_view;
-        }
-    }
-    if open_before && !ui.inventory_open {
-        ui.clicks.push(McClick::Close);
+    if open_or_close(&mut ui, &keys) {
         input.drag = None;
     }
-    let digits = [
-        KeyCode::Digit1,
-        KeyCode::Digit2,
-        KeyCode::Digit3,
-        KeyCode::Digit4,
-        KeyCode::Digit5,
-        KeyCode::Digit6,
-        KeyCode::Digit7,
-        KeyCode::Digit8,
-        KeyCode::Digit9,
-    ];
-    let digit = digits.iter().position(|k| keys.just_pressed(*k));
+    let digit = digit_pressed(&keys);
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
 
     let fonts: HashMap<String, &FontDef> = catalog
         .as_deref()
@@ -353,20 +347,7 @@ pub(crate) fn update_minecraft_hud(
     let strings = strings.as_deref();
 
     if !ui.inventory_open {
-        // The hotbar: scroll and number keys pick, Q throws.
-        let mut scroll = 0i32;
-        for event in wheel.read() {
-            scroll += if event.y < 0.0 { 1 } else if event.y > 0.0 { -1 } else { 0 };
-        }
-        if scroll != 0 {
-            ui.select = Some((ui.selected as i32 + scroll).rem_euclid(9) as usize);
-        }
-        if let Some(digit) = digit {
-            ui.select = Some(digit);
-        }
-        if keys.just_pressed(KeyCode::KeyQ) {
-            ui.drop_selected = Some(ctrl);
-        }
+        hotbar_keys(&mut ui, &keys, scroll_steps(&mut wheel), digit);
         canvas.k = 1.15;
         draw_hotbar(&mut canvas, &mut ui, weapons, strings, &mut gaps, time.delta_secs());
         ui.character_box = None;
@@ -398,6 +379,61 @@ pub(crate) fn update_minecraft_hud(
         let _ = hud_images.get(HUD_CHROME_NAMESPACE, AssetRef::bare_name(&font.material), &mut images);
     }
     pass.minecraft = if quads.is_empty() { TessJob::Hide } else { TessJob::Quads(quads) };
+}
+
+/// E opens the player's screen (the crafting table's when one is in view)
+/// and closes it, as Escape does; whether it closed now.
+fn open_or_close(ui: &mut MinecraftUi, keys: &ButtonInput<KeyCode>) -> bool {
+    let open_before = ui.inventory_open;
+    if keys.just_pressed(KeyCode::KeyE) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape)) {
+        ui.inventory_open = !ui.inventory_open && !keys.just_pressed(KeyCode::Escape);
+        if ui.inventory_open {
+            ui.workbench = ui.table_in_view;
+        }
+    }
+    let closed = open_before && !ui.inventory_open;
+    if closed {
+        ui.clicks.push(McClick::Close);
+    }
+    closed
+}
+
+/// The number key (1 to 9) pressed this frame, from 0.
+fn digit_pressed(keys: &ButtonInput<KeyCode>) -> Option<usize> {
+    const DIGITS: [KeyCode; 9] = [
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
+    ];
+    DIGITS.iter().position(|k| keys.just_pressed(*k))
+}
+
+/// The wheel's notches this frame: down picks the next slot.
+fn scroll_steps(wheel: &mut MessageReader<MouseWheel>) -> i32 {
+    wheel
+        .read()
+        .map(|event| if event.y < 0.0 { 1 } else if event.y > 0.0 { -1 } else { 0 })
+        .sum()
+}
+
+/// The hotbar: scroll and number keys pick, Q throws (Ctrl+Q the stack).
+fn hotbar_keys(ui: &mut MinecraftUi, keys: &ButtonInput<KeyCode>, scroll: i32, digit: Option<usize>) {
+    if scroll != 0 {
+        ui.select = Some((ui.selected as i32 + scroll).rem_euclid(9) as usize);
+    }
+    if let Some(digit) = digit {
+        ui.select = Some(digit);
+    }
+    if keys.just_pressed(KeyCode::KeyQ) {
+        let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+        ui.drop_selected = Some(ctrl);
+    }
 }
 
 fn hovered_slot(surface: &crate::surface::Hud2dSurface, mouse: Vec2, table: bool) -> Option<McSlot> {
@@ -669,4 +705,73 @@ fn draw_inventory(
     canvas.fill(x, y, 2.0, 22.0, ACCENT, c);
     canvas.text(FONT_TITLE, x + 7.0, y + 3.0, title_px, HIGHLIGHT, &name, false, c);
     canvas.text(FONT_SMALL, x + 7.0, y + 13.5, sub_px, TEXT_DIM, &sub, false, c);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pressed(keys: &[KeyCode]) -> ButtonInput<KeyCode> {
+        let mut input = ButtonInput::default();
+        for key in keys {
+            input.press(*key);
+        }
+        input
+    }
+
+    fn ui() -> MinecraftUi {
+        MinecraftUi { active: true, ..Default::default() }
+    }
+
+    /// What a headless game's player does with the keys: no surface, the
+    /// same screens and hotbar.
+    #[test]
+    fn e_opens_and_closes_the_screen() {
+        let mut ui = ui();
+        assert!(!open_or_close(&mut ui, &pressed(&[KeyCode::KeyE])));
+        assert!(ui.inventory_open);
+        assert!(open_or_close(&mut ui, &pressed(&[KeyCode::KeyE])));
+        assert!(!ui.inventory_open);
+        assert!(matches!(ui.clicks.last(), Some(McClick::Close)));
+    }
+
+    #[test]
+    fn escape_closes_and_never_opens() {
+        let mut ui = ui();
+        assert!(!open_or_close(&mut ui, &pressed(&[KeyCode::Escape])));
+        assert!(!ui.inventory_open);
+        ui.inventory_open = true;
+        assert!(open_or_close(&mut ui, &pressed(&[KeyCode::Escape])));
+        assert!(!ui.inventory_open);
+    }
+
+    #[test]
+    fn e_with_a_table_in_view_opens_the_table() {
+        let mut ui = ui();
+        ui.table_in_view = Some((1, 2, 3));
+        open_or_close(&mut ui, &pressed(&[KeyCode::KeyE]));
+        assert_eq!(ui.workbench, Some((1, 2, 3)));
+    }
+
+    #[test]
+    fn number_keys_and_the_wheel_pick_a_slot() {
+        let mut ui = ui();
+        let keys = pressed(&[KeyCode::Digit6]);
+        hotbar_keys(&mut ui, &keys, 0, digit_pressed(&keys));
+        assert_eq!(ui.select, Some(5));
+        ui.selected = 8;
+        hotbar_keys(&mut ui, &pressed(&[]), 1, None);
+        assert_eq!(ui.select, Some(0));
+        hotbar_keys(&mut ui, &pressed(&[]), -1, None);
+        assert_eq!(ui.select, Some(7));
+    }
+
+    #[test]
+    fn q_throws_and_ctrl_q_the_stack() {
+        let mut ui = ui();
+        hotbar_keys(&mut ui, &pressed(&[KeyCode::KeyQ]), 0, None);
+        assert_eq!(ui.drop_selected, Some(false));
+        hotbar_keys(&mut ui, &pressed(&[KeyCode::KeyQ, KeyCode::ControlLeft]), 0, None);
+        assert_eq!(ui.drop_selected, Some(true));
+    }
 }

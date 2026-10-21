@@ -19,13 +19,64 @@ pub enum LaunchMode {
     },
 }
 
-pub fn parse_cli(
-    args: impl Iterator<Item = String>,
-) -> Result<(LaunchMode, Option<AcceptanceLaunch>), String> {
+/// What the command line asks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cli {
+    pub mode: LaunchMode,
+    pub acceptance: Option<AcceptanceLaunch>,
+    /// No window, no renderer, no sound (`--headless`, or `IW4L_HEADLESS=1`):
+    /// the game plays (simulation, networking, the Minecraft world, the
+    /// console and its input) and draws nothing, as a dedicated server
+    /// always does.
+    pub headless: bool,
+}
+
+/// `iw4l --headless menu | map <zone>`: a player's game that draws nothing.
+pub const HEADLESS_FLAG: &str = "--headless";
+/// The same as `--headless`, from the environment (`1`, `true` or `on`).
+pub const HEADLESS_ENV: &str = "IW4L_HEADLESS";
+
+pub fn parse_cli(args: impl Iterator<Item = String>) -> Result<Cli, String> {
     let (args, acceptance) = parse_acceptance_flag(args)?;
     let args = console::strip_cmds_flag(args.into_iter());
+    let (args, flag) = take_headless_flag(args);
+    let headless = flag || headless_env(std::env::var(HEADLESS_ENV).ok().as_deref());
     let mode = parse_launch_args(args.into_iter())?;
-    Ok((mode, acceptance))
+    check_headless(&mode, acceptance.is_some(), headless)?;
+    Ok(Cli {
+        mode,
+        acceptance,
+        headless,
+    })
+}
+
+/// The arguments without `--headless`, and whether it was there.
+fn take_headless_flag(args: Vec<String>) -> (Vec<String>, bool) {
+    let before = args.len();
+    let rest: Vec<String> = args.into_iter().filter(|a| a != HEADLESS_FLAG).collect();
+    let found = rest.len() != before;
+    (rest, found)
+}
+
+fn headless_env(value: Option<&str>) -> bool {
+    value.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on"))
+}
+
+/// A headless game draws nothing, so nothing that is only a picture can be
+/// asked of it.
+fn check_headless(mode: &LaunchMode, acceptance: bool, headless: bool) -> Result<(), String> {
+    if !headless {
+        return Ok(());
+    }
+    if acceptance {
+        return Err("--headless draws nothing: render acceptance needs a window".into());
+    }
+    match mode {
+        LaunchMode::ExportGltf(_) => {
+            Err("--headless is for a game: export-gltf opens no window".into())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn parse_acceptance_flag(
@@ -73,7 +124,7 @@ fn parse_acceptance_flag(
     Ok((out, acceptance))
 }
 
-pub const USAGE: &str = "usage: iw4l [--cmds '<script>'] map <zone> | dedicated <zone> | menu | play <demo>\n       iw4l export-gltf <zone>\n       iw4l dedicated-console '<command>'\n       iw4l --help | --version";
+pub const USAGE: &str = "usage: iw4l [--headless] [--cmds '<script>'] map <zone> | dedicated <zone> | menu | play <demo>\n       iw4l export-gltf <zone>\n       iw4l dedicated-console '<command>'\n       iw4l --help | --version";
 
 /// `iw4l --version`: the commit and the protocols a peer or a master must share.
 pub fn version() -> String {
@@ -167,4 +218,80 @@ fn parse_play_args(args: impl Iterator<Item = String>) -> Result<LaunchMode, Str
         name,
         zone_override,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// `--headless`, the mode and the check, as `parse_cli` takes them
+    /// (without the environment, which a test must not depend on).
+    fn cli(list: &[&str]) -> Result<(LaunchMode, bool), String> {
+        let (rest, headless) = take_headless_flag(args(list));
+        let mode = parse_launch_args(rest.into_iter())?;
+        check_headless(&mode, false, headless)?;
+        Ok((mode, headless))
+    }
+
+    #[test]
+    fn headless_flag_is_taken_wherever_it_stands() {
+        assert_eq!(
+            take_headless_flag(args(&["--headless", "menu"])),
+            (args(&["menu"]), true)
+        );
+        assert_eq!(
+            take_headless_flag(args(&["map", "mp_rust", "--headless"])),
+            (args(&["map", "mp_rust"]), true)
+        );
+        assert_eq!(
+            take_headless_flag(args(&["map", "mp_rust"])),
+            (args(&["map", "mp_rust"]), false)
+        );
+    }
+
+    #[test]
+    fn headless_env_takes_on_values_only() {
+        for on in ["1", "true", "on", "TRUE", " 1 "] {
+            assert!(headless_env(Some(on)), "{on}");
+        }
+        for off in ["0", "false", "off", "", "yes please"] {
+            assert!(!headless_env(Some(off)), "{off}");
+        }
+        assert!(!headless_env(None));
+    }
+
+    #[test]
+    fn headless_menu_and_map_parse() {
+        assert_eq!(cli(&["--headless", "menu"]), Ok((LaunchMode::Menu, true)));
+        assert_eq!(
+            cli(&["--headless", "map", "minecraft:overworld"]),
+            Ok((LaunchMode::Map("minecraft:overworld".into()), true))
+        );
+        assert_eq!(
+            cli(&["--headless", "dedicated", "minecraft:overworld"]),
+            Ok((LaunchMode::Dedicated("minecraft:overworld".into()), true))
+        );
+        assert_eq!(cli(&["menu"]), Ok((LaunchMode::Menu, false)));
+        assert_eq!(cli(&[]), Ok((LaunchMode::Menu, false)));
+    }
+
+    #[test]
+    fn headless_refuses_what_is_only_a_picture() {
+        assert!(cli(&["--headless", "export-gltf", "mp_rust"]).is_err());
+        let map = LaunchMode::Map("mp_rust".into());
+        assert!(check_headless(&map, true, true).is_err());
+        assert!(check_headless(&map, true, false).is_ok());
+    }
+
+    #[test]
+    fn a_cmds_script_naming_headless_stays_a_script() {
+        // `--cmds` and its script go first, so a script that is the word
+        // itself is never taken for the flag.
+        let rest = console::strip_cmds_flag(args(&["--cmds", "--headless", "menu"]).into_iter());
+        assert_eq!(take_headless_flag(rest), (args(&["menu"]), false));
+    }
 }
