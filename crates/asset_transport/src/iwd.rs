@@ -315,6 +315,7 @@ fn read_pooled_entry(
         .map_err(|error| {
             format!("cannot open IWD entry {entry_name} in {archive_path:?}: {error}")
         })?;
+    let range = (entry.data_start(), entry.compressed_size());
     let want = limit.map_or(entry.size() as usize, |limit| {
         limit.min(entry.size() as usize)
     });
@@ -327,6 +328,9 @@ fn read_pooled_entry(
         format!("cannot read IWD entry {entry_name} in {archive_path:?}: {error}")
     })?;
     IWD_INFLATE_NS.fetch_add(inflate_at.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    // An entry is read once and kept decoded (or cached): its compressed
+    // bytes need not stay in the page cache.
+    crate::read_once::forget_range(archive_path, range.0, range.1);
     Ok(bytes)
 }
 

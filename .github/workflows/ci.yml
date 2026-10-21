@@ -237,6 +237,11 @@ jobs:
       # lavapipe: MW2's at most 256 pixels a side. Its checks read item icons
       # and screens drawn from Minecraft's own files, which this leaves whole.
       IW4L_TEXTURE_MAX_SIZE: 256
+      # And draws MW2's models (guns, bodies) without their meshes: none of its
+      # checks reads one off the screen.
+      IW4L_XMODEL_MESHES: 'off'
+      # Two glibc arenas, not one a thread: less freed memory held back.
+      MALLOC_ARENA_MAX: 2
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4

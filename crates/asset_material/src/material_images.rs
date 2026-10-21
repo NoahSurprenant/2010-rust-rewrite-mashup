@@ -238,7 +238,7 @@ impl IwdIndex {
         let mut first_error = None;
         for candidate in candidates {
             match load_or_decode_mips(candidate) {
-                Ok(image) => return Some(Ok(image.capped(texture_max_size()))),
+                Ok(image) => return Some(Ok(image)),
                 Err(error) if first_error.is_none() => first_error = Some(error),
                 Err(_) => {}
             }
@@ -1492,8 +1492,15 @@ fn mip_cache_key(crc: u32, size: u64, entry: &str) -> String {
     )
 }
 
+/// An entry's mips, capped (`IW4L_TEXTURE_MAX_SIZE`) before they are cached:
+/// a capped run reads and writes only the levels it keeps, under keys of
+/// its own.
 fn load_or_decode_mips(candidate: &asset_transport::IwdFile) -> Result<DecodedMips, String> {
-    let key = mip_cache_key(candidate.crc32(), candidate.size(), candidate.entry());
+    let max = texture_max_size();
+    let mut key = mip_cache_key(candidate.crc32(), candidate.size(), candidate.entry());
+    if let Some(max) = max {
+        key.push_str(&format!("-max{max}"));
+    }
     let io_at = std::time::Instant::now();
     if let Some(mips) = read_cached_mips(&key, io_at) {
         return Ok(mips);
@@ -1504,7 +1511,7 @@ fn load_or_decode_mips(candidate: &asset_transport::IwdFile) -> Result<DecodedMi
         return Ok(mips);
     }
     let bytes = candidate.read()?;
-    let mips = decode_iwi_mips(&bytes)?;
+    let mips = decode_iwi_mips(&bytes)?.capped(max);
     let blob = mips.cache_encode();
     let store_at = std::time::Instant::now();
     if let Err(error) = crate::cache_put("mips", &key, &blob) {

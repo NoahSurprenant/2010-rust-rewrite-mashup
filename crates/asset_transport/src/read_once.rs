@@ -28,6 +28,26 @@ pub(crate) fn forget_cached(file: &std::fs::File) {
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn forget_cached(_: &std::fs::File) {}
 
+/// The page cache of `len` bytes of `path` from `start` dropped, as
+/// `read_once` does for a whole file: for a part of an archive read once.
+#[cfg(target_os = "linux")]
+pub(crate) fn forget_range(path: &Path, start: u64, len: u64) {
+    use std::os::fd::AsRawFd;
+    let Ok(file) = std::fs::File::open(path) else {
+        return;
+    };
+    let (Ok(start), Ok(len)) = (i64::try_from(start), i64::try_from(len)) else {
+        return;
+    };
+    // SAFETY: an advisory call on a descriptor this function owns.
+    unsafe {
+        libc::posix_fadvise(file.as_raw_fd(), start, len, libc::POSIX_FADV_DONTNEED);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn forget_range(_: &Path, _: u64, _: u64) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

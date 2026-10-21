@@ -135,6 +135,13 @@ pub fn launch(games: asset_transport::GamesRoot, artifacts: PathBuf, cli: Cli) {
         // IW4L_SOUND=off: a game that plays no sound keeps no samples.
         asset_audio::keep_sound_samples(false);
     }
+    if !headless && std::env::var(XMODEL_MESHES_ENV).is_ok_and(|v| v.trim() == "off") {
+        diag::info!(
+            Launch,
+            "{XMODEL_MESHES_ENV}=off: MW2 models are drawn without their meshes"
+        );
+        asset_model::capture_meshes(false);
+    }
 
     if let Some(plan) = crate::frame_owner::prefer_performance_cores() {
         assets::publish_process_cpus(plan.allowed.clone());
@@ -182,6 +189,12 @@ pub fn launch(games: asset_transport::GamesRoot, artifacts: PathBuf, cli: Cli) {
         } => run_play(games, artifacts, name, zone_override, acceptance, headless),
     }
 }
+
+/// `IW4L_XMODEL_MESHES=off`: a game that draws keeps MW2's models without
+/// their meshes, as a headless one does: its guns, bodies and props are not
+/// drawn. For a test game whose checks read no MW2 model off the screen
+/// (crafting_table's are Minecraft's screens and icons).
+const XMODEL_MESHES_ENV: &str = "IW4L_XMODEL_MESHES";
 
 /// What a game that draws and plays nothing loads of its assets: textures
 /// read for their sizes (not decoded), models without their meshes, sounds

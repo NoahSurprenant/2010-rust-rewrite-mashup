@@ -20,7 +20,8 @@ fn cache_budget_bytes() -> u64 {
 
 pub fn cache_get(kind: &str, key: &str) -> Option<Vec<u8>> {
     let path = cache_path(kind, key).ok()?;
-    fs::read(path).ok()
+    // Read once and kept parsed: its page cache need not stay.
+    crate::read_once(&path).ok()
 }
 
 pub fn cache_put(kind: &str, key: &str, bytes: &[u8]) -> Result<(), String> {
@@ -37,7 +38,11 @@ pub fn cache_put(kind: &str, key: &str, bytes: &[u8]) -> Result<(), String> {
             .write(true)
             .create_new(true)
             .open(&tmp)?;
-        file.write_all(bytes)
+        file.write_all(bytes)?;
+        // Written for another process to read: starts the writeback, and
+        // drops what of it the kernel already wrote.
+        crate::read_once::forget_cached(&file);
+        Ok(())
     })();
     if let Err(error) = write {
         let _ = fs::remove_file(&tmp);
