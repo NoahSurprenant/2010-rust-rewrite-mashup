@@ -41,6 +41,17 @@ need no game data: `cargo test -p approved_tests`). It needs MW2 under the
 games root and fetches Minecraft's files once into `iw4l-artifacts/minecraft-26.3`.
 On a headless machine run it through `scripts/headless-display.sh`.
 
+A game draws only where a check needs a picture of it. `crafting_table`'s
+game (its icons, the crafting screen, its screenshots) and the listen host of
+`skate_multiplayer` (checked on the skater it draws for the client) draw;
+every other game of the two-game scenarios runs `iw4l --headless` (`duo::Display`,
+each scenario's `DISPLAYS` / `CLIENT_DISPLAY`): no window, no renderer, no
+sound, as a dedicated server always is. It plays all the same (simulation,
+networking, the Minecraft world and its mobs, the console and its `key`,
+`look`, `hold` input) and prints the same state lines; a `screenshot` it is
+asked for is skipped. run.json's `memory` rows name each game's display and
+the CPU seconds it used.
+
 The scenario's steps are in `src/scenarios/heavy_gameplay_lifecycle.rs` and
 nowhere else: maps, seed rule, scenes, positions, angles, weapons, durations
 and input. To pin a scene to an owner-chosen position, replace its `Place`

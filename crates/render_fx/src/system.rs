@@ -94,8 +94,17 @@ fn latch_cgame_active(
     facts: Res<WorldPresentFacts>,
     adopted: Option<Res<LastAdoptedSnapshot>>,
     mut active: ResMut<GameActive>,
+    (headless, dedicated, has_world): (
+        Option<Res<frame::Headless>>,
+        Option<Res<frame::DedicatedServer>>,
+        Option<Res<frame::HasWorld>>,
+    ),
 ) {
-    let spawned = facts.spawned;
+    // A headless player's game draws no world, so none is ever spawned for
+    // the screen: its world is up once the match installed it. (A dedicated
+    // server has no player of its own, and no game of its own to run.)
+    let world_up = headless.is_some() && dedicated.is_none() && has_world.is_some_and(|w| w.0);
+    let spawned = facts.spawned || world_up;
     let has_snap = adopted.as_ref().is_some_and(|snap| snap.next().is_some());
     active.0 = GameActive::from_first_snapshot(spawned, has_snap);
 }

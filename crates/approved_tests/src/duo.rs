@@ -125,9 +125,40 @@ pub fn write_client_key(dir: &Path) -> Result<(), String> {
     client_key().write(&path)
 }
 
+/// How a player's game shows itself. A check that reads game state (the
+/// `minecraft-*:` and `skate-state:` lines, rosters, the master's status)
+/// needs no picture, and a game that draws nothing (`iw4l --headless`, as
+/// a dedicated server always is) holds a third of the memory of one that
+/// draws on a CPU renderer and spends far less CPU. Only a check of what
+/// is drawn (an icon, a screen, the skater a host draws) needs `Drawn`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Display {
+    Drawn,
+    Headless,
+}
+
+impl Display {
+    /// The game's arguments for `rest` (`menu`, `map <zone>`).
+    pub fn args<'a>(self, rest: &[&'a str]) -> Vec<&'a str> {
+        match self {
+            Display::Drawn => rest.to_vec(),
+            Display::Headless => [&["--headless"], rest].concat(),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Display::Drawn => "drawn",
+            Display::Headless => "headless",
+        }
+    }
+}
+
 /// One game: its console, its stdout lines, and its master status file.
 pub struct Player {
     pub name: &'static str,
+    /// Whether it draws: a dedicated server never does.
+    pub display: Display,
     pub dir: PathBuf,
     child: Killed,
     stdin: Option<ChildStdin>,
@@ -150,17 +181,21 @@ pub struct Player {
     pub joins: Vec<Event>,
     /// Peak resident memory sampled, in KiB.
     pub peak_rss_kib: u64,
+    /// CPU time it had used when last sampled, in seconds.
+    pub cpu_secs: f64,
 }
 
 impl Player {
+    /// A player's game, at the menu, drawn or `--headless`.
     pub fn launch(
         bin: &Path,
         dir: &Path,
         name: &'static str,
         session: u32,
+        display: Display,
         env: &[(&str, String)],
     ) -> Result<Self, String> {
-        Self::launch_with(bin, dir, name, session, &["menu"], env)
+        Self::launch_with(bin, dir, name, session, &display.args(&["menu"]), env)
     }
 
     pub fn launch_with(
@@ -196,6 +231,8 @@ impl Player {
             .env_remove("IW4L_PLAYER_KEY")
             // Skate 3 files only where a scenario hands them over.
             .env_remove("IW4L_SKATE_ASSETS")
+            // Drawn or not as the scenario says (`--headless`), not the shell.
+            .env_remove("IW4L_HEADLESS")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(file(&format!("child_stderr_{session}.txt"))?);
@@ -217,8 +254,17 @@ impl Player {
                 }
             }
         });
+        let display = if args
+            .iter()
+            .any(|a| matches!(*a, "--headless" | "dedicated"))
+        {
+            Display::Headless
+        } else {
+            Display::Drawn
+        };
         Ok(Self {
             name,
+            display,
             dir: dir.to_path_buf(),
             child: Killed(child),
             stdin,
@@ -232,6 +278,7 @@ impl Player {
             messages: Vec::new(),
             joins: Vec::new(),
             peak_rss_kib: 0,
+            cpu_secs: 0.0,
         })
     }
 
@@ -372,9 +419,23 @@ pub struct Pair {
     pub peak_combined_kib: u64,
     /// The most the client held, in KiB, kept after it exits.
     pub peak_client_kib: u64,
+    /// The CPU time the client had used when last sampled, in seconds, kept
+    /// after it exits.
+    pub client_cpu_secs: f64,
 }
 
 impl Pair {
+    /// A host (or server) with no client yet.
+    pub fn new(host: Player) -> Self {
+        Self {
+            host,
+            client: None,
+            peak_combined_kib: 0,
+            peak_client_kib: 0,
+            client_cpu_secs: 0.0,
+        }
+    }
+
     /// Pumps both games and samples their memory until `done` holds or
     /// `timeout` passes; the error names what was awaited.
     pub fn until(
@@ -411,8 +472,11 @@ impl Pair {
         self.host.pump();
         let mut combined = rss_kib(self.host.pid());
         self.host.peak_rss_kib = self.host.peak_rss_kib.max(combined);
+        self.host.cpu_secs = self.host.cpu_secs.max(cpu_secs(self.host.pid()));
         if let Some(client) = self.client.as_mut() {
             client.pump();
+            client.cpu_secs = client.cpu_secs.max(cpu_secs(client.pid()));
+            self.client_cpu_secs = self.client_cpu_secs.max(client.cpu_secs);
             let rss = rss_kib(client.pid());
             client.peak_rss_kib = client.peak_rss_kib.max(rss);
             self.peak_client_kib = self.peak_client_kib.max(rss);
@@ -469,5 +533,54 @@ impl Pair {
             }
             std::thread::sleep(Duration::from_millis(500));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scenarios::{dedicated_server, minecraft_multiplayer, skate_multiplayer};
+
+    #[test]
+    fn a_headless_game_is_started_with_the_flag_first() {
+        assert_eq!(Display::Headless.args(&["menu"]), ["--headless", "menu"]);
+        assert_eq!(
+            Display::Headless.args(&["map", "minecraft:overworld"]),
+            ["--headless", "map", "minecraft:overworld"]
+        );
+        assert_eq!(Display::Drawn.args(&["menu"]), ["menu"]);
+    }
+
+    /// Which games of the two-game scenarios draw: only the listen skate
+    /// host, whose check counts the frames it drew the client's skater in.
+    /// Every other check reads game state, so those games run headless.
+    #[test]
+    fn only_a_check_of_what_is_drawn_draws() {
+        assert_eq!(
+            minecraft_multiplayer::DISPLAYS,
+            [Display::Headless, Display::Headless]
+        );
+        assert_eq!(dedicated_server::CLIENT_DISPLAY, Display::Headless);
+        assert_eq!(
+            skate_multiplayer::LISTEN_DISPLAYS,
+            [Display::Drawn, Display::Headless]
+        );
+        assert_eq!(
+            skate_multiplayer::DEDICATED_CLIENT_DISPLAY,
+            Display::Headless
+        );
+        // At most one game of a room draws.
+        for room in [
+            minecraft_multiplayer::DISPLAYS,
+            skate_multiplayer::LISTEN_DISPLAYS,
+        ] {
+            assert!(room.iter().filter(|d| **d == Display::Drawn).count() <= 1);
+        }
+    }
+
+    #[test]
+    fn the_labels_name_the_display() {
+        assert_eq!(Display::Drawn.label(), "drawn");
+        assert_eq!(Display::Headless.label(), "headless");
     }
 }

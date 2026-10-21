@@ -47,9 +47,10 @@ pub(crate) fn route_debug_minecraft_commands(
 ) {
     let capacity = settings.log_capacity;
     let mut ui = ui;
-    let window = window.single().ok();
+    // A headless game has no window: its input still reaches the game,
+    // which reads keys and buttons whatever window they came from.
+    let window = window.single().unwrap_or(Entity::PLACEHOLDER);
     let mut send = |button: BindButton, state: ButtonState| {
-        let Some(window) = window else { return };
         match button {
             BindButton::Key(key_code) => {
                 keys.write(KeyboardInput {

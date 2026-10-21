@@ -515,6 +515,7 @@ fn open_duo(
     master: &duo::Master,
     dirs: &[PathBuf; 2],
     session: u32,
+    displays: [duo::Display; 2],
     extra_env: &[(&str, String)],
 ) -> Result<duo::Pair, String> {
     use duo::field;
@@ -529,13 +530,8 @@ fn open_duo(
         "set ui_mapname {}; set ui_gametype dm",
         minecraft_multiplayer::MAP
     );
-    let host = duo::Player::launch(bin, &dirs[0], "host", session, &env)?;
-    let mut pair = duo::Pair {
-        host,
-        client: None,
-        peak_combined_kib: 0,
-        peak_client_kib: 0,
-    };
+    let host = duo::Player::launch(bin, &dirs[0], "host", session, displays[0], &env)?;
+    let mut pair = duo::Pair::new(host);
     pair.host
         .send(&format!("{setup}; ui_create_lobby; ui_lobby_privacy"))?;
     let lobby = Duration::from_secs(minecraft_multiplayer::LOAD_SECS);
@@ -546,7 +542,7 @@ fn open_duo(
     let room = field(&status, "room")
         .ok_or("no room in the host's status")?
         .to_owned();
-    let client = duo::Player::launch(bin, &dirs[1], "client", session, &env)?;
+    let client = duo::Player::launch(bin, &dirs[1], "client", session, displays[1], &env)?;
     pair.client = Some(client);
     pair.client
         .as_mut()
@@ -678,7 +674,14 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
         &[1]
     };
     for &session in sessions {
-        let mut pair = match open_duo(&bin, &master, &dirs, session, &world.env()) {
+        let mut pair = match open_duo(
+            &bin,
+            &master,
+            &dirs,
+            session,
+            minecraft_multiplayer::DISPLAYS,
+            &world.env(),
+        ) {
             Ok(pair) => pair,
             Err(e) => {
                 failure = Some(format!("session {session}: {e}"));
@@ -698,6 +701,10 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
             "host_peak_rss_mib": pair.host.peak_rss_kib / 1024,
             "client_peak_rss_mib": pair.peak_client_kib / 1024,
             "combined_peak_rss_mib": pair.peak_combined_kib / 1024,
+            "host_display": pair.host.display.label(),
+            "client_display": minecraft_multiplayer::DISPLAYS[1].label(),
+            "host_cpu_secs": (pair.host.cpu_secs * 10.0).round() / 10.0,
+            "client_cpu_secs": (pair.client_cpu_secs * 10.0).round() / 10.0,
         }));
         if let Err(e) = played.and(closed) {
             failure = Some(format!("session {session}: {e}"));
@@ -808,7 +815,8 @@ fn dedicated_sessions(
             .map_err(|e| format!("iw4l-master list: {e}"))?;
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     };
-    let client = |session| duo::Player::launch(bin, &dirs[1], "client", session, &env);
+    let client =
+        |session| duo::Player::launch(bin, &dirs[1], "client", session, ds::CLIENT_DISPLAY, &env);
     // Part `mobs` needs no second life.
     let lives: &[u32] = if part.plays(ds::VISITS) {
         &[1, 2]
@@ -824,12 +832,7 @@ fn dedicated_sessions(
             &["dedicated", ds::MAP],
             &server_env,
         )?;
-        let mut pair = duo::Pair {
-            host: server,
-            client: None,
-            peak_combined_kib: 0,
-            peak_client_kib: 0,
-        };
+        let mut pair = duo::Pair::new(server);
         let played = (|| {
             if !part.plays(ds::VISITS) {
                 let room = ds::server_ready(&mut pair, facts, "s_ready")?;
@@ -872,6 +875,10 @@ fn dedicated_sessions(
             "server_peak_rss_mib": pair.host.peak_rss_kib / 1024,
             "client_peak_rss_mib": pair.peak_client_kib / 1024,
             "combined_peak_rss_mib": pair.peak_combined_kib / 1024,
+            "host_display": pair.host.display.label(),
+            "client_display": ds::CLIENT_DISPLAY.label(),
+            "host_cpu_secs": (pair.host.cpu_secs * 10.0).round() / 10.0,
+            "client_cpu_secs": (pair.client_cpu_secs * 10.0).round() / 10.0,
         }));
         played.map_err(|e| format!("server life {life}: {e}"))?;
     }
@@ -1054,7 +1061,14 @@ fn skate_sessions(
         let listen_dirs = [dirs[0].clone(), dirs[1].clone()];
         let mut listen_env = skate.to_vec();
         listen_env.extend(world.iter().cloned());
-        let mut pair = open_duo(bin, master, &listen_dirs, 1, &listen_env)?;
+        let mut pair = open_duo(
+            bin,
+            master,
+            &listen_dirs,
+            1,
+            sk::LISTEN_DISPLAYS,
+            &listen_env,
+        )?;
         let played = sk::listen_session(&mut pair, facts);
         let closed = close_duo(&mut pair);
         peaks.push(json!({
@@ -1062,6 +1076,10 @@ fn skate_sessions(
             "host_peak_rss_mib": pair.host.peak_rss_kib / 1024,
             "client_peak_rss_mib": pair.peak_client_kib / 1024,
             "combined_peak_rss_mib": pair.peak_combined_kib / 1024,
+            "host_display": pair.host.display.label(),
+            "client_display": sk::LISTEN_DISPLAYS[1].label(),
+            "host_cpu_secs": (pair.host.cpu_secs * 10.0).round() / 10.0,
+            "client_cpu_secs": (pair.client_cpu_secs * 10.0).round() / 10.0,
         }));
         played
             .and(closed)
@@ -1092,12 +1110,7 @@ fn skate_sessions(
         &["dedicated", sk::MAP],
         &server_env,
     )?;
-    let mut pair = duo::Pair {
-        host: server,
-        client: None,
-        peak_combined_kib: 0,
-        peak_client_kib: 0,
-    };
+    let mut pair = duo::Pair::new(server);
     let played = (|| {
         let load = Duration::from_secs(sk::LOAD_SECS);
         pair.until("the server's room in its match", load, |pair| {
@@ -1110,7 +1123,14 @@ fn skate_sessions(
         pair.ask(false, "wait minecraft; skate state s_ready", "s_ready", load)?;
         let mut client_env = env.to_vec();
         client_env.extend(skate.iter().cloned());
-        pair.client = Some(duo::Player::launch(bin, &dirs[1], "client", 2, &client_env)?);
+        pair.client = Some(duo::Player::launch(
+            bin,
+            &dirs[1],
+            "client",
+            2,
+            sk::DEDICATED_CLIENT_DISPLAY,
+            &client_env,
+        )?);
         sk::dedicated_session(&mut pair, facts, &room)?;
         dedicated_server::leave(&mut pair)?;
         pair.host.terminate()
@@ -1126,6 +1146,10 @@ fn skate_sessions(
         "server_peak_rss_mib": pair.host.peak_rss_kib / 1024,
         "client_peak_rss_mib": pair.peak_client_kib / 1024,
         "combined_peak_rss_mib": pair.peak_combined_kib / 1024,
+        "host_display": pair.host.display.label(),
+        "client_display": sk::DEDICATED_CLIENT_DISPLAY.label(),
+        "host_cpu_secs": (pair.host.cpu_secs * 10.0).round() / 10.0,
+        "client_cpu_secs": (pair.client_cpu_secs * 10.0).round() / 10.0,
     }));
     played.map_err(|e| format!("dedicated room: {e}"))
 }

@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use crate::duo::Pair;
+use crate::duo::{Display, Pair};
 use crate::runner::Event;
 use crate::scenario::Parts;
 
@@ -54,6 +54,13 @@ pub const PARTS: Parts = &[
     ),
 ];
 pub const MAP: &str = "minecraft:overworld";
+/// The listen room's host and client. The host draws: `host_draws_client_pose`
+/// counts the frames its renderer drew the client's skater in. The client
+/// draws nothing: what it is checked on (its skating sent, the host's pose
+/// received) is game state.
+pub const LISTEN_DISPLAYS: [Display; 2] = [Display::Drawn, Display::Headless];
+/// The dedicated room's client: it draws nothing (the server never does).
+pub const DEDICATED_CLIENT_DISPLAY: Display = Display::Headless;
 pub const CLASSES: &str = crate::scenarios::crafting_table::CLASSES;
 /// The dedicated server's room on the master (16 characters at most).
 pub const ROOM: &str = "approved skate";

@@ -16,6 +16,7 @@ pub(crate) fn route_capture_commands(
     identity: Option<Res<LaunchIdentity>>,
     mut capture: Option<ResMut<CaptureQueue>>,
     mut exit: MessageWriter<AppExit>,
+    headless: Option<Res<frame::Headless>>,
 ) {
     let (console, settings, line) = &mut output;
     let capacity = settings.log_capacity;
@@ -30,6 +31,16 @@ pub(crate) fn route_capture_commands(
             "screenshot" => {
                 if cmd.args.len() > 1 {
                     echo("usage: screenshot [name]".into(), console, line);
+                    continue;
+                }
+                // Nothing is drawn: no picture is owed, and `finish_run` waits
+                // for none.
+                if headless.is_some() {
+                    echo(
+                        "screenshot: headless, nothing drawn; skipped".into(),
+                        console,
+                        line,
+                    );
                     continue;
                 }
                 let Some(identity) = identity.as_ref() else {
