@@ -168,6 +168,7 @@ jobs:
           cargo test --profile play -p bootstrap --lib args
           cargo test --profile play -p hud --lib minecraft_inventory
           cargo test --profile play -p render_anim --lib skate::rig
+          cargo test --profile play -p console --lib accepts_tests
       # A zone read once (its file's cache dropped) and inflated to no spare
       # room: what a game holds while it walks a zone's assets.
       - name: zone read unit tests (asset_transport read_once, zone)
