@@ -45,6 +45,22 @@ pub fn one_map(event: &Event, who: &str) -> Result<(), String> {
     }
 }
 
+/// Exactly one map, where a map given to a player who already holds things
+/// goes: the hotbar's last slot, or with that taken the first free slot of
+/// the backpack, then of the hotbar (the game's `starting_map_slot`).
+pub fn one_map_given(event: &Event, who: &str) -> Result<(), String> {
+    let slots: Vec<&str> = event.get("slots").unwrap_or("").split(',').collect();
+    let mut order = std::iter::once(SLOT).chain(SLOT + 1..36).chain(0..SLOT);
+    let want = order.find(|&i| slots.get(i).is_none_or(|s| *s == "-" || *s == ITEM));
+    match (map_slots(event).as_slice(), want) {
+        ([slot], Some(want)) if *slot == want => Ok(()),
+        (found, want) => Err(format!(
+            "{who}: filled maps in slots {found:?}, want one in slot {}",
+            want.map_or("-".to_owned(), |w| w.to_string())
+        )),
+    }
+}
+
 /// No filled map at all.
 pub fn no_map(event: &Event, who: &str) -> Result<(), String> {
     match map_slots(event).as_slice() {
@@ -133,6 +149,31 @@ mod tests {
             one_map(&line(&slots), "x").unwrap_err(),
             "x: filled maps in slots [8, 20], want one in slot 8"
         );
+    }
+
+    /// A player back with its things (the slot 9 taken) finds its map where
+    /// the game gives it: the first free slot of the backpack.
+    #[test]
+    fn a_map_given_to_a_full_hotbar_goes_to_the_first_free_slot() {
+        let mut slots = vec!["-"; 41];
+        slots[..5].copy_from_slice(&["iw4:weapon/1*1"; 5]);
+        let line = |slots: &[&str]| event(&format!("label=x slots={}", slots.join(",")));
+        slots[8] = ITEM;
+        assert!(one_map_given(&line(&slots), "x").is_ok());
+        slots[8] = "minecraft:cobblestone*1";
+        slots[9] = ITEM;
+        assert!(one_map_given(&line(&slots), "x").is_ok());
+        slots[9] = "-";
+        slots[11] = ITEM;
+        assert_eq!(
+            one_map_given(&line(&slots), "x").unwrap_err(),
+            "x: filled maps in slots [11], want one in slot 9"
+        );
+        slots[9] = ITEM;
+        assert!(one_map_given(&line(&slots), "x").is_err());
+        slots[9] = "-";
+        slots[11] = "-";
+        assert!(one_map_given(&line(&slots), "x").is_err());
     }
 
     #[test]

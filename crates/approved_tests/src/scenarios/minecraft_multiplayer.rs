@@ -796,8 +796,8 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
             if aged < 2 {
                 return Err(format!("{aged} players aged, want the host and the client"));
             }
-            map_steps::one_map(line(f, "h2_ready")?, "host after the restart")?;
-            map_steps::one_map(line(f, "c2_ready")?, "client after the restart")
+            map_steps::one_map_given(line(f, "h2_ready")?, "host after the restart")?;
+            map_steps::one_map_given(line(f, "c2_ready")?, "client after the restart")
         }),
     ];
     rules
