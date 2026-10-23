@@ -185,6 +185,7 @@ impl Plugin for ConsolePlugin {
                         (
                             crate::debug_draw_method::route_debug_draw_method_commands,
                             crate::debug_minecraft::route_debug_minecraft_commands,
+                            crate::debug_pad::route_debug_pad_commands,
                             crate::debug_skate::route_skate_commands,
                             crate::debug_admins::route_admins_commands,
                         ),
@@ -294,8 +295,10 @@ fn isolate_gameplay_input(
 struct PhysicalInputState {
     active_pad: Option<Entity>,
     blocked: std::collections::HashSet<BindButton>,
-    movement_ready: bool,
-    look_ready: bool,
+    /// Each stick stays out of gameplay after a menu, the console or an
+    /// inventory had the controller, until it is let go.
+    movement_gate: crate::gamepad::StickGate,
+    look_gate: crate::gamepad::StickGate,
     mouse_activity: f32,
     mouse_activity_start: f32,
     prompts: Option<(bool, frame::PromptStyle)>,
@@ -336,8 +339,8 @@ fn publish_client_action_input(
     physical.active_pad = active.0;
     if owner_changed {
         physical.blocked.retain(|button| !button.is_pad());
-        physical.movement_ready = true;
-        physical.look_ready = true;
+        physical.movement_gate.release();
+        physical.look_gate.release();
         out.pad_turn_rate = [0.0; 2];
         out.pad_lockon = None;
         out.pad_autoaim = None;
@@ -461,24 +464,21 @@ fn publish_client_action_input(
         out.pad_autoaim = None;
         out.pad_was_ads = false;
         devices.aiming_with_pad = false;
-        physical.movement_ready = false;
-        physical.look_ready = false;
+        physical.movement_gate.capture();
+        physical.look_gate.capture();
     } else {
         out.pad_sensitivity = settings.pad_look_sensitivity();
         out.pad_ads_sensitivity = settings.pad_ads_sensitivity;
         out.pad_acceleration = settings.pad_acceleration;
         if let Some(pad) = pad {
             let sticks = crate::gamepad::sticks(pad, &settings);
-            physical.movement_ready |= sticks.movement == Vec2::ZERO;
-            physical.look_ready |= sticks.look == Vec2::ZERO;
-            if physical.movement_ready {
-                out.pad_move = [sticks.movement.x, sticks.movement.y];
-            }
-            if physical.look_ready {
-                let look = crate::gamepad::shaped_look(sticks.look, &settings);
-                out.pad_look = [look.x, look.y];
-                out.pad_deflection = sticks.look.length();
-            }
+            let raw = crate::gamepad::raw_sticks(pad, &settings);
+            let movement = physical.movement_gate.pass(raw.movement, sticks.movement);
+            out.pad_move = [movement.x, movement.y];
+            let look_stick = physical.look_gate.pass(raw.look, sticks.look);
+            let look = crate::gamepad::shaped_look(look_stick, &settings);
+            out.pad_look = [look.x, look.y];
+            out.pad_deflection = look_stick.length();
         }
         for (button, _) in binds.iter() {
             let key_num = host_keynum(button);
@@ -766,6 +766,7 @@ fn setup_console(
     crate::debug_script_mover::register_debug_script_mover_commands(&mut registry);
     crate::debug_draw_method::register_debug_draw_method_commands(&mut registry);
     crate::debug_minecraft::register_debug_minecraft_commands(&mut registry);
+    crate::debug_pad::register_debug_pad_commands(&mut registry);
     crate::debug_view_proj::register_view_proj_commands(&mut registry);
     crate::debug_dof::register(&mut registry);
     crate::debug_glow::register(&mut registry);
