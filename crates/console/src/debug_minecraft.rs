@@ -326,7 +326,7 @@ fn state_line(label: &str, ui: &MinecraftUi, pm_flags: u32, menu: bool, origin: 
     let list =
         |stacks: &[Option<McStack>]| stacks.iter().map(stack_text).collect::<Vec<_>>().join(",");
     format!(
-        "minecraft-state: label={label} stance={stance} menu={menu} origin={:.0},{:.0},{:.0} view={:.0},{:.0} table_in_view={in_view} screen={screen} grid={} result={} cursor={} slots={} seed={} role={} feet={} no_icon={} hand={} ground={} no_model={}",
+        "minecraft-state: label={label} stance={stance} menu={menu} origin={:.0},{:.0},{:.0} view={:.0},{:.0} table_in_view={in_view} screen={screen} grid={} result={} cursor={} slots={} seed={} role={} feet={} no_icon={} hand={} ground={} no_model={} map={}",
         origin[0],
         origin[1],
         origin[2],
@@ -347,6 +347,7 @@ fn state_line(label: &str, ui: &MinecraftUi, pm_flags: u32, menu: bool, origin: 
             .map_or_else(|| "-".to_owned(), |(id, faces)| format!("{id}:{faces}")),
         id_list(&ui.ground_items),
         id_list(&ui.no_model),
+        ui.held_map.as_deref().unwrap_or("-"),
     )
 }
 

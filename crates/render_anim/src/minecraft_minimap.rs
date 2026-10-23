@@ -10,7 +10,6 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use minecraft_terrain::mesh::Atlas;
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::scene::{HandcraftedScene, Scene};
-use minecraftoss_core::chunk::HeightmapKind;
 
 /// Blocks across the picture.
 const SIZE: i32 = 256;
@@ -87,9 +86,10 @@ impl Minimap {
     fn draw(&mut self, (cx, cz): (i32, i32), scene: &HandcraftedScene, packs: &PackStack, atlas: &Atlas) -> Vec<u8> {
         let (x0, z0) = (cx - SIZE / 2, cz - SIZE / 2);
         let mut heights = vec![i32::MIN; (SIZE * (SIZE + 1)) as usize];
+        // The top block, as a filled map finds it: blocks placed over the
+        // generated surface count.
         let height_at = |x: i32, z: i32| -> Option<i32> {
-            let chunk = scene.generated_chunk((x >> 4, z >> 4))?;
-            Some(chunk.heightmaps.get(HeightmapKind::WorldSurface, (x & 15) as usize, (z & 15) as usize) - 1)
+            minecraft_terrain::filled_map::scene_top(scene, x, z).map(|(top, _)| top - 1)
         };
         // One row north of the picture too, for the first row's shading.
         for row in 0..=SIZE {

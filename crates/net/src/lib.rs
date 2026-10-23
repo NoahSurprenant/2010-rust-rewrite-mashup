@@ -178,4 +178,6 @@ pub use skate::{SkateOutbox, SkaterDownlink, SkaterRelay, SkaterState, SkaterTra
 /// 96: the snapshot's Minecraft mob section carries the level's sounds,
 /// splashes and blasts, arrows and potions in flight, and the player's
 /// status effects.
-pub const PROTOCOL_VERSION: u32 = 97;
+/// 98: a host sends a client the maps it carries (`MapTiles` rows), and
+/// gives each player a filled map once per world.
+pub const PROTOCOL_VERSION: u32 = 98;

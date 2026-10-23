@@ -12,6 +12,7 @@ pub mod fluid;
 pub mod frame_spans;
 pub(crate) mod interface;
 pub mod lighting;
+pub mod filled_map;
 pub mod mesh;
 pub mod multiplayer;
 pub mod mob_sync;

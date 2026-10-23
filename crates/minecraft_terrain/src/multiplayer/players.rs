@@ -29,6 +29,10 @@ pub struct PlayerRecord {
     pub last_seen: u64,
     #[serde(default)]
     pub inventory: Option<InventoryState>,
+    /// The player was given its starting map in this world. A record from
+    /// before maps has none, and its player is given one on its next join.
+    #[serde(default)]
+    pub map_given: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -100,6 +104,7 @@ impl Players {
                     first_seen: now,
                     last_seen: now,
                     inventory: claimed,
+                    map_given: false,
                 }),
             );
         }
@@ -117,6 +122,18 @@ impl Players {
     /// inventory, if any.
     pub fn join(&mut self, fingerprint: &str, name: &str, now: u64) -> Option<InventoryState> {
         self.record_mut(fingerprint, name, now).inventory.clone()
+    }
+
+    /// Whether a player in the game is still owed its starting map; once
+    /// asked, it is owed no more, through saves and rejoins (it was given).
+    pub fn take_map(&mut self, fingerprint: &str) -> bool {
+        match self.0.get_mut(&entry(fingerprint)) {
+            Some(PlayerEntry::Keyed(record)) if !record.map_given => {
+                record.map_given = true;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Keeps a player's inventory; whether anything changed.
@@ -163,15 +180,15 @@ impl Players {
         if old_key.as_deref() == Some(to) {
             return Err("the old and the new key are the same".to_owned());
         }
-        let (name, first_seen, inventory) = match &old_key {
+        let (name, first_seen, inventory, map_given) = match &old_key {
             Some(old) => match self.0.remove(&entry(old)) {
                 Some(PlayerEntry::Keyed(record)) => {
-                    (record.name, record.first_seen, record.inventory)
+                    (record.name, record.first_seen, record.inventory, record.map_given)
                 }
                 _ => unreachable!("checked"),
             },
             None => match self.0.remove(from) {
-                Some(PlayerEntry::Named(inventory)) => (from.to_owned(), now, Some(inventory)),
+                Some(PlayerEntry::Named(inventory)) => (from.to_owned(), now, Some(inventory), false),
                 _ => unreachable!("checked"),
             },
         };
@@ -186,6 +203,7 @@ impl Players {
                 first_seen,
                 last_seen: now,
                 inventory,
+                map_given,
             }),
         );
         Ok(Transfer {
@@ -261,6 +279,58 @@ mod tests {
         assert_eq!(read, players);
         assert!(text.contains("\"old\""));
         assert!(text.contains(&format!("\"key:{}\"", key(1))));
+    }
+
+    /// A new player is owed its map once: not again on a later join, nor
+    /// after the world is saved and read back.
+    #[test]
+    fn a_starting_map_is_given_once_through_saves() {
+        let mut players = Players::default();
+        assert!(!players.take_map(&key(1)), "only a player in the game");
+        players.join(&key(1), "noah", 1);
+        assert!(players.take_map(&key(1)));
+        assert!(!players.take_map(&key(1)));
+        players.keep(&key(1), "noah", inventory(2), 2);
+        assert!(players.record(&key(1)).unwrap().map_given);
+        let text = serde_json::to_string(&players).unwrap();
+        let mut read: Players = serde_json::from_str(&text).unwrap();
+        read.join(&key(1), "noah", 3);
+        assert!(!read.take_map(&key(1)), "given before the save");
+        // Another key is a new player.
+        read.join(&key(2), "ann", 4);
+        assert!(read.take_map(&key(2)));
+    }
+
+    /// A players.json from before maps reads (no `map_given`), and each of
+    /// its players is given a map once, on its next join.
+    #[test]
+    fn an_old_save_without_the_flag_gets_its_map_once() {
+        let old = format!(
+            "{{\"key:{}\": {{\"name\": \"noah\", \"first_seen\": 1, \"last_seen\": 2, \"inventory\": {}}}, \"ann\": {}}}",
+            key(1),
+            serde_json::to_string(&inventory(3)).unwrap(),
+            serde_json::to_string(&inventory(4)).unwrap()
+        );
+        let mut players: Players = serde_json::from_str(&old).unwrap();
+        assert!(!players.record(&key(1)).unwrap().map_given);
+        assert_eq!(players.join(&key(1), "noah", 5), Some(inventory(3)));
+        assert!(players.take_map(&key(1)));
+        assert!(!players.take_map(&key(1)));
+        // The named entry from before keys is claimed, and owed a map too.
+        assert_eq!(players.join(&key(2), "ann", 6), Some(inventory(4)));
+        assert!(players.take_map(&key(2)));
+        let read: Players = serde_json::from_str(&serde_json::to_string(&players).unwrap()).unwrap();
+        assert!(read.record(&key(1)).unwrap().map_given && read.record(&key(2)).unwrap().map_given);
+    }
+
+    #[test]
+    fn a_transfer_keeps_whether_the_map_was_given() {
+        let mut players = Players::default();
+        players.join(&key(1), "noah", 1);
+        assert!(players.take_map(&key(1)));
+        players.transfer(&key(1), &key(2), 2).unwrap();
+        players.join(&key(2), "noah", 3);
+        assert!(!players.take_map(&key(2)));
     }
 
     #[test]

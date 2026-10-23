@@ -432,6 +432,48 @@ mod tests {
         assert!(xs.iter().max().unwrap() - xs.iter().min().unwrap() > 15);
     }
 
+    /// A filled map's icon: its paper, and its markings in the map colour
+    /// tint's default (`minecraft:map_color`, 0x46402E).
+    #[test]
+    fn a_filled_map_icon_tints_its_markings() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(
+            root.join("pack.mcmeta"),
+            r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#,
+        )
+        .unwrap();
+        let write = |path: &str, text: &str| {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        write(
+            "assets/minecraft/items/filled_map.json",
+            r#"{"model":{"type":"minecraft:model","model":"minecraft:item/filled_map","tints":[{"type":"minecraft:constant","value":-1},{"type":"minecraft:map_color","default":4603950}]}}"#,
+        );
+        write(
+            "assets/minecraft/models/item/filled_map.json",
+            r#"{"parent":"minecraft:item/generated","textures":{"layer0":"minecraft:item/filled_map","layer1":"minecraft:item/filled_map_markings"}}"#,
+        );
+        for (name, colour) in [("filled_map", [230, 220, 180, 255]), ("filled_map_markings", [255, 255, 255, 255])] {
+            let path = root.join(format!("assets/minecraft/textures/item/{name}.png"));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut image = RgbaImage::new(16, 16);
+            for (_, y, pixel) in image.enumerate_pixels_mut() {
+                // The markings: a line across the middle.
+                if name == "filled_map" || y == 8 {
+                    *pixel = Rgba(colour);
+                }
+            }
+            image.save(path).unwrap();
+        }
+        let packs = PackStack::open(vec![root.into()]).unwrap();
+        let icon = crate::item_icons::item_icon(&packs, "minecraft:filled_map", 16).unwrap().unwrap();
+        assert_eq!(icon.get_pixel(3, 2), &Rgba([230, 220, 180, 255]));
+        assert_eq!(icon.get_pixel(3, 8), &Rgba([0x46, 0x40, 0x2e, 255]));
+    }
+
     #[test]
     fn multi_element_pack_model_renders_with_item_tint() {
         let temp = crate::test_dir::tempdir().unwrap();

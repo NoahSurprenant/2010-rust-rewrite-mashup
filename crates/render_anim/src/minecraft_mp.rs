@@ -42,6 +42,12 @@ const AUTOSAVE_SECONDS: f64 = 10.0;
 const ITEMS_SECONDS: f64 = 0.25;
 /// How far from a client its items are sent, in blocks.
 const ITEMS_RANGE: f64 = 48.0;
+/// How often a client is sent what changed on the maps it carries: only
+/// the 16 by 16 tiles that changed go, so a map costs its 16 KiB once and
+/// then the ground its holder uncovers.
+const MAP_SECONDS: f64 = 0.5;
+/// A map's ticks (`MapItem.update` runs each server tick).
+const MAP_TICK_SECONDS: f64 = 1.0 / 20.0;
 /// How often the host reports the mob bytes it sends each client.
 const MOB_REPORT_SECONDS: f64 = 10.0;
 /// Host ticks after which a mob that has not changed is sent again.
@@ -88,6 +94,10 @@ pub(crate) struct Remote {
     /// Single blocks to send it ahead of the log: the host's answer to an
     /// edit it predicted and the host refused.
     pub corrections: Vec<(BlockPos, Option<String>)>,
+    /// Each map of its inventory as it was last sent it.
+    maps_sent: HashMap<u32, minecraft_terrain::filled_map::MapData>,
+    map_clock: f64,
+    map_bytes: u64,
     sent_inventory: Option<(u32, Option<BlockPos>, InventoryState)>,
     items_clock: f64,
     sent_items: Option<Vec<WireItem>>,
@@ -148,6 +158,15 @@ pub(crate) struct Host {
     since_save: f64,
     /// Something changed since the last save.
     pub dirty: bool,
+    /// The world's maps by id, and the columns they read around every
+    /// player (`minecraft_terrain::filled_map`).
+    pub maps: minecraft_terrain::filled_map::MapStore,
+    pub columns: minecraft_terrain::filled_map::Columns,
+    /// Each holder's ticks with each map it held, by (holder, map).
+    map_steps: HashMap<(u64, u32), u32>,
+    map_clock: f64,
+    /// The host's own player, without a key: given its map this session.
+    pub local_map_given: bool,
 }
 
 #[derive(Default)]
@@ -162,6 +181,8 @@ pub(crate) struct Client {
     pub selected: usize,
     /// Where the host moved this player on arrival.
     pub spawn_at: Option<[f32; 3]>,
+    /// The maps of its inventory, as the host sent them.
+    pub maps: HashMap<u32, minecraft_terrain::filled_map::MapData>,
 }
 
 /// Where kept worlds live: `IW4L_MINECRAFT_WORLDS`, else beside the game's
@@ -219,7 +240,7 @@ impl Host {
         save: Option<PathBuf>,
         saved: Option<SavedWorld>,
     ) -> Self {
-        let (log, players) = saved.map_or_else(Default::default, |s| (s.edits, s.players));
+        let (log, players, maps) = saved.map_or_else(Default::default, |s| (s.edits, s.players, s.maps));
         Self {
             seed,
             origin,
@@ -230,6 +251,11 @@ impl Host {
             local: None,
             since_save: 0.0,
             dirty: false,
+            maps,
+            columns: Default::default(),
+            map_steps: HashMap::new(),
+            map_clock: 0.0,
+            local_map_given: false,
         }
     }
 
@@ -245,6 +271,55 @@ impl Host {
     pub(crate) fn join(&mut self, key: &str, name: &str) -> Option<InventoryState> {
         self.dirty = true;
         self.players.join(key, name, unix_now())
+    }
+
+    /// A player's starting map, once per player and world: a keyed player
+    /// owed one by its record (a new player, or one from a world saved
+    /// before maps), or a guest, who is new at each join. Puts it in
+    /// `inventory`; whether it did. A full inventory is given none, and its
+    /// player is still owed one at its next join.
+    pub(crate) fn give_map_once(&mut self, key: Option<&str>, inventory: &mut Inventory, name: &str) -> bool {
+        if crate::minecraft_inventory::starting_map_slot(inventory).is_none() {
+            return false;
+        }
+        if let Some(key) = key
+            && !self.players.take_map(key)
+        {
+            return false;
+        }
+        let id = self.maps.allocate();
+        let given = crate::minecraft_inventory::give_starting_map(inventory, id);
+        diag::info!(World, "Minecraft: `{name}` given its map (map {id})");
+        self.dirty = true;
+        given
+    }
+
+    /// Fills in the maps held by `holders` (each a holder's key, its feet in
+    /// blocks and the map in its hand) at 20 ticks a second; a map held for
+    /// the first time is made where its holder stands.
+    pub(crate) fn tick_maps(&mut self, dt: f64, holders: &[(u64, [f64; 3], u32)]) {
+        self.map_clock += dt;
+        let ticks = (self.map_clock / MAP_TICK_SECONDS) as u32;
+        self.map_clock -= f64::from(ticks) * MAP_TICK_SECONDS;
+        if ticks == 0 {
+            return;
+        }
+        for &(holder, feet, id) in holders {
+            if id >= self.maps.next_id {
+                continue;
+            }
+            let map = self
+                .maps
+                .maps
+                .entry(id)
+                .or_insert_with(|| minecraft_terrain::filled_map::MapData::new(feet[0], feet[2], 0));
+            let step = self.map_steps.entry((holder, id)).or_default();
+            for _ in 0..ticks.min(4) {
+                if minecraft_terrain::filled_map::update(map, feet, step, |x, z| self.columns.get(x, z)) {
+                    self.dirty = true;
+                }
+            }
+        }
     }
 
     /// Keeps a player's inventory (without its guns, which a match gives
@@ -274,6 +349,7 @@ impl Host {
         let mut world = SavedWorld::new(self.seed, self.origin);
         world.edits = self.log.compacted();
         world.players = self.players.clone();
+        world.maps = self.maps.clone();
         match world.save(&dir) {
             Ok(()) => {
                 self.dirty = false;
@@ -326,6 +402,9 @@ impl Remote {
             corrections: Vec::new(),
             sent_inventory: None,
             items_clock: ITEMS_SECONDS,
+            maps_sent: HashMap::new(),
+            map_clock: MAP_SECONDS,
+            map_bytes: 0,
             sent_items: None,
             placed: false,
             placed_at: None,
@@ -434,6 +513,11 @@ pub(crate) fn send_to(
     if let (Some(view), Some(feet)) = (mobs, feet) {
         send_mobs(reliable, client, remote, view, feet, frames);
     }
+    remote.map_clock += dt;
+    if remote.map_clock >= MAP_SECONDS {
+        remote.map_clock = 0.0;
+        send_maps(reliable, client, &host.maps, remote);
+    }
     while remote.cursor < host.log.len() && has_room(reliable.queue(client)) {
         let (batch, next) = host.log.batch(remote.cursor);
         push(reliable, client, &HostMessage::Edits(batch));
@@ -451,6 +535,17 @@ pub(crate) fn send_to(
         );
         diag::info!(World, "{line}");
         println!("{line}");
+        if remote.map_bytes > 0 {
+            let line = format!(
+                "minecraft-mapnet: client={} maps={} bytes_per_s={}",
+                client.0,
+                remote.maps_sent.len(),
+                per_second(remote.map_bytes)
+            );
+            diag::info!(World, "{line}");
+            println!("{line}");
+            remote.map_bytes = 0;
+        }
         remote.mob_clock = 0.0;
         remote.mob_frame_bytes = 0;
         remote.mob_row_bytes = 0;
@@ -473,6 +568,83 @@ fn send_inventory(reliable: &mut net::ReliableEventHub, client: sim::ClientId, r
             },
         );
         remote.sent_inventory = Some(current);
+    }
+}
+
+/// The maps a client carries (anywhere in its inventory, as a server sends
+/// a player's maps), each the tiles that changed since it was last sent
+/// them, as its stream has room.
+fn send_maps(
+    reliable: &mut net::ReliableEventHub,
+    client: sim::ClientId,
+    maps: &minecraft_terrain::filled_map::MapStore,
+    remote: &mut Remote,
+) {
+    use minecraft_terrain::filled_map::{MapData, SIZE, TILES_PER_MESSAGE};
+    let inventory = &remote.inventory;
+    let mut carried: Vec<u32> = inventory
+        .slots
+        .iter()
+        .chain(inventory.crafting.iter())
+        .chain(inventory.workbench.iter())
+        .chain(std::iter::once(&inventory.cursor))
+        .filter_map(|s| s.as_ref().and_then(crate::minecraft_inventory::map_of))
+        .collect();
+    carried.sort_unstable();
+    carried.dedup();
+    remote.maps_sent.retain(|id, _| carried.contains(id));
+    for id in carried {
+        let Some(map) = maps.maps.get(&id) else {
+            continue;
+        };
+        let changed = map.changed_tiles(remote.maps_sent.get(&id));
+        for tiles in changed.chunks(TILES_PER_MESSAGE) {
+            if !has_room(reliable.queue(client)) {
+                return;
+            }
+            let message = HostMessage::MapTiles {
+                id,
+                centre: [map.centre.0, map.centre.1],
+                scale: map.scale,
+                tiles: tiles.iter().map(|&i| (i as u8, map.tile(i).to_vec())).collect(),
+            };
+            remote.map_bytes += push(reliable, client, &message) as u64;
+            let sent = remote.maps_sent.entry(id).or_insert_with(|| MapData {
+                centre: map.centre,
+                scale: map.scale,
+                colours: vec![0; SIZE * SIZE],
+            });
+            if (sent.centre, sent.scale) != (map.centre, map.scale) {
+                *sent = MapData { centre: map.centre, scale: map.scale, colours: vec![0; SIZE * SIZE] };
+            }
+            for &i in tiles {
+                sent.set_tile(i, &map.tile(i));
+            }
+        }
+    }
+}
+
+/// A map's tiles as a client takes them.
+pub(crate) fn take_map_tiles(
+    maps: &mut HashMap<u32, minecraft_terrain::filled_map::MapData>,
+    id: u32,
+    centre: [i32; 2],
+    scale: u8,
+    tiles: &[(u8, Vec<u8>)],
+) {
+    use minecraft_terrain::filled_map::{MapData, SIZE, TILE};
+    let map = maps.entry(id).or_insert_with(|| MapData {
+        centre: (centre[0], centre[1]),
+        scale,
+        colours: vec![0; SIZE * SIZE],
+    });
+    if (map.centre, map.scale) != ((centre[0], centre[1]), scale) {
+        *map = MapData { centre: (centre[0], centre[1]), scale, colours: vec![0; SIZE * SIZE] };
+    }
+    for (index, pixels) in tiles {
+        if let Ok(pixels) = <[u8; TILE * TILE]>::try_from(pixels.as_slice()) {
+            map.set_tile(usize::from(*index), &pixels);
+        }
     }
 }
 
@@ -854,5 +1026,139 @@ mod tests {
         assert!(bat.is_some(), "no Mobs row for the bat");
         assert!(bat < first_edit, "the bat after the log's edits");
         assert!(host.log.len() - remote.cursor > 5_000);
+    }
+
+    fn key(n: u8) -> String {
+        format!("{n:02x}").repeat(32)
+    }
+
+    fn maps_in(inventory: &Inventory) -> Vec<u32> {
+        inventory.slots.iter().filter_map(|s| s.as_ref().and_then(crate::minecraft_inventory::map_of)).collect()
+    }
+
+    /// A new player is given one map, on joining; another join of the same
+    /// key (a rejoin, or a spawn that asks again) in the same session or
+    /// after the world is saved and loaded gives none. A guest is new at
+    /// each join.
+    #[test]
+    fn a_player_is_given_its_map_once_per_world() {
+        let dir = std::env::temp_dir().join(format!("iw4l-map-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut host = Host::new(12345, [90.5, 130.0, -30.5], Some(dir.clone()), None);
+        let mut inventory = Inventory::default();
+        host.join(&key(1), "noah");
+        assert!(host.give_map_once(Some(&key(1)), &mut inventory, "noah"));
+        assert_eq!(maps_in(&inventory), vec![0]);
+        // A respawn or a rejoin in the same session.
+        host.join(&key(1), "noah");
+        assert!(!host.give_map_once(Some(&key(1)), &mut inventory, "noah"));
+        assert_eq!(maps_in(&inventory), vec![0]);
+        host.keep_inventory(&key(1), "noah", &inventory, 0);
+        host.save_now();
+        // The world again: its record says it was given.
+        let saved = SavedWorld::load(&dir).unwrap().unwrap();
+        let mut host = Host::new(12345, [90.5, 130.0, -30.5], Some(dir.clone()), Some(saved));
+        let state = host.join(&key(1), "noah").unwrap();
+        let mut back = Inventory::default();
+        state.restore(&mut back);
+        assert!(!host.give_map_once(Some(&key(1)), &mut back, "noah"));
+        assert_eq!(maps_in(&back), vec![0]);
+        // A new id for the next new player: ids are never given twice.
+        host.join(&key(2), "ann");
+        let mut other = Inventory::default();
+        assert!(host.give_map_once(Some(&key(2)), &mut other, "ann"));
+        assert_eq!(maps_in(&other), vec![1]);
+        // Guests have no record: one each time they come.
+        let mut guest = Inventory::default();
+        assert!(host.give_map_once(None, &mut guest, "guest"));
+        assert_eq!(maps_in(&guest), vec![2]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A world saved before maps (no `map_given` in players.json): each
+    /// kept player is given a map on its next join, once.
+    #[test]
+    fn a_player_of_an_older_world_is_given_its_map_on_its_next_join() {
+        let mut old = SavedWorld::new(12345, [90.5, 130.0, -30.5]);
+        let mut torches = Inventory::default();
+        torches.slots[2] = Some(minecraftoss_player::inventory::ItemStack::new("minecraft:torch", 7));
+        old.players.keep(&key(1), "noah", InventoryState::capture(&torches, 0), 1);
+        let text = serde_json::to_string(&old.players).unwrap().replace(",\"map_given\":false", "");
+        assert!(!text.contains("map_given"));
+        old.players = serde_json::from_str(&text).unwrap();
+        let mut host = Host::new(12345, [90.5, 130.0, -30.5], None, Some(old));
+        let mut inventory = Inventory::default();
+        host.join(&key(1), "noah").unwrap().restore(&mut inventory);
+        assert!(host.give_map_once(Some(&key(1)), &mut inventory, "noah"));
+        assert_eq!(inventory.slots[2].as_ref().map(|s| s.count), Some(7));
+        assert_eq!(maps_in(&inventory), vec![0]);
+        assert!(!host.give_map_once(Some(&key(1)), &mut inventory, "noah"));
+        assert_eq!(maps_in(&inventory), vec![0]);
+    }
+
+    /// A map held fills in from the host's columns, and its holder's client
+    /// is sent its tiles: all of them once, then only those that change;
+    /// it reads back the same map.
+    #[test]
+    fn a_held_map_fills_in_and_reaches_its_holder_tile_by_tile() {
+        use minecraft_terrain::filled_map::{Column, GRASS, TILE};
+        let mut host = Host::new(1, [0.0; 3], None, None);
+        let mut inventory = Inventory::default();
+        assert!(host.give_map_once(None, &mut inventory, "client"));
+        let mut remote = Remote::new("client".into(), None, inventory, None);
+        // The ground the host has: grass at 64 in the chunks within 48
+        // blocks of the world's middle.
+        for cx in -3..3 {
+            for cz in -3..3 {
+                host.columns.set_chunk((cx, cz), Box::new([Column { colour: GRASS, y: 64, water_depth: 0 }; 256]));
+            }
+        }
+        let feet = [10.5, 65.0, 10.5];
+        for _ in 0..20 {
+            host.tick_maps(MAP_TICK_SECONDS, &[(1, feet, 0)]);
+        }
+        let map = host.maps.maps.get(&0).expect("made where first held");
+        assert_eq!(map.centre, (0, 0));
+        assert_eq!(map.explored(), 96 * 96, "the loaded ground's pixels");
+        assert!(host.dirty);
+        let mut reliable = net::ReliableEventHub::default();
+        let client = sim::ClientId(1);
+        let mut client_maps = HashMap::new();
+        fn take(
+            reliable: &mut net::ReliableEventHub,
+            client: sim::ClientId,
+            maps: &mut HashMap<u32, minecraft_terrain::filled_map::MapData>,
+        ) -> usize {
+            let mut bytes = 0;
+            for message in rows(reliable, client) {
+                if let HostMessage::MapTiles { id, centre, scale, tiles } = &message {
+                    bytes += message.encode().len();
+                    take_map_tiles(maps, *id, *centre, *scale, tiles);
+                }
+            }
+            let through = reliable.queue(client).and_then(|q| q.pending().last().map(|(seq, _)| *seq));
+            if let Some(through) = through {
+                reliable.queue_mut(client).ack(through);
+            }
+            bytes
+        }
+        // Its 36 tiles with ground, 15 a row.
+        send_maps(&mut reliable, client, &host.maps, &mut remote);
+        let header = 1 + 4 + 8 + 1 + 1;
+        assert_eq!(take(&mut reliable, client, &mut client_maps), 3 * header + 36 * (1 + TILE * TILE));
+        assert_eq!(client_maps.get(&0), host.maps.maps.get(&0));
+        // Nothing changed: nothing goes.
+        send_maps(&mut reliable, client, &host.maps, &mut remote);
+        assert_eq!(take(&mut reliable, client, &mut client_maps), 0);
+        // One pixel changes: its tile goes.
+        host.maps.maps.get_mut(&0).unwrap().set(3, 3, 9);
+        send_maps(&mut reliable, client, &host.maps, &mut remote);
+        assert_eq!(take(&mut reliable, client, &mut client_maps), header + 1 + TILE * TILE);
+        assert_eq!(client_maps.get(&0), host.maps.maps.get(&0));
+        // A map the client no longer carries is not sent.
+        remote.inventory.slots[8] = None;
+        host.maps.maps.get_mut(&0).unwrap().set(4, 4, 9);
+        send_maps(&mut reliable, client, &host.maps, &mut remote);
+        assert_eq!(take(&mut reliable, client, &mut client_maps), 0);
     }
 }

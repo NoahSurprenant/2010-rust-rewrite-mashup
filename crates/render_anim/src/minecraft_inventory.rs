@@ -348,3 +348,62 @@ pub(crate) fn keep_guns(inventory: &mut Inventory, thrown: Vec<ItemStack>, selec
     }
     out
 }
+
+/// A player's starting map, naming the map `id`: on the hotbar's last slot,
+/// clear of the guns that fill it from the first, else the first free
+/// slot. False when the inventory is full.
+pub(crate) fn give_starting_map(inventory: &mut Inventory, id: u32) -> bool {
+    let mut stack = ItemStack::new(minecraft_terrain::filled_map::ITEM, 1);
+    stack.components = Some(minecraft_terrain::filled_map::components(id));
+    let Some(slot) = starting_map_slot(inventory) else {
+        return false;
+    };
+    inventory.slots[slot] = Some(stack);
+    true
+}
+
+/// Where a starting map goes.
+pub(crate) fn starting_map_slot(inventory: &Inventory) -> Option<usize> {
+    let last = frame::minecraft_ui::MC_HOTBAR - 1;
+    std::iter::once(last)
+        .chain(frame::minecraft_ui::MC_HOTBAR..36)
+        .chain(0..last)
+        .find(|&i| inventory.slots[i].is_none())
+}
+
+/// The map a stack is, by its id.
+pub(crate) fn map_of(stack: &ItemStack) -> Option<u32> {
+    minecraft_terrain::filled_map::map_id(&stack.id, stack.components.as_ref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_starting_map_goes_on_the_last_hotbar_slot_clear_of_the_guns() {
+        let mut inventory = Inventory::default();
+        assert!(give_starting_map(&mut inventory, 4));
+        let map = inventory.slots[8].clone().unwrap();
+        assert_eq!(map.id, "minecraft:filled_map");
+        assert_eq!(map_of(&map), Some(4));
+        // Guns that arrive after it take the first slots.
+        InventoryUi::default().sync_weapons(&mut inventory, &[1, 2, 3, 4, 5]);
+        assert!((0..5).all(|i| inventory.slots[i].as_ref().and_then(weapon_of).is_some()));
+        assert_eq!(inventory.slots[8], Some(map.clone()));
+        // `mc clear` takes it as any item; a second map goes there again.
+        clear_items(&mut inventory);
+        assert_eq!(inventory.slots[8], None);
+        assert!(give_starting_map(&mut inventory, 5));
+        assert_eq!(inventory.slots[8].as_ref().and_then(map_of), Some(5));
+        // With the last hotbar slot taken: the first free one inside.
+        assert!(give_starting_map(&mut inventory, 6));
+        assert_eq!(inventory.slots[9].as_ref().and_then(map_of), Some(6));
+        // Two maps never stack.
+        assert!(!inventory.slots[8].as_ref().unwrap().same_item(inventory.slots[9].as_ref().unwrap()));
+        for slot in &mut inventory.slots[..36] {
+            slot.get_or_insert_with(|| ItemStack::new("minecraft:dirt", 1));
+        }
+        assert!(!give_starting_map(&mut inventory, 7), "a full inventory");
+    }
+}

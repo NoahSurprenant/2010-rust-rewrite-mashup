@@ -158,6 +158,10 @@ pub struct MinecraftUi {
     /// The item in view in the player's hand and how many faces its model
     /// drew.
     pub hand: Option<(String, usize)>,
+    /// The filled map in the player's hand as this game has it:
+    /// `<id>@<centre x>,<centre z>:<pixels shown>`, or `<id>@-:0` before its
+    /// data comes.
+    pub held_map: Option<String>,
     /// The items lying in the world, by id.
     pub ground_items: Vec<String>,
     /// The items lying in the world or held by mobs whose model draws no

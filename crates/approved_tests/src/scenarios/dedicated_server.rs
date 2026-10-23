@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use crate::duo::{Display, Pair, Player, cpu_secs, field};
 use crate::runner::Event;
 use crate::scenario::Parts;
-use crate::scenarios::mob_steps;
+use crate::scenarios::{map_steps, mob_steps};
 
 pub const NAME: &str = "dedicated_server";
 /// The rooms with and without the client, its keys and admin rights, and
@@ -63,6 +63,9 @@ pub const PARTS: Parts = &[
             "restart_world_kept",
             "second_sigterm",
             "console_socket_answers",
+            "new_player_gets_map",
+            "map_reaches_holder",
+            "map_given_once",
         ],
     ),
     (
@@ -345,6 +348,9 @@ pub fn first_visit(pair: &mut Pair, facts: &mut Facts, room: &str) -> Result<(),
     let step = Duration::from_secs(STEP_SECS);
     let ready = join(pair, room, "c_ready")?;
     facts.keep("c_ready", ready);
+    // Its map, given on joining, in its hand: the server's ground on it.
+    let map = map_steps::hold_map(pair, true, "c_map0", Duration::from_secs(SYNC_SECS))?;
+    facts.keep("c_map0", map);
     locked_out(pair, facts)?;
     let given = pair.ask(
         true,
@@ -684,7 +690,7 @@ pub fn console_socket(
 
 pub fn judge(facts: &Facts) -> Vec<Check> {
     type Rule = fn(&Facts) -> Result<(), String>;
-    let rules: [(&'static str, Rule); 18] = [
+    let rules: [(&'static str, Rule); 21] = [
         ("server_has_no_player", |f| {
             let first = f.rosters.first().ok_or("no roster line from the server")?;
             want(
@@ -925,6 +931,15 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
             }
             want(note(f, "console_mode")?, "600", "the console socket's mode")
         }),
+        ("new_player_gets_map", |f| map_steps::one_map(line(f, "c_map0")?, "the new client")),
+        // The server's world, read around the client, on the client's map.
+        ("map_reaches_holder", |f| map_steps::filled(line(f, "c_map0")?, "client").map(|_| ())),
+        // Its map went with `mc clear`: back in the room, and after the
+        // server's restart, it is not given another.
+        ("map_given_once", |f| {
+            map_steps::no_map(line(f, "c2_ready")?, "the rejoined client")?;
+            map_steps::no_map(line(f, "c3_ready")?, "the client after the restart")
+        }),
     ];
     rules
         .iter()
@@ -983,6 +998,13 @@ mod tests {
         f.lines.insert(
             "c_ready".into(),
             state("label=c_ready seed=7 role=client slots=-"),
+        );
+        let mut with_map = vec!["-"; 41];
+        with_map[..5].copy_from_slice(&["iw4:weapon/1*1"; 5]);
+        with_map[map_steps::SLOT] = map_steps::ITEM;
+        f.lines.insert(
+            "c_map0".into(),
+            state(&format!("label=c_map0 seed=7 role=client slots={} map=0@128,0:9000", with_map.join(","))),
         );
         for label in ["c_given", "c2_ready", "c3_ready"] {
             f.lines.insert(
@@ -1261,5 +1283,25 @@ mod tests {
             ),
         );
         assert_eq!(failed(&f), ["admin_transfer_on_server"]);
+    }
+
+    /// A client given a second map on rejoining (or after the server's
+    /// restart), or one whose map never showed the server's ground, fails.
+    #[test]
+    fn a_second_map_or_an_empty_one_fails() {
+        let mut f = passing();
+        let mut slots = vec!["-"; 41];
+        slots[5] = PLANKS;
+        slots[map_steps::SLOT] = map_steps::ITEM;
+        f.lines.insert(
+            "c3_ready".into(),
+            state(&format!("label=c3_ready seed=7 role=client slots={}", slots.join(","))),
+        );
+        assert_eq!(failed(&f), ["map_given_once"]);
+        let mut f = passing();
+        f.lines.get_mut("c_map0").unwrap().fields.insert("map".into(), "0@128,0:0".into());
+        assert_eq!(failed(&f), ["map_reaches_holder"]);
+        f.lines.get_mut("c_map0").unwrap().fields.insert("slots".into(), "-,-".into());
+        assert_eq!(failed(&f), ["new_player_gets_map", "map_reaches_holder"]);
     }
 }
