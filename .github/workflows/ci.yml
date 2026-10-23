@@ -146,6 +146,11 @@ jobs:
         run: |
           cargo test --profile play -p render_anim --lib minecraft_settings
           cargo test --profile play -p render_anim --lib minecraft_world::tests
+      # A block's drop reaches the server whatever items the server dropped
+      # itself, from inside the broken block; a log's and stone's loot (the
+      # loot only with Minecraft's data JAR, which these runners lack).
+      - name: Minecraft block drop unit tests (render_anim minecraft_entities)
+        run: cargo test --profile play -p render_anim --lib minecraft_entities::tests
       - name: player key, admin and console socket unit tests (player_key, net identity and admins, console debug_admins and control)
         run: |
           cargo test --profile play -p player_key

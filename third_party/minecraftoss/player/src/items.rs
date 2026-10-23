@@ -138,6 +138,12 @@ impl WorldItems {
             player_random: LegacyRandom::new(player),
         }
     }
+    /// The entity ID the next spawned item takes (then one more each), so a
+    /// caller can keep these items' IDs apart from another source's.
+    pub fn set_next_entity_id(&mut self, id: u32) {
+        self.next_entity_id = id;
+    }
+
     /// Records a pickup the server performed: the pickup animation, sound
     /// and statistic, as `tick_and_collect` does for client items.
     pub fn note_pickup(&mut self, item: ItemEntity, target: DVec3, transfer: ItemStack) {

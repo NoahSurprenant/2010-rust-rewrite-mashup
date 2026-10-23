@@ -160,6 +160,48 @@ const LOOT_TOOL: &str = "minecraft:diamond_pickaxe";
 /// TNT's power: a blast drops each block's loot one time in this many.
 const BLAST_POWER: f32 = 4.0;
 
+/// The first ID of the items this game spawns itself (block drops, throws)
+/// until the server takes them. The server numbers every entity it adds
+/// from 1 (its own drops too: leaves decaying, a torch losing its block, mob
+/// loot), so these count from far above: one with the ID of an item lying on
+/// the server was taken for that item, never handed over, and lost.
+const LOCAL_ITEM_IDS: u32 = 1 << 31;
+
+/// The game's item entities, their own IDs apart from the server's.
+fn local_items() -> WorldItems {
+    let mut items = WorldItems::default();
+    items.set_next_entity_id(LOCAL_ITEM_IDS);
+    items
+}
+
+/// The items to hand to the server: those this game spawned, neither the
+/// server's (by the IDs of its last snapshot) nor handed already.
+fn items_to_hand(
+    entities: &[ItemEntity],
+    server_ids: &HashSet<u32>,
+    handed: &HashMap<u32, (u64, ItemEntity)>,
+) -> Vec<ItemEntity> {
+    entities
+        .iter()
+        .filter(|e| !server_ids.contains(&e.entity_id) && !handed.contains_key(&e.entity_id))
+        .cloned()
+        .collect()
+}
+
+/// A broken block's loot as `drop_blocks` rolls it: with `LOOT_TOOL`, and
+/// each stack no larger than the item stacks. `None` for a block with no
+/// table, or one with a rule the loot book cannot evaluate.
+fn block_loot(
+    loot: &LootBook,
+    block: &Block,
+    seed: u64,
+    sequences: &mut HashMap<String, XoroshiroRandom>,
+) -> Option<Vec<ItemStack>> {
+    let tool = ItemStack::new(LOOT_TOOL, 1);
+    let block = minecraftoss_player::Block { id: block.id.key(), properties: block.properties.clone() };
+    loot.roll_drops_named(&block, Some(&tool), seed, sequences)
+}
+
 /// The mobs drawn this frame: entity models (cut out, back-face culled,
 /// translucent) and their shadows, in `mesh::Vertex`s; and what goes with
 /// the particles (held items, puffs, flames, potions).
@@ -226,7 +268,7 @@ impl Entities {
             ticks: 0,
             inventory,
             selected: 0,
-            world_items: WorldItems::default(),
+            world_items: local_items(),
             server_item_ids: HashSet::new(),
             server_handed: HashMap::new(),
             server_picked: Vec::new(),
@@ -400,10 +442,8 @@ impl Entities {
         let Some(loot) = self.loot.as_ref() else {
             return;
         };
-        let tool = ItemStack::new(LOOT_TOOL, 1);
         for (pos, block, blast) in broken {
-            let block = minecraftoss_player::Block { id: block.id.key(), properties: block.properties.clone() };
-            let Some(drops) = loot.roll_drops_named(&block, Some(&tool), self.seed as u64, &mut self.loot_sequences) else {
+            let Some(drops) = block_loot(loot, block, self.seed as u64, &mut self.loot_sequences) else {
                 continue;
             };
             for mut drop in drops {
@@ -424,11 +464,7 @@ impl Entities {
     /// and the server's items are mirrored for drawing.
     fn server_items_tick(&mut self, feet: DVec3) {
         let entities = std::mem::take(&mut self.world_items.entities);
-        let to_hand: Vec<ItemEntity> = entities
-            .iter()
-            .filter(|e| !self.server_item_ids.contains(&e.entity_id) && !self.server_handed.contains_key(&e.entity_id))
-            .cloned()
-            .collect();
+        let to_hand = items_to_hand(&entities, &self.server_item_ids, &self.server_handed);
         for entity in &to_hand {
             let components = entity.stack.components.as_ref().map(|c| c.to_string());
             self.server.spawn_item(
@@ -1181,4 +1217,84 @@ fn decode(key: u64) -> Option<MobHit> {
         15 => MobHit::Chicken(id),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The server's item IDs after it popped a few drops of its own (a torch
+    /// that lost its block, saplings from decaying leaves): from 1 up.
+    fn server_ids(count: u32) -> HashSet<u32> {
+        (1..=count).collect()
+    }
+
+    #[test]
+    fn a_block_drop_after_the_servers_own_drops_is_handed_over() {
+        let server = server_ids(8);
+        let handed = HashMap::new();
+        let mut items = local_items();
+        items.spawn_block_drop(ItemStack::new("minecraft:cobblestone", 1), (2, 1, 0));
+        items.spawn_block_drop(ItemStack::new("minecraft:oak_log", 1), (2, 0, 0));
+        let to_hand = items_to_hand(&items.entities, &server, &handed);
+        let ids: Vec<&str> = to_hand.iter().map(|e| e.stack.id.as_str()).collect();
+        assert_eq!(ids, ["minecraft:cobblestone", "minecraft:oak_log"]);
+        assert!(to_hand.iter().all(|e| e.entity_id >= LOCAL_ITEM_IDS));
+        // As the game numbered them before: from 2, the IDs of two items the
+        // server has lying about, so neither drop reached it.
+        let mut before = WorldItems::default();
+        before.spawn_block_drop(ItemStack::new("minecraft:cobblestone", 1), (2, 1, 0));
+        before.spawn_block_drop(ItemStack::new("minecraft:oak_log", 1), (2, 0, 0));
+        assert!(items_to_hand(&before.entities, &server, &handed).is_empty());
+    }
+
+    #[test]
+    fn a_handed_drop_is_not_handed_again() {
+        let mut items = local_items();
+        items.spawn_block_drop(ItemStack::new("minecraft:oak_log", 1), (2, 0, 0));
+        let drop = items.entities[0].clone();
+        let handed = HashMap::from([(drop.entity_id, (1, drop))]);
+        assert!(items_to_hand(&items.entities, &server_ids(3), &handed).is_empty());
+    }
+
+    #[test]
+    fn a_block_drop_starts_inside_the_broken_block() {
+        let mut items = local_items();
+        let pos = (2, 0, -3);
+        for _ in 0..64 {
+            items.spawn_block_drop(ItemStack::new("minecraft:oak_log", 1), pos);
+        }
+        for e in &items.entities {
+            let p = e.position;
+            assert!((2.25..=2.75).contains(&p.x), "{p}");
+            assert!((0.125..=0.625).contains(&p.y), "{p}");
+            assert!((-2.75..=-2.25).contains(&p.z), "{p}");
+        }
+    }
+
+    /// Block loot needs Minecraft's data JAR (`MINECRAFTOSS_ROOT` or the
+    /// fetched files); without it there is nothing to check.
+    #[test]
+    fn block_loot_of_a_log_and_of_stone() {
+        let Some(jar) = data_jar() else {
+            eprintln!("no Minecraft data JAR: block loot not checked");
+            return;
+        };
+        let loot = LootBook::from_jar(&jar).expect("block loot");
+        let mut sequences = HashMap::new();
+        let mut log = Block::new("minecraft:oak_log");
+        log.properties.insert("axis".into(), "y".into());
+        for (block, want) in [
+            (log, "minecraft:oak_log"),
+            (Block::new("minecraft:stone"), "minecraft:cobblestone"),
+            (Block::new("minecraft:cobblestone"), "minecraft:cobblestone"),
+            (Block::new("minecraft:oak_planks"), "minecraft:oak_planks"),
+        ] {
+            for _ in 0..4 {
+                let drops = block_loot(&loot, &block, 12345, &mut sequences).unwrap_or_else(|| panic!("{}", block.id.key()));
+                let got: Vec<(String, u8)> = drops.iter().map(|s| (s.id.clone(), s.count)).collect();
+                assert_eq!(got, [(want.to_owned(), 1)], "{}", block.id.key());
+            }
+        }
+    }
 }
