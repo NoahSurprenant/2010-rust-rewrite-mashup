@@ -17,7 +17,7 @@ Modern Warfare 2, Skate 3 and Minecraft in one game, all running on
 - Broken blocks drop items that you pick up.
 - A Minecraft inventory and hotbar restyled in MW2's look. Your guns sit in the hotbar as items, and your MW2 character stands in the inventory window.
 - Hold a block to place it. With an empty hand you punch and mine with your bare MW2 hands.
-- Crafting tables: right click one, or press E or Use at it, for vanilla's 3x3 crafting grid in MW2's look.
+- Crafting tables: right click one, or press E (D-pad down on a controller) or Use at it, for vanilla's 3x3 crafting grid in MW2's look.
 - Minecraft's block, mob and footstep sounds.
 - Unlimited ammo and grenades. The Intervention, SPAS-12 and UMP45 are always in your inventory. No time or score limit.
 - The minimap shows the Minecraft world around you.
@@ -46,12 +46,26 @@ You don't need Minecraft installed. The first time the game starts, it downloads
 | Mouse / WASD | Sticks | MW2 movement and shooting |
 | 1–9, mouse wheel | D-pad left / right | Select a hotbar slot |
 | | Y | Swap between the first two hotbar slots |
-| E | | Open or close the inventory, or the crafting table you look at |
+| E | D-pad down | Open the inventory, or the crafting table you look at (E also closes it) |
 | Q | | Drop the selected item |
 | Left click (block or empty hand) | Right trigger | Mine or punch |
 | Right click (holding a block) | Left trigger | Place the block |
 | Right click or E on a crafting table | Use | Open its 3x3 crafting grid; crouched with something in hand, right click places against it |
 | J | Click both sticks in | Skate 3 mode |
+
+In the inventory and on a crafting table:
+
+| Keyboard and mouse | Controller | Action |
+| --- | --- | --- |
+| Mouse | D-pad or left stick | Move between slots |
+| Left click | A | Pick up, put down or swap a stack; take what was crafted |
+| Right click | X | Pick up half a stack, or put one item down |
+| Shift + left click | Y | Move the stack across (to the hotbar, the backpack or out of the result) |
+| Double click | A twice | Gather matching items onto the carried stack |
+| Drag with a stack | Hold A and move | Share the carried stack out over slots |
+| 1–9 over a slot | | Swap it with that hotbar slot |
+| Right / left click outside the window | LB / RB | Throw one carried item / the whole carried stack |
+| E or Escape | B or START | Close |
 
 More about skating in [docs/SKATE.md](docs/SKATE.md).
 
@@ -73,7 +87,7 @@ Plug in a controller and play; the game follows whichever controller you last to
 - **Options → Controls**: every action shows its key and its controller button. Select one and press a key to rebind the keyboard, or a controller button to rebind the controller.
 - **Aim assist** works as it does in MW2 on console: **Standard** slows your aim over an enemy and follows them as they move; **Full** also pulls your aim onto the nearest enemy when you aim down the sight. It's off with the mouse.
 - Click both sticks in to switch to and from Skate 3 mode, as **J** does.
-
+- On the Minecraft map, **D-pad down** opens the inventory (or the crafting table you look at) in every button layout; it keeps D-pad down's MW2 action, which multiplayer leaves empty. Rebind it as **Inventory (Minecraft)** in Options → Controls. Inside, a cursor follows the D-pad or left stick: **A** takes and places, **X** takes half or places one, **Y** moves a stack across, **LB**/**RB** throw, **B** closes. The buttons show under the inventory.
 ## Known issues
 
 - The skateboard is invisible on some maps.

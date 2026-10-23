@@ -1,4 +1,4 @@
-pub const INPUT_COMMAND_NAMES: [&str; 78] = [
+pub const INPUT_COMMAND_NAMES: [&str; 79] = [
     "",
     "+attack",
     "-attack",
@@ -77,6 +77,9 @@ pub const INPUT_COMMAND_NAMES: [&str; 78] = [
     "gocrouch",
     "toggleads",
     "leaveads",
+    // Not MW2's: the Minecraft map's inventory, bound beside MW2's commands
+    // (`KeyBinds`' Minecraft layer), never sent to the game.
+    "inventory",
 ];
 
 pub const HOLD_PAIR_LIMIT: u32 = 0x41;

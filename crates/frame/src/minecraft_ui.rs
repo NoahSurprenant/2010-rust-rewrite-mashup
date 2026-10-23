@@ -66,6 +66,17 @@ pub struct MinecraftUi {
     /// MW2's Use went down this frame, outside any screen (the world's to
     /// clear): it opens the crafting table the player looks at.
     pub use_pressed: bool,
+    /// The inventory's binding (E, or D-pad down on a controller) went down
+    /// this frame (the console's to set, the HUD's to clear): it opens the
+    /// screen, or closes it unless the open screen takes that button itself.
+    pub inventory_toggle: bool,
+    /// The open screen's slot the controller's cursor is on (the HUD's).
+    pub pad_slot: Option<McSlot>,
+    /// What the open screen says closes it (`E TO CLOSE`), and with a
+    /// controller in hand the line naming its buttons (the console's, from
+    /// the bindings).
+    pub close_hint: String,
+    pub pad_hint: Option<String>,
     /// The crafting table the player looks at within reach: E opens it
     /// rather than the inventory.
     pub table_in_view: Option<(i32, i32, i32)>,
@@ -168,3 +179,11 @@ pub struct InventoryPuppet {
     /// The aim pitch its upper body and head take, in degrees.
     pub pitch: f32,
 }
+
+/// The controller buttons an open inventory screen takes for its own: the
+/// D-pad moves its cursor, A, X and Y click, the bumpers throw, B and START
+/// close it. The inventory's binding on one of these only opens the screen.
+pub const MC_SCREEN_PAD_BUTTONS: [bevy::input::gamepad::GamepadButton; 11] = {
+    use bevy::input::gamepad::GamepadButton::*;
+    [South, East, West, North, LeftTrigger, RightTrigger, DPadUp, DPadDown, DPadLeft, DPadRight, Start]
+};

@@ -277,6 +277,10 @@ pub(crate) fn update_script_menus(
 
     let console_open = input.hud_input.as_ref().is_some_and(|h| h.console_open);
     let mut pressed = Pressed::default();
+    // A controller's START (an Escape request) closes an open Minecraft
+    // screen, as Escape does, rather than opening the pause menu over it.
+    let minecraft_screen_only = !runner.menus.captures_input()
+        && input.minecraft.as_ref().is_some_and(|ui| ui.active && ui.inventory_open);
     for request in requests {
         match request {
             UiMenuRequest::Toggle => pressed.escape = true,
@@ -292,7 +296,7 @@ pub(crate) fn update_script_menus(
                     runner.set_focus(&menu, index);
                 }
             }
-            UiMenuRequest::Key(UiMenuKey::Escape) => pressed.escape = true,
+            UiMenuRequest::Key(UiMenuKey::Escape) => pressed.escape |= !minecraft_screen_only,
             UiMenuRequest::Key(UiMenuKey::Enter) => pressed.enter = true,
             UiMenuRequest::Key(UiMenuKey::Up) => pressed.up = true,
             UiMenuRequest::Key(UiMenuKey::Down) => pressed.down = true,

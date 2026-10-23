@@ -38,4 +38,4 @@ pub use ui::{
 pub mod skate;
 pub use skate::{RemoteSkaters, SkateMode, SkaterPose, VirtualPad};
 pub mod minecraft_ui;
-pub use minecraft_ui::{InventoryPuppet, McClick, McSlot, McStack, MinecraftUi};
+pub use minecraft_ui::{InventoryPuppet, MC_SCREEN_PAD_BUTTONS, McClick, McSlot, McStack, MinecraftUi};

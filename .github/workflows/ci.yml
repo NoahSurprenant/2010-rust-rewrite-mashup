@@ -178,6 +178,12 @@ jobs:
       # back to gameplay; and `pad`, the controller the console drives.
       - name: controller stick unit tests (console gamepad, debug_pad)
         run: cargo test --profile play -p console --lib -- gamepad debug_pad
+      # The Minecraft inventory on a controller: its binding (E, D-pad down,
+      # beside MW2's in every layout, rebindable and saved), the screen's
+      # hints; the cursor and its clicks run with the hud minecraft_inventory
+      # tests above.
+      - name: controller inventory unit tests (console binds, minecraft_input, user_settings)
+        run: cargo test --profile play -p console --lib -- binds minecraft_input user_settings
       # A zone read once (its file's cache dropped) and inflated to no spare
       # room: what a game holds while it walks a zone's assets.
       - name: zone read unit tests (asset_transport read_once, zone)

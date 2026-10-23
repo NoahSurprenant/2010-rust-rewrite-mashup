@@ -313,14 +313,36 @@ impl<'a> BindInputs<'a> {
     }
 }
 
+/// The Minecraft map's inventory (and the crafting table in view): the one
+/// command of the Minecraft layer.
+pub const INVENTORY_COMMAND: &str = "inventory";
+
+/// The controller button that opens the inventory by default, in every
+/// layout: D-pad down. Each layout binds all sixteen buttons, so none is
+/// free; D-pad down is MW2's `+actionslot 2`, a slot MW2 multiplayer's
+/// scripts leave empty (1 is night vision, 3 the attachment, 4 the
+/// killstreak), and the inventory sits beside it in the Minecraft layer
+/// rather than in its place. D-pad left and right and Y already pick from
+/// the hotbar there, and BACK is the scoreboard.
+pub const INVENTORY_PAD_BUTTON: PadButton = PadButton::DpadDown;
+
+/// Whether a command belongs to the Minecraft layer: bound beside a
+/// button's MW2 command rather than in its place, and acted on only on the
+/// Minecraft map, where it takes the press from MW2.
+pub fn is_minecraft_command(id: u32) -> bool {
+    command_name(id) == Some(INVENTORY_COMMAND)
+}
+
 #[derive(Resource, Debug, Clone, Default)]
 pub struct KeyBinds {
     map: HashMap<BindButton, u32>,
+    /// The Minecraft layer: E opens the inventory and stays MW2's Use.
+    minecraft: HashMap<BindButton, u32>,
 }
 
 impl KeyBinds {
     pub fn apply_defaults(&mut self) {
-        self.map.clear();
+        self.clear_all();
         let _ = self.apply_script(DEFAULT_CONTROLS);
         self.apply_pad_layout(0);
     }
@@ -357,7 +379,7 @@ impl KeyBinds {
                     Err(msg) => output.push(msg),
                 },
                 "unbindall" => {
-                    self.map.clear();
+                    self.clear_all();
                     if echo_success {
                         output.push("unbindall".into());
                     }
@@ -368,37 +390,56 @@ impl KeyBinds {
         output
     }
 
+    fn layer_of(&mut self, id: u32) -> &mut HashMap<BindButton, u32> {
+        if is_minecraft_command(id) {
+            &mut self.minecraft
+        } else {
+            &mut self.map
+        }
+    }
+
+    /// Binds a button to a command: in place of its MW2 command, or for the
+    /// Minecraft layer's, beside it.
     pub fn set(&mut self, button: BindButton, id: u32) {
-        self.map.insert(button, id);
+        self.layer_of(id).insert(button, id);
     }
 
     pub fn clear_button(&mut self, button: BindButton) -> bool {
-        self.map.remove(&button).is_some()
+        let gameplay = self.map.remove(&button).is_some();
+        self.minecraft.remove(&button).is_some() || gameplay
     }
 
     pub fn clear_command(&mut self, id: u32) -> bool {
-        let before = self.map.len();
-        self.map.retain(|_, bound| *bound != id);
-        self.map.len() != before
+        let layer = self.layer_of(id);
+        let before = layer.len();
+        layer.retain(|_, bound| *bound != id);
+        layer.len() != before
     }
 
     pub fn clear_all(&mut self) {
         self.map.clear();
+        self.minecraft.clear();
     }
 
     pub fn clear_command_on(&mut self, id: u32, pad: bool) -> bool {
-        let before = self.map.len();
-        self.map
-            .retain(|button, bound| *bound != id || button.is_pad() != pad);
-        self.map.len() != before
+        let layer = self.layer_of(id);
+        let before = layer.len();
+        layer.retain(|button, bound| *bound != id || button.is_pad() != pad);
+        layer.len() != before
     }
 
+    /// A controller layout's MW2 buttons, and the inventory on
+    /// `INVENTORY_PAD_BUTTON` beside them.
     pub fn apply_pad_layout(&mut self, layout: usize) {
         self.map.retain(|button, _| !button.is_pad());
+        self.minecraft.retain(|button, _| !button.is_pad());
         for (button, command) in pad_layout(layout) {
             if let Some(id) = command_id_lookup(command) {
                 self.set(BindButton::Pad(button), id);
             }
+        }
+        if let Some(id) = command_id_lookup(INVENTORY_COMMAND) {
+            self.set(BindButton::Pad(INVENTORY_PAD_BUTTON), id);
         }
     }
 
@@ -406,6 +447,7 @@ impl KeyBinds {
         self.map.keys().any(|button| button.is_pad())
     }
 
+    /// The button's MW2 command.
     pub fn get(&self, button: BindButton) -> Option<u32> {
         self.map.get(&button).copied()
     }
@@ -414,16 +456,31 @@ impl KeyBinds {
         self.get(button).and_then(command_name)
     }
 
+    /// Whether the button opens the Minecraft inventory.
+    pub fn opens_inventory(&self, button: BindButton) -> bool {
+        self.minecraft.contains_key(&button)
+    }
+
+    /// The buttons bound to MW2's commands.
     pub fn iter(&self) -> impl Iterator<Item = (BindButton, u32)> + '_ {
         self.map.iter().map(|(b, id)| (*b, *id))
     }
 
+    /// The buttons bound to the Minecraft layer's commands.
+    pub fn iter_minecraft(&self) -> impl Iterator<Item = (BindButton, u32)> + '_ {
+        self.minecraft.iter().map(|(b, id)| (*b, *id))
+    }
+
+    /// Every binding of both layers.
+    pub fn iter_all(&self) -> impl Iterator<Item = (BindButton, u32)> + '_ {
+        self.iter().chain(self.iter_minecraft())
+    }
+
     pub fn list_lines(&self) -> Vec<String> {
         let mut lines: Vec<String> = self
-            .map
-            .iter()
+            .iter_all()
             .filter_map(|(button, id)| {
-                command_name(*id).map(|name| format!("bind {} {name}", display_button(*button)))
+                command_name(id).map(|name| format!("bind {} {name}", display_button(button)))
             })
             .collect();
         lines.sort();
@@ -439,12 +496,15 @@ impl KeyBinds {
                     parse_button_name(key).ok_or_else(|| format!("unknown key `{key}`"))?;
                 let names: Vec<&str> = buttons
                     .iter()
-                    .filter_map(|button| self.binding_name(*button))
+                    .flat_map(|button| {
+                        let minecraft = self.minecraft.get(button).copied().and_then(command_name);
+                        self.binding_name(*button).into_iter().chain(minecraft)
+                    })
                     .collect();
                 if names.is_empty() {
                     Ok(Some(format!("`{key}` is unbound")))
                 } else {
-                    Ok(Some(format!("bind {key} {}", names[0])))
+                    Ok(Some(format!("bind {key} {}", names.join(" + "))))
                 }
             }
             [key, action @ ..] => {
@@ -494,4 +554,127 @@ pub(crate) fn pulse_wheel_binding(
     client.keys[key_num].binding = id;
     key_event(client, key_num, true, now_msec, frame_msec);
     key_event(client, key_num, false, now_msec, frame_msec);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LAYOUTS: [&str; 5] = [
+        "Default",
+        "Tactical",
+        "Lefty",
+        "Bumper Jumper",
+        "Bumper Jumper Tactical",
+    ];
+
+    fn inventory() -> u32 {
+        command_id_lookup(INVENTORY_COMMAND).unwrap()
+    }
+
+    /// The inventory's controller button takes no MW2 action in any
+    /// layout: every layout binds every button (so none is free), and D-pad
+    /// down is `+actionslot 2` in each, the slot MW2 multiplayer leaves
+    /// empty, which keeps its binding beside the inventory's. It is none of
+    /// the buttons the Minecraft map already uses (D-pad left and right and
+    /// Y pick from the hotbar) and not BACK (the scoreboard) or START.
+    #[test]
+    fn the_inventory_button_steals_nothing_in_any_layout() {
+        assert_eq!(INVENTORY_PAD_BUTTON, PadButton::DpadDown);
+        for (layout, name) in LAYOUTS.iter().enumerate() {
+            let binds = pad_layout(layout);
+            let bound = |button: PadButton| {
+                binds
+                    .iter()
+                    .find(|(b, _)| *b == button)
+                    .map(|(_, command)| *command)
+            };
+            assert_eq!(bound(INVENTORY_PAD_BUTTON), Some("+actionslot 2"), "{name}");
+            for taken in [PadButton::DpadLeft, PadButton::DpadRight, PadButton::North] {
+                assert_ne!(taken, INVENTORY_PAD_BUTTON, "{name}");
+            }
+            assert_eq!(bound(PadButton::Select), Some("+scores"), "{name}");
+            assert_ne!(INVENTORY_PAD_BUTTON, PadButton::Start);
+
+            let mut keys = KeyBinds::default();
+            keys.apply_defaults();
+            keys.apply_pad_layout(layout);
+            // Every MW2 binding of the layout is still there, unchanged.
+            for (button, command) in &binds {
+                assert_eq!(
+                    keys.binding_name(BindButton::Pad(*button)),
+                    Some(*command),
+                    "{name}: {button:?}"
+                );
+            }
+            assert_eq!(
+                keys.iter().filter(|(button, _)| button.is_pad()).count(),
+                binds.len(),
+                "{name}"
+            );
+            // The inventory sits beside it.
+            assert!(keys.opens_inventory(BindButton::Pad(INVENTORY_PAD_BUTTON)), "{name}");
+            let pads: Vec<_> = keys
+                .iter_minecraft()
+                .filter(|(button, _)| button.is_pad())
+                .collect();
+            assert_eq!(pads, [(BindButton::Pad(INVENTORY_PAD_BUTTON), inventory())], "{name}");
+        }
+    }
+
+    #[test]
+    fn e_opens_the_inventory_and_stays_use() {
+        let mut binds = KeyBinds::default();
+        binds.apply_defaults();
+        let e = BindButton::Key(KeyCode::KeyE);
+        assert_eq!(binds.binding_name(e), Some("+activate"));
+        assert!(binds.opens_inventory(e));
+        // Nothing else opens it.
+        assert_eq!(binds.iter_minecraft().count(), 2);
+        // Its gameplay iteration never carries the inventory.
+        assert!(binds.iter().all(|(_, id)| !is_minecraft_command(id)));
+    }
+
+    #[test]
+    fn rebinding_the_inventory_leaves_mw2_s_bindings_alone() {
+        let mut binds = KeyBinds::default();
+        binds.apply_defaults();
+        let id = inventory();
+        // As Options → Controls rebinds: the controller's, then the keys'.
+        binds.clear_command_on(id, true);
+        binds.set(BindButton::Pad(PadButton::North), id);
+        assert_eq!(binds.binding_name(BindButton::Pad(PadButton::North)), Some("weapnext"));
+        assert!(binds.opens_inventory(BindButton::Pad(PadButton::North)));
+        assert!(!binds.opens_inventory(BindButton::Pad(PadButton::DpadDown)));
+        assert_eq!(binds.binding_name(BindButton::Pad(PadButton::DpadDown)), Some("+actionslot 2"));
+        binds.clear_command_on(id, false);
+        binds.set(BindButton::Key(KeyCode::KeyI), id);
+        assert!(!binds.opens_inventory(BindButton::Key(KeyCode::KeyE)));
+        assert_eq!(binds.binding_name(BindButton::Key(KeyCode::KeyE)), Some("+activate"));
+        // An MW2 command bound onto the inventory's key replaces only MW2's.
+        binds.set(BindButton::Key(KeyCode::KeyI), command_id_lookup("+reload").unwrap());
+        assert!(binds.opens_inventory(BindButton::Key(KeyCode::KeyI)));
+        assert_eq!(binds.binding_name(BindButton::Key(KeyCode::KeyI)), Some("+reload"));
+        // `unbind` clears both layers.
+        assert!(binds.clear_button(BindButton::Key(KeyCode::KeyI)));
+        assert!(!binds.opens_inventory(BindButton::Key(KeyCode::KeyI)));
+        assert_eq!(binds.get(BindButton::Key(KeyCode::KeyI)), None);
+    }
+
+    #[test]
+    fn the_inventory_bindings_are_saved_and_read_back() {
+        let mut binds = KeyBinds::default();
+        binds.apply_defaults();
+        let lines = binds.list_lines();
+        assert!(lines.contains(&"bind e inventory".to_owned()), "{lines:?}");
+        assert!(lines.contains(&"bind e +activate".to_owned()), "{lines:?}");
+        assert!(lines.contains(&"bind DPAD_DOWN inventory".to_owned()), "{lines:?}");
+        assert!(lines.contains(&"bind DPAD_DOWN +actionslot 2".to_owned()), "{lines:?}");
+        let mut read = KeyBinds::default();
+        let script = std::iter::once("unbindall".to_owned()).chain(lines).collect::<Vec<_>>().join("\n");
+        assert!(read.apply_config_script(&script).is_empty());
+        assert_eq!(read.list_lines(), binds.list_lines());
+        assert!(read.opens_inventory(BindButton::Key(KeyCode::KeyE)));
+        assert_eq!(read.binding_name(BindButton::Key(KeyCode::KeyE)), Some("+activate"));
+    }
 }
