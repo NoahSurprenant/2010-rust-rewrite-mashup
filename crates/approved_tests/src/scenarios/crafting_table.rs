@@ -13,8 +13,11 @@
 //! a key rebound to Use, and sees the screen close when the table is broken,
 //! holds the crafted chest (drawn in the hand as its model) and throws it
 //! (drawn on the ground), and sees the screen close when the player is moved
-//! away. Last, the multiplayer options page shows the player key and its
-//! button copies the whole key.
+//! away. Then the multiplayer options page shows the player key and its
+//! button copies the whole key. Last, a controller the console drives
+//! (`pad`) opens the pause menu and still walks after it, and works the
+//! screens as the mouse does: opens the table and the inventory, walks the
+//! cursor, crafts a chest and takes it, quick-moves it and closes.
 
 use crate::runner::Event;
 
@@ -59,6 +62,9 @@ pub enum Expect {
     /// The player stands at least this far (MW2 units, along the ground)
     /// from where it stood at that checkpoint.
     MovedFrom(&'static str, f32),
+    /// The controller's cursor on the open screen (`inv5`, `grid3`,
+    /// `result`, `-`).
+    Pad(&'static str),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -260,6 +266,113 @@ pub const STEPS: &[Step] = &[
         label: "pad_walks_after_pause",
         expect: &[Expect::MovedFrom("pad_pause_closed", 64.0)],
     },
+    // The controller works the screens as the mouse does (the owner could
+    // not open the inventory or a crafting table with one): D-pad down opens
+    // the table in view with the cursor on the selected hotbar slot, the
+    // D-pad walks it, A picks up and puts down, X puts one down, A on the
+    // result takes the chest, Y quick-moves it, B closes. Away from the
+    // table D-pad down opens the inventory; inside it D-pad down moves the
+    // cursor, and START closes it without the pause menu.
+    Step {
+        commands: "pad stick left 0 0; tp 0 0 1494; wait 2s; mc fill 3 0 0 3 0 0 crafting_table; \
+                   mc clear; mc give oak_planks 16; wait 1s; look 0 23; wait 2t; pad d-down; wait 1s",
+        label: "pad_opens_table",
+        expect: &[
+            Expect::Screen(Screen::Table),
+            Expect::Menu(false),
+            Expect::Pad("inv0"),
+            Expect::Slot(PLANKS, "minecraft:oak_planks*16"),
+        ],
+    },
+    Step {
+        commands: "pad d-right; wait 0.3s; pad d-right; wait 0.3s; pad d-right; wait 0.3s; \
+                   pad d-right; wait 0.3s; pad d-right; wait 0.3s; pad a; wait 0.5s",
+        label: "pad_picks_planks",
+        expect: &[
+            Expect::Pad("inv5"),
+            Expect::Cursor("minecraft:oak_planks*16"),
+            Expect::Slot(PLANKS, "-"),
+        ],
+    },
+    // Up the backpack to the grid's corner, then one plank on each slot of
+    // its ring.
+    Step {
+        commands: "pad d-up; wait 0.3s; pad d-up; wait 0.3s; pad d-up; wait 0.3s; pad d-up; wait 0.3s; \
+                   pad x; wait 0.3s; pad d-left; wait 0.3s; pad x; wait 0.3s; pad d-left; wait 0.3s; \
+                   pad x; wait 0.3s; pad d-up; wait 0.3s; pad x; wait 0.3s; pad d-up; wait 0.3s; \
+                   pad x; wait 0.3s; pad d-right; wait 0.3s; pad x; wait 0.3s; pad d-right; wait 0.3s; \
+                   pad x; wait 0.3s; pad d-down; wait 0.3s; pad x; wait 0.5s",
+        label: "pad_chest_recipe",
+        expect: &[
+            Expect::Pad("grid5"),
+            Expect::Grid("minecraft:oak_planks*1", 8),
+            Expect::Grid("-", 1),
+            Expect::Result("minecraft:chest*1"),
+            Expect::Cursor("minecraft:oak_planks*8"),
+        ],
+    },
+    Step {
+        commands: "pad d-down; wait 0.3s; pad d-down; wait 0.3s; pad a; wait 0.5s",
+        label: "pad_planks_put_back",
+        expect: &[
+            Expect::Pad("inv13"),
+            Expect::Cursor("-"),
+            Expect::Slot(13, "minecraft:oak_planks*8"),
+        ],
+    },
+    Step {
+        commands: "pad d-up; wait 0.3s; pad d-right; wait 0.3s; pad a; wait 0.5s",
+        label: "pad_takes_chest",
+        expect: &[
+            Expect::Pad("result"),
+            Expect::Cursor("minecraft:chest*1"),
+            Expect::Result("-"),
+            Expect::Grid("-", 9),
+        ],
+    },
+    Step {
+        commands: "pad d-down; wait 0.3s; pad a; wait 0.5s",
+        label: "pad_places_chest",
+        expect: &[
+            Expect::Pad("inv15"),
+            Expect::Cursor("-"),
+            Expect::Slot(15, "minecraft:chest*1"),
+        ],
+    },
+    // Y: a shift click, from the backpack to the hotbar's first free slot.
+    Step {
+        commands: "pad y; wait 0.5s",
+        label: "pad_quick_moves",
+        expect: &[
+            Expect::Slot(15, "-"),
+            Expect::Slot(PLANKS, "minecraft:chest*1"),
+        ],
+    },
+    Step {
+        commands: "pad b; wait 1s",
+        label: "pad_b_closes",
+        expect: &[
+            Expect::Screen(Screen::None),
+            Expect::Menu(false),
+            Expect::Pad("-"),
+            Expect::Slot(13, "minecraft:oak_planks*8"),
+            Expect::Slot(PLANKS, "minecraft:chest*1"),
+        ],
+    },
+    Step {
+        commands: "look 180 23; wait 2t; pad d-down; wait 1s; pad d-up; wait 0.3s; pad d-down; wait 0.5s",
+        label: "pad_opens_inventory",
+        expect: &[
+            Expect::TableInView(false),
+            Expect::Screen(Screen::Inventory),
+            Expect::Pad("inv0"),
+        ],
+    },
+    Step {
+        commands: "pad start; wait 1s",
+        label: "pad_start_closes",
+        expect: &[Expect::Screen(Screen::None), Expect::Menu(false)],
+    },
     Step {
         commands: "pad stick left 0 0; finish_run",
         label: "",
@@ -432,6 +545,7 @@ fn failure(state: &Event, expect: &Expect, states: &[Event]) -> Option<String> {
             format!("{id} on the ground with a model"),
             format!("ground={} no_model={}", field("ground"), field("no_model")),
         ),
+        Expect::Pad(slot) => (field("pad") == *slot, format!("pad={slot}"), field("pad")),
         Expect::MovedFrom(label, min) => {
             let then = states
                 .iter()
@@ -479,6 +593,18 @@ mod tests {
         let mut centre = vec!["-"; 9];
         centre[4] = "minecraft:oak_planks*8";
         let table = "table@1,2,3";
+        // A controller step's line: the screen, its cursor, and the slots
+        // that hold something besides the guns.
+        let pad_line = |label: &str, screen: &str, grid: &str, result: &str, cursor: &str, pad: &str, held: &[(usize, &str)]| {
+            let mut s: Vec<String> = vec!["-".into(); 41];
+            for (at, stack) in held {
+                s[*at] = (*stack).into();
+            }
+            state(&format!(
+                "label={label} stance=stand menu=false table_in_view=1,2,3 screen={screen} grid={grid} result={result} cursor={cursor} pad={pad} slots={guns},{}",
+                s[5..].join(",")
+            ))
+        };
         let line = |label: &str,
                     stance: &str,
                     screen: &str,
@@ -682,6 +808,20 @@ mod tests {
                 "label=pad_walks_after_pause stance=stand menu=false origin=37,180,1494 screen=none grid={empty4} result=- cursor=- slots={}",
                 slots("minecraft:oak_planks*7", "")
             )),
+            pad_line("pad_opens_table", table, &empty9, "-", "-", "inv0", &[(PLANKS, "minecraft:oak_planks*16")]),
+            pad_line("pad_picks_planks", table, &empty9, "-", "minecraft:oak_planks*16", "inv5", &[]),
+            pad_line("pad_chest_recipe", table, &ring, "minecraft:chest*1", "minecraft:oak_planks*8", "grid5", &[]),
+            pad_line("pad_planks_put_back", table, &ring, "minecraft:chest*1", "-", "inv13", &[(13, "minecraft:oak_planks*8")]),
+            pad_line("pad_takes_chest", table, &empty9, "-", "minecraft:chest*1", "result", &[(13, "minecraft:oak_planks*8")]),
+            pad_line("pad_places_chest", table, &empty9, "-", "-", "inv15", &[(13, "minecraft:oak_planks*8"), (15, "minecraft:chest*1")]),
+            pad_line("pad_quick_moves", table, &empty9, "-", "-", "inv15", &[(13, "minecraft:oak_planks*8"), (PLANKS, "minecraft:chest*1")]),
+            pad_line("pad_b_closes", "none", &empty4, "-", "-", "-", &[(13, "minecraft:oak_planks*8"), (PLANKS, "minecraft:chest*1")]),
+            {
+                let mut away = pad_line("pad_opens_inventory", "inventory", &empty4, "-", "-", "inv0", &[(13, "minecraft:oak_planks*8"), (PLANKS, "minecraft:chest*1")]);
+                away.fields.insert("table_in_view".into(), "-".into());
+                away
+            },
+            pad_line("pad_start_closes", "none", &empty4, "-", "-", "-", &[(13, "minecraft:oak_planks*8"), (PLANKS, "minecraft:chest*1")]),
         ]
     }
 
@@ -723,6 +863,33 @@ mod tests {
             .map(|c| c.label)
             .collect();
         assert_eq!(failed, ["pad_pause_opened"]);
+    }
+
+    /// The owner's bug: the controller could neither open the screens nor
+    /// work them.
+    #[test]
+    fn a_controller_that_does_not_open_or_work_the_table_fails() {
+        let failed = |label: &str, field: &str, value: &str| {
+            let mut states = passing_states();
+            let at = states.iter().position(|s| s.get("label") == Some(label)).unwrap();
+            states[at].fields.insert(field.into(), value.into());
+            judge(&states)
+                .into_iter()
+                .filter(|c| !c.failures.is_empty())
+                .map(|c| c.label)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(failed("pad_opens_table", "screen", "none"), ["pad_opens_table"]);
+        assert_eq!(failed("pad_picks_planks", "pad", "inv4"), ["pad_picks_planks"]);
+        assert_eq!(failed("pad_chest_recipe", "result", "-"), ["pad_chest_recipe"]);
+        assert_eq!(failed("pad_takes_chest", "cursor", "-"), ["pad_takes_chest"]);
+        assert_eq!(failed("pad_opens_inventory", "screen", "none"), ["pad_opens_inventory"]);
+        assert_eq!(failed("pad_start_closes", "menu", "true"), ["pad_start_closes"]);
+        let mut states = passing_states();
+        states.iter_mut().for_each(|s| {
+            s.fields.remove("pad");
+        });
+        assert!(judge(&states).iter().any(|c| c.label == "pad_opens_table" && !c.failures.is_empty()));
     }
 
     fn key_lines(copied: &str, whoami: &str, shown: &str) -> Vec<Event> {
