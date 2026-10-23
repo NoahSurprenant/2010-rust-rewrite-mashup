@@ -154,6 +154,12 @@ jobs:
       # loot only with Minecraft's data JAR, which these runners lack).
       - name: Minecraft block drop unit tests (render_anim minecraft_entities)
         run: cargo test --profile play -p render_anim --lib minecraft_entities::tests
+      # Vanilla's tool rules for drops and break speed: which tool and tier a
+      # block needs (fixtures here; the data JAR's tags and Blocks class, and
+      # every way a block breaks through its loot, only where the JAR is),
+      # guns as an empty hand, a knife as one, a blast as TNT's.
+      - name: Minecraft tool rules unit tests (render_anim minecraft_tools)
+        run: cargo test --profile play -p render_anim --lib minecraft_tools
       # The starting map: its slot, and drawn in hand (pose, pixels, marker).
       - name: Minecraft map in hand and inventory unit tests (render_anim minecraft_hand, minecraft_inventory)
         run: |

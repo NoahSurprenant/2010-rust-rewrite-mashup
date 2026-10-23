@@ -8,7 +8,12 @@
 //! click with planks the host gave it on its `mc give`) and one it breaks
 //! by hand; after the host's server dropped items of its own, the client
 //! must break an oak log by hand and stone with a pickaxe and pick up the
-//! log and the cobblestone. Far from the host, in a walled arena, a husk
+//! log and the cobblestone. Far from the client, in a room of its own, the
+//! host must break blocks as vanilla's tool rules say: stone by hand drops
+//! nothing and an oak log a log; iron ore with a wooden pickaxe nothing and
+//! with a stone pickaxe raw iron; its gun counts as an empty hand (stone
+//! nothing, a log a log); a frag grenade's blast drops stone's cobblestone.
+//! Far from the host, in a walled arena, a husk
 //! summoned beside the client must reach the client with the host's id and
 //! stand where the host has it, hurt the client, and die to the client's
 //! gun as the host sees;
@@ -52,6 +57,12 @@ pub const PARTS: Parts = &[
             "client_picks_up_drop",
             "client_breaks_log_and_stone",
             "client_picks_up_log_and_cobblestone",
+            "host_hand_stone_drops_nothing",
+            "host_hand_log_drops_log",
+            "host_wooden_pickaxe_iron_ore_drops_nothing",
+            "host_stone_pickaxe_iron_ore_drops_raw_iron",
+            "host_gun_is_an_empty_hand",
+            "host_grenade_stone_drops_cobblestone",
             "restart_same_seed",
             "restart_world_kept",
             "restart_host_inventory",
@@ -100,6 +111,9 @@ pub const STEP_SECS: u64 = 120;
 pub const SYNC_SECS: u64 = 60;
 
 const GOLD: [i32; 3] = [2, 5, 0];
+/// Where the host's feet stand in its room for the tool drops, 40 blocks
+/// west of the spawn (the client's corridor is at the spawn).
+const ROOM: [i32; 3] = [-40, 0, 0];
 const DIAMOND: [i32; 3] = [3, 6, 0];
 /// A stone platform far out of the host's view (320 blocks east, 60 up), and
 /// the map point (36 units a block) just over its middle.
@@ -300,6 +314,7 @@ fn world_steps(pair: &mut Pair, facts: &mut Facts, client: &Event) -> Result<(),
     }
     facts.keep("c_picked", picked);
     block_drops(pair, facts, feet)?;
+    host_tool_drops(pair, facts)?;
     let last = pair.ask(true, "key 1; wait 1s; mc state c_final", "c_final", step)?;
     facts.keep("c_final", last);
     Ok(())
@@ -398,6 +413,137 @@ fn block_drops(pair: &mut Pair, facts: &mut Facts, feet: [i32; 3]) -> Result<(),
         facts.keep("h_drops_ground", ground);
     }
     facts.keep("c_drops_picked", picked);
+    Ok(())
+}
+
+/// How many items of `id` a line's comma list `field` holds, stacks
+/// summed (`items` of a census, `slots` of a state line).
+fn stack_count(event: &Event, field: &str, id: &str) -> u32 {
+    let stack = format!("{id}*");
+    event
+        .get(field)
+        .unwrap_or("-")
+        .split(',')
+        .filter_map(|s| s.strip_prefix(&stack))
+        .filter_map(|n| n.parse::<u32>().ok())
+        .sum()
+}
+
+/// How many items of `id` the host had at checkpoint `label`: on the
+/// ground within eight blocks of it (the census `label`) and in its
+/// inventory (the state line `label_inv`, as a drop can roll to its feet
+/// and be picked up).
+fn host_count(facts: &Facts, label: &str, id: &str) -> Result<u32, String> {
+    let ground = stack_count(line(facts, label)?, "items", id);
+    let held = stack_count(line(facts, &format!("{label}_inv"))?, "slots", id);
+    Ok(ground + held)
+}
+
+/// The host's own player, in a room of its own (`ROOM`, its far wall
+/// obsidian, which nothing here breaks: a long press goes no further), breaks
+/// blocks two along +X with what it holds, and each break's drops are
+/// counted on the ground (a census before and after, `h_tools0`..): stone
+/// by hand (nothing), an oak log by hand (a log), iron ore with a wooden
+/// pickaxe (nothing; it needs a stone one) and with a stone pickaxe (raw
+/// iron), stone and a log shot with its gun (an empty hand: nothing, a log),
+/// and a frag grenade thrown at a block of stone eight along (vanilla's
+/// explosion loot: cobblestone, one stone in four).
+fn host_tool_drops(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
+    let step = Duration::from_secs(STEP_SECS);
+    let gone = Duration::from_secs(40);
+    let [x, y, z] = ROOM;
+    let fill = |from: [i32; 3], to: [i32; 3], block: &str| {
+        format!("mc set {} {} {} {} {} {} {block}", from[0], from[1], from[2], to[0], to[1], to[2])
+    };
+    let tp = format!("tp {} {} {}", x * 36, -z * 36, y * 36 + 10);
+    let log = add(ROOM, [2, 0, 0]);
+    let stone = add(ROOM, [2, 1, 0]);
+    let room = [
+        fill([x - 2, y - 1, z - 4], [x + 14, y - 1, z + 4], "stone"),
+        fill([x - 2, y, z - 4], [x + 14, y + 8, z + 4], "air"),
+        fill([x - 2, y + 9, z - 4], [x + 14, y + 9, z + 4], "stone"),
+        fill(add(ROOM, [3, 0, 0]), add(ROOM, [3, 1, 0]), "obsidian"),
+        set(log, "oak_log"),
+        set(stone, "stone"),
+    ]
+    .join("; ");
+    let script = format!("{room}; wait 1s; {tp}; wait 2s; mc give wooden_pickaxe 1; wait 2s; mc state h_room");
+    let room = pair.ask(false, &script, "h_room", step)?;
+    let room = facts.keep("h_room", room);
+    let pickaxe = hotbar_slot(&room, "minecraft:wooden_pickaxe*1").ok_or("the host's pickaxe is not on its hotbar")?;
+    let hand = hotbar_slot(&room, "-").ok_or("no empty hotbar slot on the host")?;
+    // A checkpoint: the host's inventory (answered at once), then the
+    // ground around it (answered on the world's next update).
+    let count = |pair: &mut Pair, facts: &mut Facts, label: &str| -> Result<(), String> {
+        let inv = format!("{label}_inv");
+        let census = pair.ask(false, &format!("mc state {inv}; mc mobs {label} -"), label, step)?;
+        facts.keep(label, census);
+        let held = pair.host.seen.get(&inv).cloned().ok_or_else(|| format!("no `{inv}` answer"))?;
+        facts.keep(&inv, held);
+        Ok(())
+    };
+    count(pair, facts, "h_tools0")?;
+    // Stone, then the log under it, by hand.
+    pair.host.send(&format!("key {}; wait 1s; look 0 0; wait 0.2s; key mouse1 10", hand + 1))?;
+    let broke = pair.poll_block(false, "h_hand_stone", stone, "air", gone)?;
+    facts.notes.insert("h_hand_stone", broke);
+    pair.host.send("wait 2s")?;
+    count(pair, facts, "h_tools1")?;
+    pair.host.send("look 0 23; wait 0.2s; key mouse1 5")?;
+    let broke = pair.poll_block(false, "h_hand_log", log, "air", gone)?;
+    facts.notes.insert("h_hand_log", broke);
+    pair.host.send("wait 2s")?;
+    count(pair, facts, "h_tools2")?;
+    // Iron ore with the wooden pickaxe (it breaks, slowly), then with a
+    // stone one.
+    pair.host.send(&format!(
+        "{}; wait 1s; key {}; wait 1s; look 0 0; wait 0.2s; key mouse1 10",
+        set(stone, "iron_ore"),
+        pickaxe + 1
+    ))?;
+    let broke = pair.poll_block(false, "h_wood_iron", stone, "air", gone)?;
+    facts.notes.insert("h_wood_iron", broke);
+    pair.host.send("wait 2s")?;
+    count(pair, facts, "h_tools3")?;
+    let script = format!("{}; mc give stone_pickaxe 1; wait 2s; mc state h_stone_pickaxe", set(stone, "iron_ore"));
+    let tools = pair.ask(false, &script, "h_stone_pickaxe", step)?;
+    let tools = facts.keep("h_stone_pickaxe", tools);
+    let better = hotbar_slot(&tools, "minecraft:stone_pickaxe*1").ok_or("the host's stone pickaxe is not on its hotbar")?;
+    pair.host.send(&format!("key {}; wait 1s; look 0 0; wait 0.2s; key mouse1 3", better + 1))?;
+    let broke = pair.poll_block(false, "h_stone_iron", stone, "air", gone)?;
+    facts.notes.insert("h_stone_iron", broke);
+    pair.host.send("wait 2s")?;
+    count(pair, facts, "h_tools4")?;
+    // Its gun (a bullet gun, not the launcher), at stone and at a log.
+    let script = format!("{}; {}; wait 1s; mc mobs h_guns -", set(log, "oak_log"), set(stone, "stone"));
+    let guns = pair.ask(false, &script, "h_guns", step)?;
+    let gun = mob_steps::guns(&guns).first().copied().ok_or("the host holds no bullet gun")?;
+    facts.keep("h_guns", guns);
+    pair.host.send(&format!("key {gun}; wait 2s; look 0 0; wait 0.2s; key mouse1 3"))?;
+    let broke = pair.poll_block(false, "h_shot_stone", stone, "air", gone)?;
+    facts.notes.insert("h_shot_stone", broke);
+    pair.host.send("look 0 23; wait 0.2s; key mouse1 3")?;
+    let broke = pair.poll_block(false, "h_shot_log", log, "air", gone)?;
+    facts.notes.insert("h_shot_log", broke);
+    pair.host.send("wait 2s")?;
+    count(pair, facts, "h_tools5")?;
+    // A frag grenade thrown level at a block of stone eleven along, the
+    // obsidian out of its way (it would bounce back to the host), counted
+    // from six along: the ground within eight blocks of the blast.
+    pair.host.send(&format!(
+        "{}; {}; wait 1s; {tp}; wait 2s; look 0 0; wait 0.5s",
+        fill(add(ROOM, [2, 0, 0]), add(ROOM, [3, 1, 0]), "air"),
+        fill(add(ROOM, [11, 0, -2]), add(ROOM, [14, 3, 2]), "stone")
+    ))?;
+    count(pair, facts, "h_tools6")?;
+    let near = add(ROOM, [6, 0, 0]);
+    pair.host.send(&format!(
+        "hold +frag; wait 0.5s; release +frag; wait 8s; tp {} {} {}; wait 3s",
+        near[0] * 36,
+        -near[2] * 36,
+        near[1] * 36 + 10
+    ))?;
+    count(pair, facts, "h_tools7")?;
     Ok(())
 }
 
@@ -552,6 +698,17 @@ fn mob(facts: &Facts, label: &str) -> Result<mob_steps::Mob, String> {
         .ok_or_else(|| format!("`{label}` lists no mob {id}"))
 }
 
+/// That a break dropped `want` of `id`: the host's count (`host_count`)
+/// between two checkpoints.
+fn dropped(facts: &Facts, before: &str, after: &str, id: &str, want: u32) -> Result<(), String> {
+    let (was, is) = (host_count(facts, before, id)?, host_count(facts, after, id)?);
+    if is == was + want {
+        Ok(())
+    } else {
+        Err(format!("{id} around the host: {was} at `{before}`, {is} at `{after}`; want {want} more"))
+    }
+}
+
 fn want(got: &str, want: &str, what: &str) -> Result<(), String> {
     if got == want {
         Ok(())
@@ -563,7 +720,7 @@ fn want(got: &str, want: &str, what: &str) -> Result<(), String> {
 /// Judges what both games printed.
 pub fn judge(facts: &Facts) -> Vec<Check> {
     type Rule = fn(&Facts) -> Result<(), String>;
-    let rules: [(&'static str, Rule); 25] = [
+    let rules: [(&'static str, Rule); 31] = [
         ("seed_shared", |f| {
             let host = line(f, "h_ready")?.get("seed").unwrap_or("-");
             let client = line(f, "c_ready")?.get("seed").unwrap_or("-");
@@ -641,6 +798,37 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
                     missing.join(" or "),
                     slots(picked).join(",")
                 ))
+            }
+        }),
+        ("host_hand_stone_drops_nothing", |f| {
+            want(note(f, "h_hand_stone")?, "air", "the host's stone")?;
+            dropped(f, "h_tools0", "h_tools1", "minecraft:cobblestone", 0)
+        }),
+        ("host_hand_log_drops_log", |f| {
+            want(note(f, "h_hand_log")?, "air", "the host's log")?;
+            dropped(f, "h_tools1", "h_tools2", "minecraft:oak_log", 1)
+        }),
+        ("host_wooden_pickaxe_iron_ore_drops_nothing", |f| {
+            want(note(f, "h_wood_iron")?, "air", "the host's iron ore")?;
+            dropped(f, "h_tools2", "h_tools3", "minecraft:raw_iron", 0)
+        }),
+        ("host_stone_pickaxe_iron_ore_drops_raw_iron", |f| {
+            want(note(f, "h_stone_iron")?, "air", "the host's iron ore")?;
+            dropped(f, "h_tools3", "h_tools4", "minecraft:raw_iron", 1)
+        }),
+        ("host_gun_is_an_empty_hand", |f| {
+            want(note(f, "h_shot_stone")?, "air", "the host's shot stone")?;
+            want(note(f, "h_shot_log")?, "air", "the host's shot log")?;
+            dropped(f, "h_tools4", "h_tools5", "minecraft:cobblestone", 0)?;
+            dropped(f, "h_tools4", "h_tools5", "minecraft:oak_log", 1)
+        }),
+        ("host_grenade_stone_drops_cobblestone", |f| {
+            let before = host_count(f, "h_tools6", "minecraft:cobblestone")?;
+            let after = host_count(f, "h_tools7", "minecraft:cobblestone")?;
+            if after > before {
+                Ok(())
+            } else {
+                Err(format!("cobblestone around the host: {before} before the grenade, {after} after"))
             }
         }),
         ("client_ground_far_from_host", |f| {
@@ -924,8 +1112,20 @@ mod tests {
             ("h_plank_gone", "air"),
             ("h_stone_gone", "air"),
             ("h_log_gone", "air"),
+            ("h_hand_stone", "air"),
+            ("h_hand_log", "air"),
+            ("h_wood_iron", "air"),
+            ("h_stone_iron", "air"),
+            ("h_shot_stone", "air"),
+            ("h_shot_log", "air"),
         ] {
             f.notes.insert(key, value.into());
+        }
+        for (label, items) in host_tool_censuses() {
+            f.lines.insert(label.into(), event(&format!("label={label} items={items}")));
+            // Nothing picked up but the raw iron, after its break.
+            let held = if label >= "h_tools4" { "minecraft:torch*7,minecraft:raw_iron*1" } else { "minecraft:torch*7" };
+            f.lines.insert(format!("{label}_inv"), event(&format!("label={label}_inv slots={held}")));
         }
         let census = |label: &str, at: &str, health: u32| {
             event(&format!(
@@ -957,6 +1157,69 @@ mod tests {
             .unwrap(),
         );
         f
+    }
+
+    /// The host's ground as the tool drops leave it, census by census.
+    fn host_tool_censuses() -> [(&'static str, &'static str); 8] {
+        [
+            ("h_tools0", "-"),
+            ("h_tools1", "-"),
+            ("h_tools2", "minecraft:oak_log*1"),
+            ("h_tools3", "minecraft:oak_log*1"),
+            ("h_tools4", "minecraft:oak_log*1"),
+            ("h_tools5", "minecraft:oak_log*2,minecraft:dirt*1"),
+            ("h_tools6", "minecraft:oak_log*2"),
+            ("h_tools7", "minecraft:oak_log*2,minecraft:cobblestone*1,minecraft:cobblestone*2"),
+        ]
+    }
+
+    #[test]
+    fn counts_sum_the_stacks_on_the_ground_and_held() {
+        let e = event("label=x items=minecraft:cobblestone*1,minecraft:oak_log*3,minecraft:cobblestone*2");
+        assert_eq!(stack_count(&e, "items", "minecraft:cobblestone"), 3);
+        assert_eq!(stack_count(&e, "items", "minecraft:oak_log"), 3);
+        assert_eq!(stack_count(&e, "items", "minecraft:oak"), 0);
+        assert_eq!(stack_count(&event("label=x items=-"), "items", "minecraft:oak_log"), 0);
+        let mut f = Facts::default();
+        f.lines.insert("h".into(), e);
+        f.lines.insert("h_inv".into(), event("label=h_inv slots=iw4:weapon/1*1,minecraft:oak_log*2,-"));
+        assert_eq!(host_count(&f, "h", "minecraft:oak_log"), Ok(5));
+        assert!(host_count(&f, "g", "minecraft:oak_log").is_err());
+    }
+
+    #[test]
+    fn stone_that_drops_by_hand_or_by_gun_fails() {
+        let mut f = passing();
+        f.lines.insert("h_tools1".into(), event("label=h_tools1 items=minecraft:cobblestone*1"));
+        f.lines.insert("h_tools5".into(), event("label=h_tools5 items=minecraft:oak_log*2,minecraft:cobblestone*1"));
+        let failed: Vec<_> = judge(&f)
+            .into_iter()
+            .filter(|c| !c.failures.is_empty())
+            .map(|c| (c.label, c.failures))
+            .collect();
+        let labels: Vec<_> = failed.iter().map(|(label, _)| *label).collect();
+        assert_eq!(labels, ["host_hand_stone_drops_nothing", "host_gun_is_an_empty_hand"], "{failed:?}");
+        assert_eq!(
+            failed[0].1,
+            ["minecraft:cobblestone around the host: 0 at `h_tools0`, 1 at `h_tools1`; want 0 more"]
+        );
+    }
+
+    #[test]
+    fn iron_ore_without_its_raw_iron_or_a_grenade_without_cobblestone_fails() {
+        let mut f = passing();
+        // The raw iron neither on the ground nor picked up.
+        f.lines.insert("h_tools4_inv".into(), event("label=h_tools4_inv slots=minecraft:torch*7"));
+        f.lines.insert("h_tools7".into(), event("label=h_tools7 items=minecraft:oak_log*2"));
+        let failed: Vec<_> = judge(&f)
+            .into_iter()
+            .filter(|c| !c.failures.is_empty())
+            .map(|c| c.label)
+            .collect();
+        assert_eq!(
+            failed,
+["host_stone_pickaxe_iron_ore_drops_raw_iron", "host_grenade_stone_drops_cobblestone"]
+        );
     }
 
     #[test]

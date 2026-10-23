@@ -46,5 +46,6 @@ mod minecraft_minimap;
 mod minecraft_mp;
 mod minecraft_settings;
 mod minecraft_sounds;
+mod minecraft_tools;
 pub mod minecraft_world;
 pub mod skate;

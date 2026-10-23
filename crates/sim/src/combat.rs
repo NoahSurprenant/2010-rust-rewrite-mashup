@@ -1357,7 +1357,12 @@ pub(crate) fn phase_trace(
                 && crate::voxel::active()
             {
                 let body = facts.location_scale(4).max(1.0);
-                crate::voxel::push_shot(segment.end, segment.normal, scaled.max(0) as f32 * body);
+                crate::voxel::push_shot(
+                    segment.end,
+                    segment.normal,
+                    scaled.max(0) as f32 * body,
+                    crate::voxel::ShotBy::Bullet,
+                );
             }
             if bullet_process_on_hit(segment.collider) {
                 if let Some(world_event) = entity_iw4::bullet_hit_event(
@@ -1607,7 +1612,7 @@ fn fire_weapon_melee(
         && world.publishes_snapshot()
         && crate::voxel::active()
     {
-        crate::voxel::push_shot(segment.end, segment.normal, amount as f32);
+        crate::voxel::push_shot(segment.end, segment.normal, amount as f32, crate::voxel::ShotBy::Melee);
     }
     let (kind, other) = match segment.collider {
         Some(ColliderId::Player { client, .. }) => {

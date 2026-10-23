@@ -108,9 +108,10 @@ pub fn revision() -> u64 {
 /// world's owner to apply.
 #[derive(Clone, Copy, Debug)]
 pub enum VoxelEvent {
-    /// A bullet struck this block, with the damage it would have done: the
-    /// weapon's, at that range, after penetration.
-    Shot { block: [i32; 3], damage: f32 },
+    /// A bullet (or a knife, or a hand mining) struck this block, with the
+    /// damage it would have done: the weapon's, at that range, after
+    /// penetration.
+    Shot { block: [i32; 3], damage: f32, by: ShotBy },
     /// An explosion went off here, in blocks.
     Explosion { center: [f64; 3] },
     /// A bullet struck the mob with this key, with the damage it would have
@@ -126,11 +127,20 @@ pub enum VoxelEvent {
     Ray { from: [f64; 3], to: [f64; 3], damage: f32 },
 }
 
+/// What struck a block: a block it breaks drops its loot as broken by it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShotBy {
+    Bullet,
+    Melee,
+    /// The world owner's own player mining by hand (with what it holds).
+    Hand,
+}
+
 static EVENTS: std::sync::Mutex<Vec<VoxelEvent>> = std::sync::Mutex::new(Vec::new());
 
-/// A bullet impact at map point `end` on a surface facing `normal`: the
-/// block behind the surface.
-pub fn push_shot(end: [f32; 3], normal: [f32; 3], damage: f32) {
+/// A bullet impact (or melee hit, `by`) at map point `end` on a surface
+/// facing `normal`: the block behind the surface.
+pub fn push_shot(end: [f32; 3], normal: [f32; 3], damage: f32, by: ShotBy) {
     let Ok(world) = WORLD.read() else {
         return;
     };
@@ -142,7 +152,7 @@ pub fn push_shot(end: [f32; 3], normal: [f32; 3], damage: f32) {
     let n = [f64::from(normal[0]), f64::from(normal[2]), -f64::from(normal[1])];
     let block = std::array::from_fn(|k| (p[k] - n[k] * 0.05).floor() as i32);
     if let Ok(mut events) = EVENTS.lock() {
-        events.push(VoxelEvent::Shot { block, damage });
+        events.push(VoxelEvent::Shot { block, damage, by });
     }
 }
 
