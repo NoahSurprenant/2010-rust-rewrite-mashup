@@ -56,6 +56,9 @@ pub enum Expect {
     /// An item of this id lies in the world, drawn as a model (it is not
     /// in `no_model`).
     Dropped(&'static str),
+    /// The player stands at least this far (MW2 units, along the ground)
+    /// from where it stood at that checkpoint.
+    MovedFrom(&'static str, f32),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -234,8 +237,31 @@ pub const STEPS: &[Step] = &[
         label: "options_closed",
         expect: &[Expect::Menu(false), Expect::Screen(Screen::None)],
     },
+    // The controller walks again after its Start button opened the pause
+    // menu and its B button closed it, with the left stick resting a little
+    // off centre (0.1, 0.1: outside the 0.12 deadzone, as a worn stick
+    // rests). A stick had to read exactly zero after a menu before it moved
+    // the player again, and this one never did: the owner's controller
+    // stopped walking while it still turned the view. Back over the arena,
+    // on a wider floor, the player strafes left with the stick.
     Step {
-        commands: "finish_run",
+        commands: "tp 0 0 1494; wait 1s; mc fill -8 -1 -8 8 -1 8 stone; mc fill -8 0 -8 8 3 8 air; \
+                   wait 1s; pad stick left 0.1 0.1; wait 0.5s; pad start; wait 1s",
+        label: "pad_pause_opened",
+        expect: &[Expect::Menu(true)],
+    },
+    Step {
+        commands: "pad b; wait 1s",
+        label: "pad_pause_closed",
+        expect: &[Expect::Menu(false), Expect::Screen(Screen::None)],
+    },
+    Step {
+        commands: "pad stick left -1 0; wait 1s; pad stick left 0.1 0.1; wait 0.5s",
+        label: "pad_walks_after_pause",
+        expect: &[Expect::MovedFrom("pad_pause_closed", 64.0)],
+    },
+    Step {
+        commands: "pad stick left 0 0; finish_run",
         label: "",
         expect: &[],
     },
@@ -269,7 +295,7 @@ pub fn judge(states: &[Event]) -> Vec<Check> {
                 Some(state) => step
                     .expect
                     .iter()
-                    .filter_map(|expect| failure(state, expect))
+                    .filter_map(|expect| failure(state, expect, states))
                     .collect(),
             };
             Check {
@@ -326,7 +352,13 @@ fn list(state: &Event, key: &str) -> Vec<String> {
         .collect()
 }
 
-fn failure(state: &Event, expect: &Expect) -> Option<String> {
+/// Where the player stood (`origin=x,y,z`, MW2 units).
+fn origin(state: &Event) -> Option<[f32; 3]> {
+    let mut parts = state.get("origin")?.split(',').map(|v| v.parse::<f32>().ok());
+    Some([parts.next()??, parts.next()??, parts.next()??])
+}
+
+fn failure(state: &Event, expect: &Expect, states: &[Event]) -> Option<String> {
     let field = |key: &str| state.get(key).unwrap_or("").to_owned();
     let (held, want, got) = match expect {
         Expect::Screen(screen) => {
@@ -400,6 +432,20 @@ fn failure(state: &Event, expect: &Expect) -> Option<String> {
             format!("{id} on the ground with a model"),
             format!("ground={} no_model={}", field("ground"), field("no_model")),
         ),
+        Expect::MovedFrom(label, min) => {
+            let then = states
+                .iter()
+                .find(|e| e.get("label") == Some(*label))
+                .and_then(origin);
+            let moved = then
+                .zip(origin(state))
+                .map(|(a, b)| (a[0] - b[0]).hypot(a[1] - b[1]));
+            (
+                moved.is_some_and(|moved| moved >= *min),
+                format!("moved at least {min} units from {label}"),
+                moved.map_or_else(|| "no origin".to_owned(), |moved| format!("{moved:.0}")),
+            )
+        }
     };
     (!held).then(|| format!("want {want}, got {got}"))
 }
@@ -624,7 +670,59 @@ mod tests {
                 "-",
                 slots("minecraft:oak_planks*7", ""),
             ),
+            state(&format!(
+                "label=pad_pause_opened stance=stand menu=true origin=37,0,1494 screen=none grid={empty4} result=- cursor=- slots={}",
+                slots("minecraft:oak_planks*7", "")
+            )),
+            state(&format!(
+                "label=pad_pause_closed stance=stand menu=false origin=37,0,1494 screen=none grid={empty4} result=- cursor=- slots={}",
+                slots("minecraft:oak_planks*7", "")
+            )),
+            state(&format!(
+                "label=pad_walks_after_pause stance=stand menu=false origin=37,180,1494 screen=none grid={empty4} result=- cursor=- slots={}",
+                slots("minecraft:oak_planks*7", "")
+            )),
         ]
+    }
+
+    fn with_origin(mut states: Vec<Event>, label: &str, origin: &str) -> Vec<Event> {
+        let at = states
+            .iter()
+            .position(|s| s.get("label") == Some(label))
+            .unwrap();
+        states[at].fields.insert("origin".into(), origin.into());
+        states
+    }
+
+    /// The owner's bug: the stick that never read zero after the pause
+    /// menu left the player where it was.
+    #[test]
+    fn a_controller_that_does_not_walk_after_the_pause_menu_fails() {
+        let states = with_origin(passing_states(), "pad_walks_after_pause", "37,10,1494");
+        let failed: Vec<_> = judge(&states)
+            .into_iter()
+            .filter(|c| !c.failures.is_empty())
+            .map(|c| c.label)
+            .collect();
+        assert_eq!(failed, ["pad_walks_after_pause"]);
+        let states = with_origin(passing_states(), "pad_walks_after_pause", "-");
+        assert!(judge(&states).iter().any(|c| !c.failures.is_empty()));
+    }
+
+    #[test]
+    fn a_pause_menu_the_controller_did_not_open_fails() {
+        let mut states = passing_states();
+        let at = states
+            .iter()
+            .position(|s| s.get("label") == Some("pad_pause_opened"))
+            .unwrap();
+        states[at].fields.insert("menu".into(), "false".into());
+        let failed: Vec<_> = judge(&states)
+            .into_iter()
+            .filter(|c| !c.failures.is_empty())
+            .map(|c| c.label)
+            .collect();
+        assert_eq!(failed, ["pad_pause_opened"]);
     }
 
     fn key_lines(copied: &str, whoami: &str, shown: &str) -> Vec<Event> {
@@ -663,6 +761,8 @@ mod tests {
         let z = crate::scenarios::mob_steps::block_centre_map([0, 40, 0])[2];
         assert!(STEPS[0].commands.contains("mc set -1 40 -2 4 40 2 stone"));
         assert!(STEPS[0].commands.contains(&format!("tp 0 0 {z};")));
+        let pause = STEPS.iter().find(|s| s.label == "pad_pause_opened").unwrap();
+        assert!(pause.commands.starts_with(&format!("tp 0 0 {z};")));
     }
 
     #[test]

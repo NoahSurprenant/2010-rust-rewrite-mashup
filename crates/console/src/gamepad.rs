@@ -22,7 +22,17 @@ fn radial(stick: Vec2, deadzone: f32) -> Vec2 {
 pub(crate) fn sticks(pad: &Gamepad, settings: &frame::GameSettings) -> Sticks {
     let left = radial(pad.left_stick(), settings.pad_deadzone_left);
     let right = radial(pad.right_stick(), settings.pad_deadzone_right);
-    match settings.pad_stick_layout {
+    laid_out(left, right, settings.pad_stick_layout)
+}
+
+/// The sticks as the hand holds them, before any deadzone: what a
+/// [`StickGate`] watches to tell a stick let go from one still pushed.
+pub(crate) fn raw_sticks(pad: &Gamepad, settings: &frame::GameSettings) -> Sticks {
+    laid_out(pad.left_stick(), pad.right_stick(), settings.pad_stick_layout)
+}
+
+fn laid_out(left: Vec2, right: Vec2, layout: u8) -> Sticks {
+    match layout {
         1 => Sticks {
             movement: Vec2::new(right.y, right.x),
             look: left,
@@ -39,6 +49,51 @@ pub(crate) fn sticks(pad: &Gamepad, settings: &frame::GameSettings) -> Sticks {
             movement: Vec2::new(left.y, left.x),
             look: right,
         },
+    }
+}
+
+/// How far a stick may still lean, before any deadzone, and count as let go.
+///
+/// Well past where a worn stick comes to rest (XInput's own suggested
+/// left-stick deadzone is 0.24) and well short of the 0.6 that steps
+/// through a menu.
+pub(crate) const STICK_LET_GO: f32 = 0.3;
+
+/// Keeps a stick out of gameplay from the moment a menu, the console or an
+/// inventory takes the controller until the player lets that stick go, so
+/// a push that was steering a menu doesn't walk or turn the player once the
+/// menu closes.
+///
+/// "Let go" is the stick back under [`STICK_LET_GO`], not back at exactly
+/// zero: a stick that comes to rest a little off centre, outside the
+/// deadzone, never reads zero after the deadzone, and waiting for that kept
+/// the player from moving at all after the pause menu was closed with the
+/// controller, while the other stick (resting inside its deadzone) still
+/// turned the view and the keyboard still walked.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct StickGate {
+    held: bool,
+}
+
+impl StickGate {
+    /// Something else has the controller now.
+    pub(crate) fn capture(&mut self) {
+        self.held = true;
+    }
+
+    /// Gameplay has the stick at once (a different controller took over).
+    pub(crate) fn release(&mut self) {
+        self.held = false;
+    }
+
+    /// The stick's value for gameplay this frame: `shaped` (after the
+    /// deadzone) once the stick has been let go since the last capture,
+    /// zero until then. `raw` is the same stick before the deadzone.
+    pub(crate) fn pass(&mut self, raw: Vec2, shaped: Vec2) -> Vec2 {
+        if self.held && raw.length() < STICK_LET_GO {
+            self.held = false;
+        }
+        if self.held { Vec2::ZERO } else { shaped }
     }
 }
 
@@ -249,5 +304,77 @@ pub(crate) fn drive_menus_with_pad(
     };
     if fire && let Some(key) = direction {
         requests.write(UiMenuRequest::Key(key));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::input::gamepad::GamepadInput;
+
+    fn deadzone(stick: Vec2) -> Vec2 {
+        radial(stick, frame::GameSettings::default().pad_deadzone_left)
+    }
+
+    /// The owner's bug: a left stick that comes to rest a little off centre
+    /// (outside the 0.12 deadzone, as a worn stick does) never read zero
+    /// after the pause menu closed, so the player never walked again.
+    #[test]
+    fn a_stick_resting_off_centre_walks_again_after_a_menu() {
+        let rest = Vec2::new(0.1, 0.1);
+        assert_ne!(deadzone(rest), Vec2::ZERO, "the rest point is outside the deadzone");
+        let mut gate = StickGate::default();
+        gate.capture();
+        gate.pass(rest, deadzone(rest));
+        let forward = Vec2::new(0.0, 1.0);
+        assert_eq!(gate.pass(forward, deadzone(forward)), deadzone(forward));
+    }
+
+    #[test]
+    fn a_stick_still_pushed_when_a_menu_closes_waits_to_be_let_go() {
+        let mut gate = StickGate::default();
+        gate.capture();
+        for push in [Vec2::new(0.0, 0.9), Vec2::new(0.1, 0.95), Vec2::new(0.0, 0.31)] {
+            assert_eq!(gate.pass(push, deadzone(push)), Vec2::ZERO, "{push}");
+        }
+        let let_go = Vec2::new(0.02, 0.05);
+        assert_eq!(gate.pass(let_go, deadzone(let_go)), Vec2::ZERO);
+        let push = Vec2::new(0.0, 0.9);
+        assert_eq!(gate.pass(push, deadzone(push)), deadzone(push));
+    }
+
+    #[test]
+    fn a_stick_nothing_captured_passes_straight_through() {
+        let mut gate = StickGate::default();
+        let push = Vec2::new(0.7, -0.7);
+        assert_eq!(gate.pass(push, deadzone(push)), deadzone(push));
+        gate.capture();
+        gate.release();
+        assert_eq!(gate.pass(push, deadzone(push)), deadzone(push));
+    }
+
+    #[test]
+    fn let_go_is_short_of_a_menu_step_and_past_a_worn_rest() {
+        assert!(STICK_LET_GO < 0.6);
+        assert!(STICK_LET_GO > 0.24);
+    }
+
+    #[test]
+    fn raw_sticks_follow_the_stick_layout_before_the_deadzone() {
+        let mut pad = Gamepad::default();
+        let axes = pad.analog_mut();
+        axes.set(GamepadInput::Axis(GamepadAxis::LeftStickX), 0.05);
+        axes.set(GamepadInput::Axis(GamepadAxis::LeftStickY), 0.08);
+        axes.set(GamepadInput::Axis(GamepadAxis::RightStickX), 0.5);
+        axes.set(GamepadInput::Axis(GamepadAxis::RightStickY), -0.25);
+        let mut settings = frame::GameSettings::default();
+        let raw = raw_sticks(&pad, &settings);
+        assert_eq!(raw.movement, Vec2::new(0.08, 0.05));
+        assert_eq!(raw.look, Vec2::new(0.5, -0.25));
+        assert_eq!(sticks(&pad, &settings).movement, Vec2::ZERO);
+        settings.pad_stick_layout = 1;
+        let raw = raw_sticks(&pad, &settings);
+        assert_eq!(raw.movement, Vec2::new(-0.25, 0.5));
+        assert_eq!(raw.look, Vec2::new(0.05, 0.08));
     }
 }

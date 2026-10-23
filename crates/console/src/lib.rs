@@ -15,6 +15,7 @@ mod debug_glow;
 mod debug_lod;
 mod debug_minecraft;
 mod debug_move;
+mod debug_pad;
 mod debug_scalar;
 mod debug_script_mover;
 mod debug_admins;
