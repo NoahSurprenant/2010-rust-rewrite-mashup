@@ -133,6 +133,10 @@ pub fn install_frontend_menus(catalog: &mut asset_game::MenuCatalog) -> Result<(
                 }
             }
         }
+        if let Some(y) = add_inventory_bind_row(menu) {
+            let rows: Vec<&str> = menu.items.iter().filter(|item| item.item_type == 14).map(|item| item.dvar.as_str()).collect();
+            diag::info!(Ui, "controls: Inventory (Minecraft) bind row on {name} at y={y}, under {rows:?}");
+        }
 
         let Some(mode) = name.strip_prefix("settings_quick_") else {
             continue;
@@ -222,9 +226,144 @@ fn add_player_key_rows(menu: &mut asset_game::MenuDef) {
     menu.items.extend([key_label, key, note]);
 }
 
+/// Under the last binding row of the Controls page that binds MW2's Use
+/// (`+activate`): a row binding the Minecraft map's inventory (`inventory`,
+/// E and D-pad down by default), copied from the row above so that it looks,
+/// focuses and rebinds as every other (its key and controller button shown
+/// from `ui_bind_inventory`). Left out where the row would cover another
+/// item. The row's y, when added.
+fn add_inventory_bind_row(menu: &mut asset_game::MenuDef) -> Option<f32> {
+    const LABEL: &str = "Inventory (Minecraft)";
+    if menu.items.iter().any(|item| item.item_type == 14 && item.dvar == "inventory") {
+        return None;
+    }
+    let use_row = menu
+        .items
+        .iter()
+        .find(|item| item.item_type == 14 && item.dvar == "+activate")?
+        .rect;
+    let column = |item: &asset_game::MenuItem| {
+        item.item_type == 14 && item.rect.x == use_row.x && item.rect.vert_align == use_row.vert_align
+    };
+    let mut ys: Vec<f32> = menu.items.iter().filter(|item| column(item)).map(|item| item.rect.y).collect();
+    ys.sort_by(f32::total_cmp);
+    ys.dedup();
+    let last = *ys.last()?;
+    let pitch = ys
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .filter(|gap| *gap > 0.5)
+        .fold(f32::INFINITY, f32::min);
+    let pitch = if pitch.is_finite() { pitch } else { use_row.h.max(20.0) };
+    // The last row: its binding and the labels beside it.
+    let row: Vec<asset_game::MenuItem> = menu
+        .items
+        .iter()
+        .filter(|item| {
+            (item.rect.y - last).abs() < 0.5
+                && item.rect.vert_align == use_row.vert_align
+                && (column(item) || (item.item_type == 0 && !item.text_key.is_empty()))
+        })
+        .cloned()
+        .collect();
+    let left = row.iter().map(|item| item.rect.x).fold(f32::INFINITY, f32::min);
+    let right = row.iter().map(|item| item.rect.x + item.rect.w).fold(f32::NEG_INFINITY, f32::max);
+    let (top, bottom) = (last + pitch, last + pitch + use_row.h);
+    // Nothing else may sit where the row goes (a page-wide backdrop aside).
+    let covered = menu.items.iter().find(|item| {
+        let r = item.rect;
+        r.vert_align == use_row.vert_align
+            && r.h < pitch * 3.0
+            && r.x < right
+            && r.x + r.w > left
+            && r.y < bottom - 0.5
+            && r.y + r.h > top + 0.5
+    });
+    if let Some(item) = covered {
+        diag::info!(
+            Ui,
+            "controls: no room for an Inventory (Minecraft) row on {} at y={top} (`{}` {:?} there)",
+            menu.name,
+            item.name,
+            item.text_key
+        );
+        return None;
+    }
+    for mut item in row {
+        item.rect.y += pitch;
+        if item.item_type == 14 {
+            item.name = "inventory_bind".into();
+            item.dvar = "inventory".into();
+        } else {
+            item.name = "inventory_bind_label".into();
+            item.text_key = LABEL.into();
+            item.text_literal = true;
+            item.text_exp.clear();
+        }
+        menu.items.push(item);
+    }
+    Some(last + pitch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A controls page: rows of a label and its binding, 20 apart.
+    fn controls() -> asset_game::MenuDef {
+        let mut menu = asset_game::MenuDef::default();
+        menu.name = "pc_options_actions".into();
+        for (row, (label, command)) in [("@MENU_USE", "+activate"), ("@MENU_RELOAD", "+reload"), ("@MENU_MELEE", "+melee")]
+            .into_iter()
+            .enumerate()
+        {
+            let y = 48.0 + row as f32 * 20.0;
+            let mut text = asset_game::MenuItem { text_key: label.into(), ..Default::default() };
+            text.rect.x = 232.0;
+            text.rect.y = y;
+            text.rect.w = 120.0;
+            text.rect.h = 20.0;
+            let mut bind = asset_game::MenuItem { item_type: 14, dvar: command.into(), ..Default::default() };
+            bind.rect.x = 232.0;
+            bind.rect.y = y;
+            bind.rect.w = 336.0;
+            bind.rect.h = 20.0;
+            menu.items.extend([text, bind]);
+        }
+        menu
+    }
+
+    #[test]
+    fn the_controls_page_gets_an_inventory_row_under_its_last() {
+        let mut menu = controls();
+        assert_eq!(add_inventory_bind_row(&mut menu), Some(108.0));
+        let item = |name: &str| menu.items.iter().find(|item| item.name == name).unwrap();
+        let bind = item("inventory_bind");
+        assert_eq!((bind.item_type, bind.dvar.as_str()), (14, "inventory"));
+        assert_eq!((bind.rect.x, bind.rect.y, bind.rect.w), (232.0, 108.0, 336.0));
+        let label = item("inventory_bind_label");
+        assert_eq!(label.text_key, "Inventory (Minecraft)");
+        assert!(label.text_literal);
+        assert_eq!(label.rect.y, 108.0);
+        // Once.
+        assert_eq!(add_inventory_bind_row(&mut menu), None);
+        assert_eq!(menu.items.len(), 8);
+    }
+
+    #[test]
+    fn no_row_where_it_would_cover_an_item_or_without_use() {
+        let mut menu = controls();
+        let mut button = asset_game::MenuItem { item_type: 1, text_key: "@MENU_RESET".into(), ..Default::default() };
+        button.rect.x = 300.0;
+        button.rect.y = 110.0;
+        button.rect.w = 100.0;
+        button.rect.h = 20.0;
+        menu.items.push(button);
+        assert_eq!(add_inventory_bind_row(&mut menu), None);
+        let mut menu = controls();
+        menu.items.retain(|item| item.dvar != "+activate");
+        assert_eq!(add_inventory_bind_row(&mut menu), None);
+    }
 
     fn options_multi() -> asset_game::MenuDef {
         let mut label = asset_game::MenuItem {

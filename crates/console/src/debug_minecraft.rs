@@ -248,7 +248,18 @@ pub(crate) fn route_debug_minecraft_commands(
                         let origin = player.map_or([0.0; 3], |ps| ps.origin);
                         let angles = player.map_or([0.0; 3], |ps| ps.viewangles);
                         let menu = menus.as_ref().is_some_and(|m| m.captures_input());
-                        let line = state_line(label, ui, flags, menu, origin, angles);
+                        // MW2's action slots as the scripts set them (0 none,
+                        // 1 a weapon, 2 the attachment, 3 night vision): the
+                        // D-pad they sit on.
+                        let slots = player.map_or_else(
+                            || "-".to_owned(),
+                            |ps| ps.action_slot_type.map(|kind| kind.to_string()).join(","),
+                        );
+                        let line = format!(
+                            "{} pad={} action_slots={slots}",
+                            state_line(label, ui, flags, menu, origin, angles),
+                            pad_slot_text(ui.pad_slot),
+                        );
                         diag::info!(Console, "{line}");
                         println!("{line}");
                         console.echo(line, capacity);
@@ -278,6 +289,16 @@ fn parse_click(args: &[&str]) -> Option<McClick> {
         }
     }
     Some(McClick::Slot { slot, right, shift })
+}
+
+/// The controller's cursor on the open screen, as `mc click` names slots.
+fn pad_slot_text(slot: Option<McSlot>) -> String {
+    match slot {
+        None => "-".to_owned(),
+        Some(McSlot::Inventory(n)) => format!("inv{n}"),
+        Some(McSlot::Crafting(n)) => format!("grid{n}"),
+        Some(McSlot::Result) => "result".to_owned(),
+    }
 }
 
 fn stack_text(stack: &Option<McStack>) -> String {

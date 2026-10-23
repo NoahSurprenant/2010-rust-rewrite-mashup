@@ -166,7 +166,7 @@ pub(crate) fn sync_binding_view(
     }
     *style = Some(devices.style);
     let mut chords = std::collections::BTreeMap::<u32, (Vec<String>, Vec<String>)>::new();
-    for (button, id) in binds.iter() {
+    for (button, id) in binds.iter_all() {
         let (keys, buttons) = chords.entry(id).or_default();
         match button {
             BindButton::Pad(pad) => buttons.push(pad.prompt(devices.style).to_owned()),
@@ -344,7 +344,7 @@ fn parse_into<T: std::str::FromStr>(value: &str, slot: &mut T) {
 fn serialize_settings(settings: &frame::GameSettings, binds: &KeyBinds) -> String {
     let safe_name = settings.player_name.replace(['\n', '\r', '='], " ");
     let mut lines = vec![
-        "// IW4L user settings v2".to_owned(),
+        SETTINGS_HEADER.to_owned(),
         format!(
             "resolution={}x{}",
             settings.resolution.width, settings.resolution.height
@@ -498,7 +498,20 @@ fn parse_settings(source: &str, settings: &mut frame::GameSettings, binds: &mut 
     {
         binds.set(BindButton::Key(KeyCode::Digit4), 21);
     }
+    // Settings saved before the inventory was a binding (v1, v2) bound
+    // none: they get its defaults, E and the controller's.
+    if source.lines().next().is_none_or(|line| line.trim() != SETTINGS_HEADER)
+        && binds.iter_minecraft().next().is_none()
+        && let Some(id) = input_iw4::command_id_lookup(crate::binds::INVENTORY_COMMAND)
+    {
+        binds.set(BindButton::Key(KeyCode::KeyE), id);
+        binds.set(BindButton::Pad(crate::binds::INVENTORY_PAD_BUTTON), id);
+    }
 }
+
+/// The first line of the settings file. v3: the Minecraft inventory is a
+/// binding (`bind E inventory`).
+const SETTINGS_HEADER: &str = "// IW4L user settings v3";
 
 pub(crate) fn native_menu_settings(
     mut events: MessageReader<crate::ConsoleCommand>,
@@ -627,4 +640,54 @@ pub(crate) fn native_menu_settings(
         "ui_pad_deadzone_right",
         settings.pad_deadzone_right.to_string(),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::binds::INVENTORY_PAD_BUTTON;
+
+    fn read(source: &str) -> KeyBinds {
+        let mut binds = KeyBinds::default();
+        binds.apply_defaults();
+        parse_settings(source, &mut frame::GameSettings::default(), &mut binds);
+        binds
+    }
+
+    /// Settings saved before the inventory was a binding keep their
+    /// bindings and gain its defaults.
+    #[test]
+    fn older_settings_gain_the_inventory_bindings() {
+        let binds = read(
+            "// IW4L user settings v2\npad_layout=3\nunbindall\nbind e +activate\nbind f +frag\nbind DPAD_DOWN +actionslot 2\n",
+        );
+        assert!(binds.opens_inventory(BindButton::Key(KeyCode::KeyE)));
+        assert!(binds.opens_inventory(BindButton::Pad(INVENTORY_PAD_BUTTON)));
+        assert_eq!(binds.binding_name(BindButton::Key(KeyCode::KeyE)), Some("+activate"));
+        assert_eq!(binds.binding_name(BindButton::Key(KeyCode::KeyF)), Some("+frag"));
+    }
+
+    /// A v3 file is read as saved: an inventory the player unbound stays so.
+    #[test]
+    fn current_settings_are_read_as_saved() {
+        let binds = read(&format!("{SETTINGS_HEADER}\nunbindall\nbind e +activate\nbind DPAD_DOWN +actionslot 2\n"));
+        assert_eq!(binds.iter_minecraft().count(), 0);
+        let binds = read(&format!(
+            "{SETTINGS_HEADER}\nunbindall\nbind e +activate\nbind DPAD_DOWN +actionslot 2\nbind i inventory\nbind BUTTON_BACK inventory\n"
+        ));
+        assert!(binds.opens_inventory(BindButton::Key(KeyCode::KeyI)));
+        assert!(binds.opens_inventory(BindButton::Pad(crate::PadButton::Select)));
+        assert!(!binds.opens_inventory(BindButton::Key(KeyCode::KeyE)));
+    }
+
+    #[test]
+    fn saved_settings_carry_the_inventory_bindings() {
+        let mut binds = KeyBinds::default();
+        binds.apply_defaults();
+        let saved = serialize_settings(&frame::GameSettings::default(), &binds);
+        assert!(saved.starts_with(SETTINGS_HEADER));
+        assert!(saved.contains("\nbind e inventory\n"), "{saved}");
+        let again = read(&saved);
+        assert_eq!(again.list_lines(), binds.list_lines());
+    }
 }

@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use asset_core::{AssetNamespace, AssetRef};
 use asset_game::{FontDef, MenuCatalog};
 use assets::{PreparedLocalizedStrings, PreparedWeapons};
+use bevy::input::gamepad::{Gamepad, GamepadButton};
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use frame::{McClick, McSlot, McStack, MinecraftUi};
@@ -17,6 +18,8 @@ use crate::draw2d::{Draw2dCmd, Draw2dList, Draw2dOp, Draw2dProvenance, tessellat
 use crate::gaps::HudPresentationGaps;
 use crate::gpu_list::{HudTessPass, TessJob};
 use crate::images::{HUD_CHROME_NAMESPACE, HudImages};
+
+mod pad;
 
 /// The item icon atlas, drawn as a HUD material.
 const ICONS: &str = "mc_item_icons";
@@ -101,6 +104,8 @@ pub(crate) struct ScreenInput {
     last_click: Option<(McSlot, f64)>,
     /// A drag of the carried stack: the button and the slots crossed.
     drag: Option<(bool, Vec<usize>)>,
+    /// The controller's cursor on the open screen.
+    pad: pad::PadScreen,
 }
 
 struct Canvas<'a> {
@@ -295,39 +300,57 @@ pub(crate) fn update_minecraft_hud(
     mut gaps: ResMut<HudPresentationGaps>,
     mut pass: ResMut<HudTessPass>,
     headless: Option<Res<frame::Headless>>,
+    (gamepads, active, devices): (Query<&Gamepad>, Res<frame::ActivePad>, Res<frame::InputDevices>),
 ) {
     let Some(mut ui) = ui else {
         pass.minecraft = TessJob::Hide;
         return;
     };
+    let now = time.elapsed_secs_f64();
+    // The controller the player last touched, when it is the one in hand.
+    let pad = active.0.and_then(|entity| gamepads.get(entity).ok());
+    let pad_in_hand = pad.filter(|_| devices.pad_prompts);
+    // B and START close a screen as Escape does.
+    let close = keys.just_pressed(KeyCode::Escape)
+        || pad.is_some_and(|pad| pad.just_pressed(GamepadButton::East) || pad.just_pressed(GamepadButton::Start));
     // A headless game has no surface to draw on, but its player still opens
-    // its screens and picks from its hotbar with the keys.
+    // its screens, picks from its hotbar with the keys and works the screens
+    // with a controller.
     if ui.active && headless.is_some() {
         pass.minecraft = TessJob::Hide;
         ui.character_box = None;
-        open_or_close(&mut ui, &keys);
+        let toggle = std::mem::take(&mut ui.inventory_toggle);
+        if open_or_close(&mut ui, toggle, close) {
+            input.drag = None;
+        }
         let steps = scroll_steps(&mut wheel);
+        let digit = digit_pressed(&keys);
         if !ui.inventory_open {
-            let digit = digit_pressed(&keys);
+            input.pad = pad::PadScreen::default();
+            ui.pad_slot = None;
             hotbar_keys(&mut ui, &keys, steps, digit);
+        } else if let Some(pad) = pad_in_hand {
+            let table = ui.workbench.is_some();
+            pad_frame(&mut ui, &mut input, pad, table, digit, now);
         }
         return;
     }
     if !ui.active || !surface.is_ready() {
         pass.minecraft = TessJob::Hide;
         ui.character_box = None;
+        ui.inventory_toggle = false;
         for _ in wheel.read() {}
         return;
     }
     if let Some(icons) = ui.icons.clone() {
         hud_images.insert_runtime(ICONS, icons);
     }
-    let now = time.elapsed_secs_f64();
     let window = windows.single().ok();
-    let mouse = window.and_then(Window::cursor_position);
+    let mut mouse = window.and_then(Window::cursor_position);
 
     // Opening and closing, and the hotbar's keys.
-    if open_or_close(&mut ui, &keys) {
+    let toggle = std::mem::take(&mut ui.inventory_toggle);
+    if open_or_close(&mut ui, toggle, close) {
         input.drag = None;
     }
     let digit = digit_pressed(&keys);
@@ -347,6 +370,8 @@ pub(crate) fn update_minecraft_hud(
     let strings = strings.as_deref();
 
     if !ui.inventory_open {
+        input.pad = pad::PadScreen::default();
+        ui.pad_slot = None;
         hotbar_keys(&mut ui, &keys, scroll_steps(&mut wheel), digit);
         canvas.k = 1.15;
         draw_hotbar(&mut canvas, &mut ui, weapons, strings, &mut gaps, time.delta_secs());
@@ -354,11 +379,20 @@ pub(crate) fn update_minecraft_hud(
     } else {
         for _ in wheel.read() {}
         let table = ui.workbench.is_some();
-        let hovered = mouse.and_then(|m| hovered_slot(&surface, m, table));
-        let inside = mouse.is_some_and(|m| over_panel(&surface, m));
-        handle_clicks(&mut ui, &mut input, &buttons, hovered, inside, shift, digit, now);
+        let hovered = if let Some(pad) = pad_in_hand {
+            // The controller's cursor stands in for the mouse: hovered,
+            // clicked, and where the carried stack and the card are drawn.
+            pad_frame(&mut ui, &mut input, pad, table, digit, now);
+            mouse = ui.pad_slot.and_then(|slot| pad_pointer(&surface, slot, table));
+            ui.pad_slot
+        } else {
+            let hovered = mouse.and_then(|m| hovered_slot(&surface, m, table));
+            let inside = mouse.is_some_and(|m| over_panel(&surface, m));
+            handle_clicks(&mut ui, &mut input, &buttons, hovered, inside, shift, digit, now);
+            hovered
+        };
         canvas.k = K;
-        draw_inventory(&mut canvas, &mut ui, weapons, strings, &mut gaps, hovered, mouse, table);
+        draw_inventory(&mut canvas, &mut ui, weapons, strings, &mut gaps, hovered, mouse, table, pad_in_hand.is_some());
         if table {
             ui.character_box = None;
         } else {
@@ -381,12 +415,34 @@ pub(crate) fn update_minecraft_hud(
     pass.minecraft = if quads.is_empty() { TessJob::Hide } else { TessJob::Quads(quads) };
 }
 
-/// E opens the player's screen (the crafting table's when one is in view)
-/// and closes it, as Escape does; whether it closed now.
-fn open_or_close(ui: &mut MinecraftUi, keys: &ButtonInput<KeyCode>) -> bool {
+/// One frame of the controller on the open screen: its cursor moves, and
+/// its buttons click there through the mouse's own handling.
+fn pad_frame(ui: &mut MinecraftUi, input: &mut ScreenInput, pad: &Gamepad, table: bool, digit: Option<usize>, now: f64) {
+    let clicks = input.pad.update(pad, &layout(table), table, ui.selected, now);
+    ui.pad_slot = input.pad.slot;
+    handle_clicks(ui, input, &clicks.buttons, ui.pad_slot, true, clicks.shift, digit, now);
+    if let Some(right) = clicks.throw {
+        let mut outside = ButtonInput::default();
+        outside.press(if right { MouseButton::Right } else { MouseButton::Left });
+        handle_clicks(ui, input, &outside, None, false, false, None, now);
+    }
+}
+
+/// Where the controller's cursor points on a slot, in window pixels: low
+/// and right of its middle, where a carried stack is drawn over it.
+fn pad_pointer(surface: &crate::surface::Hud2dSurface, slot: McSlot, table: bool) -> Option<Vec2> {
+    let (_, x, y, size) = layout(table).into_iter().find(|(s, ..)| *s == slot)?;
+    let r = surface.apply_rect((x + size * 0.75) * K, (y + size * 0.75) * K, 1.0, 1.0, CENTER, CENTER);
+    Some(Vec2::new(r.x, r.y))
+}
+
+/// The inventory's binding (`toggle`: E, or D-pad down on a controller)
+/// opens the player's screen (the crafting table's when one is in view) and
+/// closes it, as `close` (Escape, B, START) does; whether it closed now.
+fn open_or_close(ui: &mut MinecraftUi, toggle: bool, close: bool) -> bool {
     let open_before = ui.inventory_open;
-    if keys.just_pressed(KeyCode::KeyE) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape)) {
-        ui.inventory_open = !ui.inventory_open && !keys.just_pressed(KeyCode::Escape);
+    if toggle || (ui.inventory_open && close) {
+        ui.inventory_open = !ui.inventory_open && !close;
         if ui.inventory_open {
             ui.workbench = ui.table_in_view;
         }
@@ -579,6 +635,7 @@ fn draw_inventory(
     hovered: Option<McSlot>,
     mouse: Option<Vec2>,
     table: bool,
+    pad: bool,
 ) {
     let c = (CENTER, CENTER);
     // Dim the world around the panel; the inventory's character window
@@ -620,7 +677,20 @@ fn draw_inventory(
     canvas.fill(PANEL_X, PANEL_Y, 3.0, HEADER_H, ACCENT, c);
     let title = if table { "CRAFTING TABLE" } else { "INVENTORY" };
     canvas.text(FONT_TITLE, PANEL_X + 9.0, PANEL_Y + 5.0, 10.0, HIGHLIGHT, title, false, c);
-    canvas.text(FONT_SMALL, PANEL_X + PANEL_W - 8.0, PANEL_Y + 7.5, 6.0, TEXT_DIM, "SURVIVAL  //  E TO CLOSE", true, c);
+    // What closes the screen, from the bindings (`E TO CLOSE`, or the
+    // controller's `B TO CLOSE`), and with a controller in hand a line
+    // under the panel naming its buttons.
+    let close = if ui.close_hint.is_empty() { "E TO CLOSE" } else { ui.close_hint.as_str() };
+    let hint = format!("SURVIVAL  //  {close}");
+    canvas.text(FONT_SMALL, PANEL_X + PANEL_W - 8.0, PANEL_Y + 7.5, 6.0, TEXT_DIM, &hint, true, c);
+    if pad && let Some(line) = ui.pad_hint.clone() {
+        let px = 5.5;
+        let w = canvas.fonts.get(FONT_SMALL).map_or(0.0, |def| ui_text_width(def, &line, px / ui_text_height(1.0)));
+        let y = PANEL_Y + PANEL_H + 5.0;
+        canvas.fill(-w * 0.5 - 6.0, y - 2.0, w + 12.0, px + 5.0, [0.02, 0.02, 0.02, 0.80], c);
+        canvas.fill(-w * 0.5 - 6.0, y - 2.0, 2.0, px + 5.0, ACCENT, c);
+        canvas.text(FONT_SMALL, -w * 0.5, y, px, TEXT, &line, false, c);
+    }
     canvas.frame(PANEL_X, PANEL_Y, PANEL_W, PANEL_H, EDGE, c);
     canvas.brackets(PANEL_X - 2.0, PANEL_Y - 2.0, PANEL_W + 4.0, PANEL_H + 4.0, 8.0, [ACCENT[0], ACCENT[1], ACCENT[2], 0.9], c);
 
@@ -724,13 +794,14 @@ mod tests {
     }
 
     /// What a headless game's player does with the keys: no surface, the
-    /// same screens and hotbar.
+    /// same screens and hotbar. The inventory's binding (E, D-pad down)
+    /// toggles; the console reads the binding.
     #[test]
-    fn e_opens_and_closes_the_screen() {
+    fn the_inventory_binding_opens_and_closes_the_screen() {
         let mut ui = ui();
-        assert!(!open_or_close(&mut ui, &pressed(&[KeyCode::KeyE])));
+        assert!(!open_or_close(&mut ui, true, false));
         assert!(ui.inventory_open);
-        assert!(open_or_close(&mut ui, &pressed(&[KeyCode::KeyE])));
+        assert!(open_or_close(&mut ui, true, false));
         assert!(!ui.inventory_open);
         assert!(matches!(ui.clicks.last(), Some(McClick::Close)));
     }
@@ -738,18 +809,22 @@ mod tests {
     #[test]
     fn escape_closes_and_never_opens() {
         let mut ui = ui();
-        assert!(!open_or_close(&mut ui, &pressed(&[KeyCode::Escape])));
+        // Escape, B or START.
+        assert!(!open_or_close(&mut ui, false, true));
+        assert!(!ui.inventory_open);
+        assert!(!open_or_close(&mut ui, true, true));
         assert!(!ui.inventory_open);
         ui.inventory_open = true;
-        assert!(open_or_close(&mut ui, &pressed(&[KeyCode::Escape])));
+        assert!(open_or_close(&mut ui, false, true));
         assert!(!ui.inventory_open);
+        assert!(!open_or_close(&mut ui, false, false));
     }
 
     #[test]
     fn e_with_a_table_in_view_opens_the_table() {
         let mut ui = ui();
         ui.table_in_view = Some((1, 2, 3));
-        open_or_close(&mut ui, &pressed(&[KeyCode::KeyE]));
+        open_or_close(&mut ui, true, false);
         assert_eq!(ui.workbench, Some((1, 2, 3)));
     }
 

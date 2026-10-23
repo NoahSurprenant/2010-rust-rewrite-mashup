@@ -116,6 +116,15 @@ impl Plugin for ConsolePlugin {
                     .after(InputSystems)
                     .before(publish_client_action_input),
             )
+            // The Minecraft inventory's binding, before gameplay takes the
+            // frame's input: the press that opens the screen is not MW2's.
+            .add_systems(
+                PreUpdate,
+                crate::minecraft_input::publish_minecraft_input
+                    .after(crate::gamepad::drive_menus_with_pad)
+                    .after(InputFocusSystems::Dispatch)
+                    .before(publish_client_action_input),
+            )
             .add_systems(
                 Update,
                 crate::user_settings::apply_pad_layout_setting
@@ -369,7 +378,10 @@ fn publish_client_action_input(
         *wheel_carry = 0.0;
     }
     let script_menu = script_menus.is_some_and(|menus| menus.captures_input());
-    let inventory_open = minecraft.as_ref().is_some_and(|ui| ui.active && ui.inventory_open);
+    // The press that opens (or closes) a Minecraft screen is the screen's.
+    let inventory_open = minecraft
+        .as_ref()
+        .is_some_and(|ui| ui.active && (ui.inventory_open || ui.inventory_toggle));
     skate.input_blocked = console.open || script_menu;
     // J, or clicking both sticks in together, toggles skating.
     let sticks_clicked = pad.is_some_and(|pad| {
@@ -391,8 +403,8 @@ fn publish_client_action_input(
         && ui.active
         && !captured
         && binds.iter().any(|(button, _)| {
-            // E is the Minecraft screens' own key.
-            button != crate::binds::BindButton::Key(KeyCode::KeyE)
+            // The inventory's binding (E) is the Minecraft screens' own.
+            !binds.opens_inventory(button)
                 && matches!(binds.binding_name(button), Some("+activate" | "+usereload"))
                 && inputs.just_pressed(button)
         })

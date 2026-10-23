@@ -29,6 +29,7 @@ pub mod editor;
 mod feature_dispatch;
 mod frontend;
 mod gamepad;
+mod minecraft_input;
 pub mod input;
 pub mod plugin;
 pub mod registry;
