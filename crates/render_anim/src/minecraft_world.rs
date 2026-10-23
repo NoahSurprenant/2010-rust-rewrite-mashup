@@ -1453,7 +1453,9 @@ fn update(
                             changed.push(pos);
                             if let Some(entities) = entities.as_mut() {
                                 entities.broke(&world.scene, &[pos]);
-                                entities.drop_blocks(&[(pos, block.clone(), false)]);
+                                // As the client's hand: what the host has it hold.
+                                let held = remote.inventory.slots[remote.selected].clone();
+                                entities.drop_blocks(&[(pos, block.clone(), crate::minecraft_tools::Breaker::Hand(held))]);
                             }
                             if let (Some(sounds), Some(kind)) = (sounds.as_mut(), world.scene.sound_type(&block)) {
                                 sounds.play(&world.packs, &kind.break_sound, Some(centre_of(pos)), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
@@ -1730,11 +1732,15 @@ fn update(
         if buttons.pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, false) {
             for _ in 0..hand_ticks {
                 if let Some(hit) = player.target(&world.scene, 4.5) {
-                    // A hand mines as vanilla's `getDestroyProgress`: a
-                    // block's hardness times thirty ticks.
+                    // A hand mines as vanilla's `getDestroyProgress`: by the
+                    // held tool's speed for the block, over the hardness and
+                    // over 30 (100 without the tool the block's drops need).
+                    let progress = minecraft_terrain::scene::Scene::block(&world.scene, hit.pos)
+                        .map_or(1.0 / 30.0, |block| entities.hand_progress(block));
                     all_events.push(sim::voxel::VoxelEvent::Shot {
                         block: [hit.pos.0, hit.pos.1, hit.pos.2],
-                        damage: 160.0 / 30.0,
+                        damage: crate::minecraft_mining::DAMAGE_PER_HARDNESS * progress,
+                        by: sim::voxel::ShotBy::Hand,
                     });
                     if hand.swing.is_none_or(|t| t >= crate::minecraft_hand::SWING_TICKS * 0.5) {
                         hand.swing = Some(0.0);
@@ -1864,8 +1870,8 @@ fn update(
         time.elapsed_secs_f64(),
     );
     if let Some(sounds) = sounds.as_mut() {
-        for (pos, block, blast) in &broken {
-            if *blast {
+        for (pos, block, cause) in &broken {
+            if *cause == crate::minecraft_mining::Cause::Blast {
                 continue;
             }
             if let Some(kind) = world.scene.sound_type(block) {
@@ -1877,6 +1883,14 @@ fn update(
     if let Some(entities) = entities.as_mut() {
         let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
         entities.broke(&world.scene, &positions);
+        // What broke each, for its loot: this game's own player mines with
+        // what it holds; a knife is an empty hand; bullets and blasts are
+        // anyone's (`block_drops`).
+        let hand = entities.hand();
+        let broken: Vec<_> = broken
+            .iter()
+            .map(|(pos, block, cause)| (*pos, block.clone(), crate::minecraft_tools::Breaker::of(*cause, &hand)))
+            .collect();
         entities.drop_blocks(&broken);
     }
     changed.extend(broken.iter().map(|(pos, ..)| *pos));

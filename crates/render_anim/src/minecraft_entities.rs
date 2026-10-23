@@ -22,6 +22,7 @@ use minecraft_terrain::server::{EntitySnapshot, ServerItem};
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::items::{ItemEntity, WorldItems};
 use minecraftoss_player::loot::LootBook;
+use crate::minecraft_tools::{Breaker, ToolRules};
 use minecraftoss_player::rng::XoroshiroRandom;
 use std::collections::{HashMap, HashSet};
 use minecraft_terrain::pack::PackStack;
@@ -66,6 +67,8 @@ pub(crate) struct Entities {
     server_snapshot: Option<EntitySnapshot>,
     server_handled: u64,
     loot: Option<LootBook>,
+    /// Which tool each block needs, and how fast tools mine.
+    pub(crate) tools: Option<ToolRules>,
     loot_sequences: HashMap<String, XoroshiroRandom>,
     seed: i64,
     /// Whether mobs come of themselves (`IW4L_MINECRAFT_MOBS`).
@@ -154,11 +157,6 @@ pub(crate) fn remote_key(client: u32) -> u64 {
     u64::from(client) + 1
 }
 
-/// What bullets and blasts count as for block loot: vanilla drops nothing
-/// from stone or ores broken bare-handed.
-const LOOT_TOOL: &str = "minecraft:diamond_pickaxe";
-/// TNT's power: a blast drops each block's loot one time in this many.
-const BLAST_POWER: f32 = 4.0;
 
 /// The first ID of the items this game spawns itself (block drops, throws)
 /// until the server takes them. The server numbers every entity it adds
@@ -188,18 +186,18 @@ fn items_to_hand(
         .collect()
 }
 
-/// A broken block's loot as `drop_blocks` rolls it: with `LOOT_TOOL`, and
-/// each stack no larger than the item stacks. `None` for a block with no
-/// table, or one with a rule the loot book cannot evaluate.
+/// A broken block's loot as `drop_blocks` rolls it (`block_drops`, the one
+/// rule for every way a block breaks).
 fn block_loot(
     loot: &LootBook,
+    tools: Option<&ToolRules>,
     block: &Block,
+    breaker: &Breaker,
     seed: u64,
     sequences: &mut HashMap<String, XoroshiroRandom>,
 ) -> Option<Vec<ItemStack>> {
-    let tool = ItemStack::new(LOOT_TOOL, 1);
     let block = minecraftoss_player::Block { id: block.id.key(), properties: block.properties.clone() };
-    loot.roll_drops_named(&block, Some(&tool), seed, sequences)
+    crate::minecraft_tools::block_drops(loot, tools, &block, breaker, seed, sequences)
 }
 
 /// The mobs drawn this frame: entity models (cut out, back-face culled,
@@ -240,6 +238,7 @@ impl Entities {
         let jar = data_jar();
         let mut inventory = Inventory::default();
         let mut loot = None;
+        let mut tools = None;
         if let Some(jar) = jar {
             server.load_loot(jar.clone(), seed as u64);
             match minecraftoss_player::crafting::RecipeBook::from_jar(&jar) {
@@ -253,6 +252,13 @@ impl Entities {
             match LootBook::from_jar(&jar) {
                 Ok(book) => loot = Some(book),
                 Err(error) => diag::warn!(World, "Minecraft block loot unavailable: {error:#}"),
+            }
+            match ToolRules::from_jar(&jar) {
+                Ok(rules) => {
+                    diag::info!(World, "Minecraft tool rules: {} blocks need the correct tool", rules.requiring_count());
+                    tools = Some(rules);
+                }
+                Err(error) => diag::warn!(World, "Minecraft tool rules unavailable, any tool gets drops: {error:#}"),
             }
         } else {
             diag::warn!(World, "Minecraft data JAR not found: no loot or recipes");
@@ -275,6 +281,7 @@ impl Entities {
             server_snapshot: None,
             server_handled: 0,
             loot,
+            tools,
             loot_sequences: HashMap::new(),
             seed,
             mobs,
@@ -433,23 +440,35 @@ impl Entities {
         self.server.unload_chunk(pos);
     }
 
-    /// Block loot for what the weapons broke, dropped as vanilla drops it
-    /// (`Block.popResource`); a blast keeps each drop one time in four.
-    pub(crate) fn drop_blocks(&mut self, broken: &[((i32, i32, i32), Block, bool)]) {
+    /// The player's hand: what it holds, for mining and block loot.
+    pub(crate) fn hand(&self) -> Breaker {
+        Breaker::Hand(self.inventory.slots[self.selected].clone())
+    }
+
+    /// One tick of mining `block` by hand, times its hardness
+    /// (`getDestroyProgress`): the held tool's speed over 30 when it may get
+    /// the block's drops, over 100 when not.
+    pub(crate) fn hand_progress(&self, block: &Block) -> f32 {
+        let held = self.inventory.slots[self.selected].as_ref();
+        self.tools.as_ref().map_or(1.0 / 30.0, |tools| tools.progress_times_hardness(&block.id.key(), held))
+    }
+
+    /// Block loot for what was broken, dropped as vanilla drops it
+    /// (`Block.popResource`): by what broke each (`block_drops`).
+    pub(crate) fn drop_blocks(&mut self, broken: &[((i32, i32, i32), Block, Breaker)]) {
         if self.remote {
             return;
         }
         let Some(loot) = self.loot.as_ref() else {
             return;
         };
-        for (pos, block, blast) in broken {
-            let Some(drops) = block_loot(loot, block, self.seed as u64, &mut self.loot_sequences) else {
+        for (pos, block, breaker) in broken {
+            let Some(drops) =
+                block_loot(loot, self.tools.as_ref(), block, breaker, self.seed as u64, &mut self.loot_sequences)
+            else {
                 continue;
             };
             for mut drop in drops {
-                if *blast && self.random.next_float() >= 1.0 / BLAST_POWER {
-                    continue;
-                }
                 if drop.components.is_none() {
                     drop.max = drop.max.min(self.inventory.recipes.max_stack(&drop.id));
                 }
@@ -1281,17 +1300,21 @@ mod tests {
             return;
         };
         let loot = LootBook::from_jar(&jar).expect("block loot");
+        let tools = ToolRules::from_jar(&jar).expect("tool rules");
         let mut sequences = HashMap::new();
         let mut log = Block::new("minecraft:oak_log");
         log.properties.insert("axis".into(), "y".into());
-        for (block, want) in [
-            (log, "minecraft:oak_log"),
-            (Block::new("minecraft:stone"), "minecraft:cobblestone"),
-            (Block::new("minecraft:cobblestone"), "minecraft:cobblestone"),
-            (Block::new("minecraft:oak_planks"), "minecraft:oak_planks"),
+        let hand = Breaker::Hand(None);
+        let pickaxe = Breaker::Hand(Some(ItemStack::new("minecraft:wooden_pickaxe", 1)));
+        for (block, breaker, want) in [
+            (log, &hand, "minecraft:oak_log"),
+            (Block::new("minecraft:stone"), &pickaxe, "minecraft:cobblestone"),
+            (Block::new("minecraft:cobblestone"), &pickaxe, "minecraft:cobblestone"),
+            (Block::new("minecraft:oak_planks"), &hand, "minecraft:oak_planks"),
         ] {
             for _ in 0..4 {
-                let drops = block_loot(&loot, &block, 12345, &mut sequences).unwrap_or_else(|| panic!("{}", block.id.key()));
+                let drops = block_loot(&loot, Some(&tools), &block, breaker, 12345, &mut sequences)
+                    .unwrap_or_else(|| panic!("{}", block.id.key()));
                 let got: Vec<(String, u8)> = drops.iter().map(|s| (s.id.clone(), s.count)).collect();
                 assert_eq!(got, [(want.to_owned(), 1)], "{}", block.id.key());
             }

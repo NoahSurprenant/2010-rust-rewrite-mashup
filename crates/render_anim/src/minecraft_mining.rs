@@ -18,12 +18,36 @@ type BlockPos = (i32, i32, i32);
 
 /// Bullet damage that mines a block of hardness 1 in four shots: a 40-damage
 /// bullet (an ACR up close) breaks dirt, of hardness 0.5, on the second.
-const DAMAGE_PER_HARDNESS: f32 = 160.0;
-/// TNT's explosion power.
-const TNT_POWER: f32 = 4.0;
+pub(crate) const DAMAGE_PER_HARDNESS: f32 = 160.0;
+/// TNT's explosion power, which is also the radius block loot sees
+/// (`survives_explosion` keeps a drop one time in four).
+pub(crate) const TNT_POWER: f32 = 4.0;
 /// Progress on a block no longer being shot is forgotten after this long.
 const PROGRESS_SECONDS: f64 = 6.0;
 const TICK_SECONDS: f64 = 1.0 / 20.0;
+
+/// What broke a block, for its loot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cause {
+    /// The player mining by hand, with what it holds.
+    Hand,
+    /// A knife (MW2's melee): an empty hand, as vanilla's punch.
+    Knife,
+    /// A bullet, or one passing through.
+    Gun,
+    /// An explosion.
+    Blast,
+}
+
+impl Cause {
+    fn of(by: sim::voxel::ShotBy) -> Self {
+        match by {
+            sim::voxel::ShotBy::Bullet => Self::Gun,
+            sim::voxel::ShotBy::Melee => Self::Knife,
+            sim::voxel::ShotBy::Hand => Self::Hand,
+        }
+    }
+}
 
 pub(crate) struct Mining {
     /// Progress in 0..1 of each block being shot, and when it was last hit.
@@ -62,24 +86,24 @@ impl Mining {
     }
 
     /// Applies this tick's shots and explosions; the blocks they broke, each
-    /// with whether a blast broke it.
+    /// with what broke it (the hit that finished it).
     pub(crate) fn apply(
         &mut self,
         events: Vec<sim::voxel::VoxelEvent>,
         world: &mut WorldRefs<'_>,
         now: f64,
-    ) -> Vec<(BlockPos, minecraft_terrain::scene::Block, bool)> {
+    ) -> Vec<(BlockPos, minecraft_terrain::scene::Block, Cause)> {
         if self.particles.is_none() {
             self.particles = BlockParticles::new(world.packs).ok();
         }
-        let mut broken: Vec<(BlockPos, bool)> = Vec::new();
+        let mut broken: Vec<(BlockPos, Cause)> = Vec::new();
         // Blocks broken by this batch: the rest of a shotgun's pellets into
         // one pass through, rather than starting a crack on a block that is
         // about to go.
         let mut gone = std::collections::HashSet::new();
         for event in events {
             match event {
-                sim::voxel::VoxelEvent::Shot { block, damage } => {
+                sim::voxel::VoxelEvent::Shot { block, damage, by } => {
                     let pos = (block[0], block[1], block[2]);
                     if gone.contains(&pos) {
                         continue;
@@ -97,7 +121,7 @@ impl Mining {
                         {
                             let _ = particles.spawn(world.packs, &*world.scene, pos, &block, world.atlas);
                         }
-                        broken.push((pos, false));
+                        broken.push((pos, Cause::of(by)));
                         gone.insert(pos);
                     }
                 }
@@ -105,7 +129,7 @@ impl Mining {
                     for pos in self.exploded_positions(world, center, TNT_POWER) {
                         if hardness(world, pos).is_some() && gone.insert(pos) {
                             self.progress.remove(&pos);
-                            broken.push((pos, true));
+                            broken.push((pos, Cause::Blast));
                         }
                     }
                 }
@@ -128,7 +152,7 @@ impl Mining {
                             {
                                 let _ = particles.spawn(world.packs, &*world.scene, pos, &block, world.atlas);
                             }
-                            broken.push((pos, false));
+                            broken.push((pos, Cause::Gun));
                             gone.insert(pos);
                         }
                     }
@@ -142,12 +166,12 @@ impl Mining {
         if broken.is_empty() {
             return Vec::new();
         }
-        broken.sort_unstable();
+        broken.sort_by_key(|(pos, _)| *pos);
         broken.dedup_by_key(|(pos, _)| *pos);
         let mut out = Vec::with_capacity(broken.len());
-        for &(pos, blast) in &broken {
+        for &(pos, cause) in &broken {
             if let Some(block) = Scene::block(&*world.scene, pos).cloned() {
-                out.push((pos, block, blast));
+                out.push((pos, block, cause));
             }
             world.scene.set(pos, None);
             sim::voxel::set_block_shape(pos.0, pos.1, pos.2, 0);

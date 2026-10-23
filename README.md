@@ -14,7 +14,7 @@ Modern Warfare 2, Skate 3 and Minecraft in one game, all running on
 - Minecraft's own world generation, with its day/night cycle, sky, clouds and lighting. The lighting also falls on your gun.
 - Vanilla mobs, both passive and hostile. You can shoot them and they fight back.
 - Shoot blocks to break them. Harder blocks take more bullets, scaled by each gun's real MW2 damage and range. Knife them too. Grenades blow up like TNT.
-- Broken blocks drop items that you pick up.
+- Broken blocks drop items that you pick up, by vanilla's tool rules: stone and ores need a pickaxe, of the right tier for ores and obsidian (a stone pickaxe for iron, iron for diamond, diamond for obsidian), and better tools mine faster. Guns and the knife count as an empty hand, so shot stone drops nothing while shot logs and dirt drop as by hand. Grenades drop what vanilla's explosions do (stone gives cobblestone, some of the time).
 - A Minecraft inventory and hotbar restyled in MW2's look. Your guns sit in the hotbar as items, and your MW2 character stands in the inventory window.
 - Hold a block to place it. With an empty hand you punch and mine with your bare MW2 hands.
 - Crafting tables: right click one, or press E (D-pad down on a controller) or Use at it, for vanilla's 3x3 crafting grid in MW2's look.

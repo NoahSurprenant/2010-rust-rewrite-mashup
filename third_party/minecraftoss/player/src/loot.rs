@@ -87,7 +87,7 @@ impl LootBook {
         block: &Block,
         held_item: Option<&str>,
     ) -> Option<Vec<ItemStack>> {
-        self.evaluate(block, held_item, 0, false, None)
+        self.evaluate(block, held_item, 0, false, None, None)
     }
 
     /// Roll a table with an explicit random stream and current tool data.
@@ -98,12 +98,27 @@ impl LootBook {
         held_item: Option<&ItemStack>,
         random: &mut impl LootRandom,
     ) -> Option<Vec<ItemStack>> {
+        self.roll_drops_exploded(block, held_item, None, random)
+    }
+
+    /// `roll_drops` with vanilla's `EXPLOSION_RADIUS` parameter: a block an
+    /// explosion destroyed with decay (TNT, a creeper) passes its radius, and
+    /// `survives_explosion` and `explosion_decay` keep each roll and each
+    /// item one time in `radius`. Explosions pass no tool.
+    pub fn roll_drops_exploded(
+        &self,
+        block: &Block,
+        held_item: Option<&ItemStack>,
+        explosion_radius: Option<f32>,
+        random: &mut impl LootRandom,
+    ) -> Option<Vec<ItemStack>> {
         let (fortune, silk_touch) = held_item.map_or((0, false), tool_enchantments);
         self.evaluate(
             block,
             held_item.map(|stack| stack.id.as_str()),
             fortune,
             silk_touch,
+            explosion_radius,
             Some(random),
         )
     }
@@ -117,11 +132,23 @@ impl LootBook {
         world_seed: u64,
         sequences: &mut HashMap<String, XoroshiroRandom>,
     ) -> Option<Vec<ItemStack>> {
+        self.roll_drops_named_exploded(block, held_item, None, world_seed, sequences)
+    }
+
+    /// `roll_drops_named` with an explosion's radius (`roll_drops_exploded`).
+    pub fn roll_drops_named_exploded(
+        &self,
+        block: &Block,
+        held_item: Option<&ItemStack>,
+        explosion_radius: Option<f32>,
+        world_seed: u64,
+        sequences: &mut HashMap<String, XoroshiroRandom>,
+    ) -> Option<Vec<ItemStack>> {
         let id = self.tables.get(&block.id)?["random_sequence"].as_str()?;
         let random = sequences
             .entry(id.to_owned())
             .or_insert_with(|| XoroshiroRandom::for_sequence(world_seed, id));
-        self.roll_drops(block, held_item, random)
+        self.roll_drops_exploded(block, held_item, explosion_radius, random)
     }
 
     fn evaluate<'a>(
@@ -130,6 +157,7 @@ impl LootBook {
         held_item: Option<&'a str>,
         fortune: u32,
         silk_touch: bool,
+        explosion_radius: Option<f32>,
         random: Option<&'a mut dyn LootRandom>,
     ) -> Option<Vec<ItemStack>> {
         let table = self.tables.get(&block.id)?;
@@ -139,6 +167,7 @@ impl LootBook {
             tags: &self.item_tags,
             fortune,
             silk_touch,
+            explosion_radius,
             random: random.map(RefCell::new),
         };
         if table["type"].as_str()? != "minecraft:block" {
@@ -165,12 +194,32 @@ impl LootBook {
     }
 }
 
+/// Every entry of a JAR whose name `wanted` accepts, with its bytes.
+pub fn jar_entries(path: &Path, wanted: impl Fn(&str) -> bool) -> Result<Vec<(String, Vec<u8>)>> {
+    let file = File::open(path).with_context(|| format!("open data JAR {}", path.display()))?;
+    let mut archive = ZipArchive::new(file)?;
+    let mut out = Vec::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        if !wanted(entry.name()) {
+            continue;
+        }
+        let name = entry.name().to_owned();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes)?;
+        out.push((name, bytes));
+    }
+    Ok(out)
+}
+
 struct LootContext<'a> {
     block: &'a Block,
     held_item: Option<&'a str>,
     tags: &'a HashMap<String, Vec<String>>,
     fortune: u32,
     silk_touch: bool,
+    /// `LootContextParams.EXPLOSION_RADIUS`: none for a player's break.
+    explosion_radius: Option<f32>,
     random: Option<RefCell<&'a mut dyn LootRandom>>,
 }
 
@@ -199,7 +248,11 @@ fn condition(value: Option<&Value>, context: &LootContext<'_>) -> Option<bool> {
         };
     }
     match value["type"].as_str()? {
-        "minecraft:survives_explosion" => Some(true), // Player mining has no explosion context.
+        // `ExplosionCondition`: kept one time in the radius; always without one.
+        "minecraft:survives_explosion" => match context.explosion_radius {
+            None => Some(true),
+            Some(radius) => Some(context.random.as_ref()?.borrow_mut().next_float() <= 1.0 / radius),
+        },
         "minecraft:random_chance" => {
             let chance = value["chance"].as_f64()? as f32;
             Some(context.random.as_ref()?.borrow_mut().next_float() < chance)
@@ -327,7 +380,20 @@ fn apply_modifiers(
             continue;
         }
         match modifier["type"].as_str()? {
-            "minecraft:explosion_decay" => {} // No explosion for player mining.
+            // `ApplyExplosionDecay`: each item of a stack kept one time in the radius.
+            "minecraft:explosion_decay" => {
+                if let Some(radius) = context.explosion_radius {
+                    let random = context.random.as_ref()?;
+                    for stack in stacks.iter_mut() {
+                        let mut kept = 0u8;
+                        for _ in 0..stack.count {
+                            kept += u8::from(random.borrow_mut().next_float() <= 1.0 / radius);
+                        }
+                        stack.count = kept;
+                    }
+                    stacks.retain(|stack| stack.count > 0);
+                }
+            }
             "minecraft:copy_components" => {
                 // Current chest/furnace state has no custom name; other copied
                 // block-entity components (notably shulker contents) need data.
