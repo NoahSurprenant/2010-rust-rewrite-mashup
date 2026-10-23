@@ -38,6 +38,9 @@ jobs:
       # Special items (chests, shulker boxes, heads, banners, shields) as 3D
       # models in hand and on the ground.
       - run: cargo test -p minecraft_terrain --lib special
+      # The filled map: vanilla map colours, its centre and scale, filling in
+      # as its holder walks, its tiles and its save.
+      - run: cargo test -p minecraft_terrain --lib filled_map
       # The update manifest a GitHub release publishes and the launcher reads.
       - run: cargo test -p updater
       # How the master lists a room (a dedicated server by its whole name).
@@ -151,6 +154,11 @@ jobs:
       # loot only with Minecraft's data JAR, which these runners lack).
       - name: Minecraft block drop unit tests (render_anim minecraft_entities)
         run: cargo test --profile play -p render_anim --lib minecraft_entities::tests
+      # The starting map: its slot, and drawn in hand (pose, pixels, marker).
+      - name: Minecraft map in hand and inventory unit tests (render_anim minecraft_hand, minecraft_inventory)
+        run: |
+          cargo test --profile play -p render_anim --lib minecraft_hand
+          cargo test --profile play -p render_anim --lib minecraft_inventory::tests
       - name: player key, admin and console socket unit tests (player_key, net identity and admins, console debug_admins and control)
         run: |
           cargo test --profile play -p player_key

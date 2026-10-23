@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use crate::duo::{Display, Pair};
 use crate::runner::Event;
 use crate::scenario::{Part, Parts};
-use crate::scenarios::mob_steps;
+use crate::scenarios::{map_steps, mob_steps};
 
 pub const NAME: &str = "minecraft_multiplayer";
 /// The blocks, the client's hand and the restart: both sessions.
@@ -56,6 +56,10 @@ pub const PARTS: Parts = &[
             "restart_world_kept",
             "restart_host_inventory",
             "restart_client_inventory",
+            "new_players_get_map",
+            "host_map_fills_in",
+            "map_reaches_client",
+            "old_save_gets_map_once",
         ],
     ),
     (
@@ -180,7 +184,7 @@ fn corridor(feet: [i32; 3]) -> String {
 pub fn first_session(pair: &mut Pair, facts: &mut Facts, part: Part) -> Result<(), String> {
     let load = Duration::from_secs(LOAD_SECS);
     pair.host.send(&format!(
-        "wait world; spawn 0; force_match_start; wait minecraft; wait 1s; mc clear; mc give torch 7; {}; wait 1s",
+        "wait world; spawn 0; force_match_start; wait minecraft; wait 1s; key 9; wait 3s; mc state h_map0; key 1; wait 1s; mc clear; mc give torch 7; {}; wait 1s",
         set(GOLD, "gold_block")
     ))?;
     pair.client
@@ -189,6 +193,10 @@ pub fn first_session(pair: &mut Pair, facts: &mut Facts, part: Part) -> Result<(
         .send("wait world; spawn 0; wait minecraft; wait 2s")?;
     let host = pair.ask(false, "wait minecraft; mc state h_ready", "h_ready", load)?;
     facts.keep("h_ready", host);
+    // The host's map, held before its inventory was cleared.
+    if let Some(map) = pair.host.seen.get("h_map0").cloned() {
+        facts.keep("h_map0", map);
+    }
     let client = pair.ask(true, "wait minecraft; mc state c_ready", "c_ready", load)?;
     let client = facts.keep("c_ready", client);
     if part.plays(WORLD) {
@@ -205,6 +213,10 @@ pub fn first_session(pair: &mut Pair, facts: &mut Facts, part: Part) -> Result<(
 fn world_steps(pair: &mut Pair, facts: &mut Facts, client: &Event) -> Result<(), String> {
     let step = Duration::from_secs(STEP_SECS);
     let sync = Duration::from_secs(SYNC_SECS);
+    // The client's map, given on joining, in its hand: the host's ground
+    // on it.
+    let map = map_steps::hold_map(pair, true, "c_map0", sync)?;
+    facts.keep("c_map0", map);
     // The host's block, on the client.
     let gold = pair.poll_block(true, "c_gold", GOLD, "minecraft:gold_block", sync)?;
     facts.notes.insert("c_gold", gold);
@@ -551,7 +563,7 @@ fn want(got: &str, want: &str, what: &str) -> Result<(), String> {
 /// Judges what both games printed.
 pub fn judge(facts: &Facts) -> Vec<Check> {
     type Rule = fn(&Facts) -> Result<(), String>;
-    let rules: [(&'static str, Rule); 21] = [
+    let rules: [(&'static str, Rule); 25] = [
         ("seed_shared", |f| {
             let host = line(f, "h_ready")?.get("seed").unwrap_or("-");
             let client = line(f, "c_ready")?.get("seed").unwrap_or("-");
@@ -761,6 +773,32 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
                 ))
             }
         }),
+        ("new_players_get_map", |f| {
+            let host = line(f, "h_map0")?;
+            let client = line(f, "c_map0")?;
+            map_steps::one_map(host, "host")?;
+            map_steps::one_map(client, "client")?;
+            let ids = (map_steps::held(host).map(|m| m.0), map_steps::held(client).map(|m| m.0));
+            match ids {
+                (Some(a), Some(b)) if a != b => Ok(()),
+                _ => Err(format!("map ids {ids:?}: each player its own")),
+            }
+        }),
+        ("host_map_fills_in", |f| {
+            let (_, centre, _) = map_steps::filled(line(f, "h_map0")?, "host")?;
+            // Vanilla's grid at the fixed spawn (90.5, -30.5).
+            want(&format!("{centre:?}"), "Some((128, 0))", "the host's map centre")
+        }),
+        ("map_reaches_client", |f| map_steps::filled(line(f, "c_map0")?, "client").map(|_| ())),
+        ("old_save_gets_map_once", |f| {
+            // Between the sessions the world was made one from before maps.
+            let aged: usize = note(f, "aged_players")?.parse().map_err(|_| "bad aged count")?;
+            if aged < 2 {
+                return Err(format!("{aged} players aged, want the host and the client"));
+            }
+            map_steps::one_map(line(f, "h2_ready")?, "host after the restart")?;
+            map_steps::one_map(line(f, "c2_ready")?, "client after the restart")
+        }),
     ];
     rules
         .iter()
@@ -803,11 +841,27 @@ mod tests {
             s[slot] = stack;
             s.join(",")
         };
+        // And the starting map on the hotbar's last slot.
+        let with_map = |slot: usize, stack: &'static str| {
+            let mut s = slots.clone();
+            s[slot] = stack;
+            s[map_steps::SLOT] = map_steps::ITEM;
+            s.join(",")
+        };
         let ready = |label: &str, role: &str, extra: String| {
             event(&format!(
                 "label={label} seed=12345 role={role} feet=0,0,3 slots={extra}"
             ))
         };
+        f.lines.insert(
+            "h_map0".into(),
+            event(&format!("label=h_map0 role=host slots={} map=0@128,0:16384", with_map(5, "-"))),
+        );
+        f.lines.insert(
+            "c_map0".into(),
+            event(&format!("label=c_map0 role=client slots={} map=1@128,0:9000", with_map(5, "-"))),
+        );
+        f.notes.insert("aged_players", "2".into());
         f.lines.insert(
             "h_ready".into(),
             ready("h_ready", "host", with(5, "minecraft:torch*7")),
@@ -824,11 +878,11 @@ mod tests {
         );
         f.lines.insert(
             "h2_ready".into(),
-            ready("h2_ready", "host", with(5, "minecraft:torch*7")),
+            ready("h2_ready", "host", with_map(5, "minecraft:torch*7")),
         );
         f.lines.insert(
             "c2_ready".into(),
-            ready("c2_ready", "client", with(5, "minecraft:oak_planks*3")),
+            ready("c2_ready", "client", with_map(5, "minecraft:oak_planks*3")),
         );
         f.lines.insert(
             "c_final".into(),
@@ -944,7 +998,8 @@ mod tests {
             .filter(|c| !c.failures.is_empty())
             .map(|c| c.label)
             .collect();
-        assert_eq!(failed, ["restart_client_inventory"]);
+        // Its planks are gone, and so is the map the aged world owed it.
+        assert_eq!(failed, ["restart_client_inventory", "old_save_gets_map_once"]);
     }
 
     #[test]
@@ -1029,6 +1084,30 @@ mod tests {
                 "mob_states_sent"
             ]
         );
+    }
+
+    /// A second map after the restart (the flag not kept), a map that never
+    /// showed the host's ground on the client, and players sharing a map
+    /// each fail their check.
+    #[test]
+    fn a_duplicated_or_empty_map_fails() {
+        let mut f = passing();
+        let with_two = |label: &str| {
+            let mut slots = vec!["-"; 41];
+            slots[8] = map_steps::ITEM;
+            slots[9] = map_steps::ITEM;
+            slots[5] = "minecraft:oak_planks*3";
+            event(&format!("label={label} seed=12345 role=client slots={}", slots.join(",")))
+        };
+        f.lines.insert("c2_ready".into(), with_two("c2_ready"));
+        f.lines.get_mut("c_map0").unwrap().fields.insert("map".into(), "1@-:0".into());
+        let failed: Vec<_> = judge(&f).into_iter().filter(|c| !c.failures.is_empty()).map(|c| c.label).collect();
+        assert_eq!(failed, ["map_reaches_client", "old_save_gets_map_once"]);
+        let mut f = passing();
+        f.lines.get_mut("c_map0").unwrap().fields.insert("map".into(), "0@128,0:9000".into());
+        f.notes.insert("aged_players", "0".into());
+        let failed: Vec<_> = judge(&f).into_iter().filter(|c| !c.failures.is_empty()).map(|c| c.label).collect();
+        assert_eq!(failed, ["new_players_get_map", "old_save_gets_map_once"]);
     }
 
     #[test]

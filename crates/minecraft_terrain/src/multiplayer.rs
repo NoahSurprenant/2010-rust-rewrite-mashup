@@ -38,6 +38,7 @@ pub const MAX_ITEMS: usize = 64;
 const LEVEL_FILE: &str = "level.json";
 const EDITS_FILE: &str = "edits.bin";
 const PLAYERS_FILE: &str = "players.json";
+const MAPS_FILE: &str = "maps.bin";
 const EDITS_MAGIC: &[u8; 4] = b"MCED";
 const SAVE_VERSION: u32 = 1;
 
@@ -708,6 +709,15 @@ pub enum HostMessage {
     Mobs(Vec<crate::mob_sync::MobSpawn>),
     /// Mobs that left the client's view or the level, by id.
     MobsGone(Vec<u64>),
+    /// Pixels of a map in the client's inventory: its centre and scale, and
+    /// 16 by 16 tiles of it by index (`filled_map::TILE`), the ones that
+    /// changed since the client was last sent them.
+    MapTiles {
+        id: u32,
+        centre: [i32; 2],
+        scale: u8,
+        tiles: Vec<(u8, Vec<u8>)>,
+    },
 }
 
 impl HostMessage {
@@ -784,6 +794,26 @@ impl HostMessage {
             Self::MobsGone(ids) => {
                 w.u8(7);
                 crate::mob_sync::encode_ids(&mut w, ids);
+            }
+            Self::MapTiles {
+                id,
+                centre,
+                scale,
+                tiles,
+            } => {
+                w.u8(8);
+                w.u32(*id);
+                w.i32(centre[0]);
+                w.i32(centre[1]);
+                w.u8(*scale);
+                w.u8(tiles.len().min(u8::MAX as usize) as u8);
+                for (index, pixels) in tiles.iter().take(u8::MAX as usize) {
+                    w.u8(*index);
+                    let mut tile = [0u8; crate::filled_map::TILE * crate::filled_map::TILE];
+                    let n = pixels.len().min(tile.len());
+                    tile[..n].copy_from_slice(&pixels[..n]);
+                    w.0.extend_from_slice(&tile);
+                }
             }
         }
         w.0
@@ -867,6 +897,27 @@ impl HostMessage {
                 Self::Mobs(spawns)
             }
             7 => Self::MobsGone(crate::mob_sync::decode_ids(&mut r)?),
+            8 => {
+                use crate::filled_map::{TILE, TILES};
+                let id = r.u32()?;
+                let centre = [r.i32()?, r.i32()?];
+                let scale = r.u8()?;
+                let n = r.u8()? as usize;
+                let mut tiles = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let index = r.u8()?;
+                    if usize::from(index) >= TILES * TILES {
+                        return Err(DecodeError::Malformed("map tile"));
+                    }
+                    tiles.push((index, r.take(TILE * TILE)?.to_vec()));
+                }
+                Self::MapTiles {
+                    id,
+                    centre,
+                    scale,
+                    tiles,
+                }
+            }
             _ => return Err(DecodeError::Malformed("host message")),
         };
         r.done()?;
@@ -991,6 +1042,8 @@ pub struct SavedWorld {
     pub edits: EditLog,
     /// Each player by its key (`players::Players`).
     pub players: Players,
+    /// Its maps (`maps.bin`, none in a world from before maps).
+    pub maps: crate::filled_map::MapStore,
 }
 
 /// A world name as a directory name: letters, digits, `-`, `_` and `.`
@@ -1042,6 +1095,7 @@ impl SavedWorld {
             },
             edits: EditLog::default(),
             players: Players::default(),
+            maps: crate::filled_map::MapStore::default(),
         }
     }
 
@@ -1069,21 +1123,28 @@ impl SavedWorld {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Players::default(),
             Err(e) => return Err(e),
         };
+        let maps = match std::fs::read(dir.join(MAPS_FILE)) {
+            Ok(bytes) => crate::filled_map::MapStore::decode(&bytes).map_err(io_error)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => crate::filled_map::MapStore::default(),
+            Err(e) => return Err(e),
+        };
         Ok(Some(Self {
             level,
             edits,
             players,
+            maps,
         }))
     }
 
-    /// Writes all three files, each replaced whole; the edits compacted.
+    /// Writes its files, each replaced whole; the edits compacted.
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
         let level = serde_json::to_vec_pretty(&self.level).map_err(io_error)?;
         write_atomic(&dir.join(LEVEL_FILE), &level)?;
         write_atomic(&dir.join(EDITS_FILE), &self.edits.compacted().encode())?;
         let players = serde_json::to_vec_pretty(&self.players).map_err(io_error)?;
-        write_atomic(&dir.join(PLAYERS_FILE), &players)
+        write_atomic(&dir.join(PLAYERS_FILE), &players)?;
+        write_atomic(&dir.join(MAPS_FILE), &self.maps.encode())
     }
 }
 
@@ -1363,6 +1424,18 @@ mod tests {
             }]),
             HostMessage::Mobs(Vec::new()),
             HostMessage::MobsGone(vec![1, 1234, 1 << 40]),
+            HostMessage::MapTiles {
+                id: 3,
+                centre: [128, -256],
+                scale: 0,
+                tiles: vec![(0, vec![45; 256]), (63, (0..=255).collect())],
+            },
+            HostMessage::MapTiles {
+                id: u32::MAX,
+                centre: [0, 0],
+                scale: 4,
+                tiles: Vec::new(),
+            },
         ];
         for message in messages {
             assert_eq!(HostMessage::decode(&message.encode()).unwrap(), message);
@@ -1530,6 +1603,33 @@ mod tests {
             SavedWorld::load(&world).unwrap().unwrap().players,
             Players::default()
         );
+    }
+
+    /// A world keeps its maps (`maps.bin`); one saved before maps has no
+    /// such file and loads with none.
+    #[test]
+    fn a_saved_world_keeps_its_maps_and_an_older_one_loads_without() {
+        let dir = crate::test_dir::tempdir().unwrap();
+        let world = dir.path().join("world");
+        let mut saved = SavedWorld::new(12345, [90.5, 130.0, -30.5]);
+        let id = saved.maps.allocate();
+        let mut map = crate::filled_map::MapData::new(90.5, -30.5, 0);
+        map.set(10, 20, 45);
+        saved.maps.maps.insert(id, map);
+        saved.save(&world).unwrap();
+        let loaded = SavedWorld::load(&world).unwrap().unwrap();
+        assert_eq!(loaded.maps, saved.maps);
+        std::fs::remove_file(world.join(MAPS_FILE)).unwrap();
+        let older = SavedWorld::load(&world).unwrap().unwrap();
+        assert_eq!(older.maps, crate::filled_map::MapStore::default());
+        assert_eq!(older.players, saved.players);
+    }
+
+    #[test]
+    fn a_map_tile_out_of_the_map_is_refused() {
+        let mut bytes = HostMessage::MapTiles { id: 1, centre: [0, 0], scale: 0, tiles: vec![(0, vec![0; 256])] }.encode();
+        bytes[15] = 64;
+        assert_eq!(HostMessage::decode(&bytes), Err(DecodeError::Malformed("map tile")));
     }
 
     #[test]

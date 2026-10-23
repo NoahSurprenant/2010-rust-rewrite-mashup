@@ -13,6 +13,7 @@ mod scenarios {
     pub mod crafting_table;
     pub mod dedicated_server;
     pub mod heavy_gameplay_lifecycle;
+    pub mod map_steps;
     pub mod minecraft_multiplayer;
     pub mod mob_steps;
     pub mod skate_multiplayer;
@@ -714,6 +715,20 @@ fn run_minecraft_multiplayer(root: &Path, args: &Args) -> Result<bool, String> {
             let level = dirs[0].join("minecraft-worlds/world/level.json");
             manifest["saved_world"] =
                 json!({ "level": level.display().to_string(), "exists": level.is_file() });
+            // The second session plays it as a world saved before maps: its
+            // players are each owed a map once more.
+            if sessions.len() > 1 {
+                let world = dirs[0].join("minecraft-worlds/world");
+                match scenarios::map_steps::age_players(&world) {
+                    Ok(aged) => {
+                        facts.notes.insert("aged_players", aged.to_string());
+                    }
+                    Err(e) => {
+                        failure = Some(format!("aging the saved world: {e}"));
+                        break;
+                    }
+                }
+            }
         }
     }
     drop(master);

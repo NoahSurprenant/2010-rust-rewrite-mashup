@@ -547,6 +547,21 @@ fn release_level(holders: &mut HashMap<(i32, i32), u32>, pos: (i32, i32)) -> boo
     true
 }
 
+/// A chunk no player has about it any more: the mobs' level lets it go,
+/// and a host's maps no longer read it.
+fn forget_level_chunk(
+    net_role: &mut crate::minecraft_mp::NetRole,
+    entities: Option<&mut crate::minecraft_entities::Entities>,
+    pos: (i32, i32),
+) {
+    if let crate::minecraft_mp::NetRole::Host(host) = net_role {
+        host.columns.remove(pos);
+    }
+    if let Some(entities) = entities {
+        entities.unload_chunk(minecraftoss_core::ChunkPos::new(pos.0, pos.1));
+    }
+}
+
 /// One stream lets a chunk of the block world go; the last one to removes
 /// it, and says so.
 fn release_chunk(holders: &mut HashMap<(i32, i32), u32>, pos: (i32, i32)) -> bool {
@@ -1017,6 +1032,10 @@ fn update(
                 shapes: ids,
             },
         );
+        // What a map reads of it, its edits included.
+        if let NetRole::Host(host) = &mut *net_role {
+            host.columns.sample_scene(&world.scene, (chunk.pos.x, chunk.pos.z));
+        }
     }
     for pos in forgotten {
         // The stream dropped it from the scene; a client still standing there
@@ -1028,10 +1047,8 @@ fn update(
         {
             world.scene.insert_chunk(chunk.clone());
         }
-        if release_level(level_holders, (pos.x, pos.z))
-            && let Some(entities) = entities.as_mut()
-        {
-            entities.unload_chunk(pos);
+        if release_level(level_holders, (pos.x, pos.z)) {
+            forget_level_chunk(net_role, entities.as_mut(), (pos.x, pos.z));
         }
     }
 
@@ -1091,6 +1108,9 @@ fn update(
                         entities.mobs_gone(&ids);
                     }
                 }
+                HostMessage::MapTiles { id, centre, scale, tiles } => {
+                    crate::minecraft_mp::take_map_tiles(&mut client.maps, id, centre, scale, &tiles);
+                }
             }
         }
         // The mobs near it, as its snapshots last told.
@@ -1118,7 +1138,24 @@ fn update(
                     entities.selected = selected.min(frame::minecraft_ui::MC_HOTBAR - 1);
                     diag::info!(World, "Minecraft: the inventory of `{name}` restored");
                 }
+                // Its starting map, if this world owes it one.
+                if let Some(entities) = entities.as_mut() {
+                    host.give_map_once(Some(&key), &mut entities.inventory, &name);
+                }
                 host.local = Some((key, name));
+            }
+        }
+        // A player without a key keeps nothing: its map, once a session.
+        if !host.local_map_given
+            && host.local.is_none()
+            && !dedicated
+            && net.local_key.is_none()
+            && let Some(entities) = entities.as_mut()
+        {
+            let name = net::client_name_string(authority, local.0);
+            if !name.is_empty() {
+                host.local_map_given = true;
+                host.give_map_once(None, &mut entities.inventory, &name);
             }
         }
         let clients: Vec<u32> = net
@@ -1139,10 +1176,11 @@ fn update(
                     }
                 }
                 for pos in &remote.level_held {
-                    if release_level(level_holders, *pos)
-                        && let Some(entities) = entities.as_mut()
-                    {
-                        entities.unload_chunk(minecraftoss_core::ChunkPos::new(pos.0, pos.1));
+                    if release_level(level_holders, *pos) {
+                        host.columns.remove(*pos);
+                        if let Some(entities) = entities.as_mut() {
+                            entities.unload_chunk(minecraftoss_core::ChunkPos::new(pos.0, pos.1));
+                        }
                     }
                 }
                 match remote.key.as_deref() {
@@ -1173,7 +1211,9 @@ fn update(
                 let saved = key.as_deref().and_then(|key| host.join(key, &name));
                 let mut inventory = minecraftoss_player::inventory::Inventory::default();
                 inventory.recipes = entities.inventory.recipes.clone();
-                let remote = crate::minecraft_mp::Remote::new(name.clone(), key, inventory, saved.as_ref());
+                let mut remote = crate::minecraft_mp::Remote::new(name.clone(), key, inventory, saved.as_ref());
+                // Its starting map, if this world owes it one.
+                host.give_map_once(remote.key.as_deref(), &mut remote.inventory, &name);
                 diag::info!(
                     World,
                     "Minecraft: `{name}` joined as client {id}; {} block changes to send",
@@ -1241,10 +1281,11 @@ fn update(
             if followed == Some(id) {
                 remote.mob_stream = None;
                 for pos in std::mem::take(&mut remote.level_held) {
-                    if release_level(level_holders, pos)
-                        && let Some(entities) = entities.as_mut()
-                    {
-                        entities.unload_chunk(minecraftoss_core::ChunkPos::new(pos.0, pos.1));
+                    if release_level(level_holders, pos) {
+                        host.columns.remove(pos);
+                        if let Some(entities) = entities.as_mut() {
+                            entities.unload_chunk(minecraftoss_core::ChunkPos::new(pos.0, pos.1));
+                        }
                     }
                 }
             } else {
@@ -1256,6 +1297,14 @@ fn update(
                     let pos = (chunk.pos.x, chunk.pos.z);
                     if !remote.level_held.insert(pos) || !hold(level_holders, pos) {
                         continue;
+                    }
+                    // What a map reads of it: as the scene has it, else as
+                    // generated (the scene takes it, with its edits, when
+                    // the client comes near).
+                    if !host.columns.sample_scene(&world.scene, pos)
+                        && let Some(states) = world.scene.states()
+                    {
+                        host.columns.sample_generated(&chunk, states);
                     }
                     if let Some(entities) = entities.as_mut() {
                         entities.load_chunk(&chunk);
@@ -1270,11 +1319,11 @@ fn update(
                     }
                 }
                 for pos in forgotten {
-                    if remote.level_held.remove(&pos)
-                        && release_level(level_holders, pos)
-                        && let Some(entities) = entities.as_mut()
-                    {
-                        entities.unload_chunk(minecraftoss_core::ChunkPos::new(pos.0, pos.1));
+                    if remote.level_held.remove(&pos) && release_level(level_holders, pos) {
+                        host.columns.remove(pos);
+                        if let Some(entities) = entities.as_mut() {
+                            entities.unload_chunk(minecraftoss_core::ChunkPos::new(pos.0, pos.1));
+                        }
                     }
                 }
             }
@@ -1296,6 +1345,9 @@ fn update(
                     world.scene.insert_chunk(chunk.clone());
                     for (at, block) in deferred.remove(&pos).unwrap_or_default() {
                         world.scene.set(at, block);
+                    }
+                    if level_holders.contains_key(&pos) {
+                        host.columns.sample_scene(&world.scene, pos);
                     }
                     // A mobs' level that took this chunk before the scene had it
                     // has the log's changes now: its mobs stood on air where a
@@ -2134,22 +2186,55 @@ fn update(
         ui.hand = None;
         let swing = hand.swing.map_or(0.0, |t| (t / crate::minecraft_hand::SWING_TICKS).clamp(0.0, 1.0));
         ui.hand_swing = swing;
+        // The map in hand, as this game has it: the host's own, or what the
+        // host sent a client.
+        let held_map_id = entities.inventory.slots[entities.selected].as_ref().and_then(crate::minecraft_inventory::map_of);
+        let held_map = held_map_id.and_then(|id| match &*net_role {
+            NetRole::Host(host) => host.maps.maps.get(&id),
+            NetRole::Client(client) => client.maps.get(&id),
+            NetRole::None => None,
+        });
+        ui.held_map = held_map_id.map(|id| match held_map {
+            Some(map) => format!("{id}@{},{}:{}", map.centre.0, map.centre.1, map.explored()),
+            None => format!("{id}@-:0"),
+        });
         if draws
             && ui.holding_item
             && !puppet.active
             && let Some(stack) = entities.inventory.slots[entities.selected].clone()
         {
             let eye_light_at = glam::Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32);
-            let display = minecraft_terrain::pack::ResourceId::parse(&stack.id)
-                .ok()
-                .and_then(|id| minecraft_terrain::model::item_first_person_transform(&world.packs, &id).ok())
-                .unwrap_or(glam::Mat4::IDENTITY);
-            let pose = crate::minecraft_hand::item_pose(display, swing, 0.0);
-            let mesh = entities.held_item_mesh(&stack.id, pose, eye_light_at, &world.packs, &world.atlas, light);
-            ui.hand = Some((stack.id.clone(), mesh.faces));
+            let (vertices, indices, faces) = if stack.id == minecraft_terrain::filled_map::ITEM {
+                let region = |id: &str| {
+                    minecraft_terrain::pack::ResourceId::parse(id).map_or([0.0; 4], |id| world.atlas.region(&id))
+                };
+                let sprites = crate::minecraft_hand::MapSprites {
+                    white: region(minecraft_terrain::mesh::WHITE_TEXTURE),
+                    background: region(minecraft_terrain::filled_map::BACKGROUND),
+                    checkerboard: region(minecraft_terrain::filled_map::BACKGROUND_CHECKERBOARD),
+                    player: region(minecraft_terrain::filled_map::PLAYER_MARKER),
+                    off_map: region(minecraft_terrain::filled_map::PLAYER_OFF_MAP),
+                };
+                let at = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
+                let lit = [f32::from(light.get(at)), f32::from(light.get_block(at))];
+                let marker = held_map.and_then(|map| crate::minecraft_hand::map_marker(map, feet[0], feet[2], mc_yaw));
+                let pose = crate::minecraft_hand::map_pose(ps.viewangles[0], swing);
+                let (vertices, indices) = crate::minecraft_hand::map_mesh(held_map, marker, pose, &sprites, lit);
+                let faces = indices.len() / 6;
+                (vertices, indices, faces)
+            } else {
+                let display = minecraft_terrain::pack::ResourceId::parse(&stack.id)
+                    .ok()
+                    .and_then(|id| minecraft_terrain::model::item_first_person_transform(&world.packs, &id).ok())
+                    .unwrap_or(glam::Mat4::IDENTITY);
+                let pose = crate::minecraft_hand::item_pose(display, swing, 0.0);
+                let mesh = entities.held_item_mesh(&stack.id, pose, eye_light_at, &world.packs, &world.atlas, light);
+                (mesh.vertices, mesh.indices, mesh.faces)
+            };
+            ui.hand = Some((stack.id.clone(), faces));
             let vertices: Vec<minecraft_terrain::mesh::SectionVertex> =
-                mesh.vertices.iter().map(minecraft_terrain::mesh::SectionVertex::from_vertex).collect();
-            view.hand = (bytemuck::cast_slice(&vertices).to_vec(), mesh.indices);
+                vertices.iter().map(minecraft_terrain::mesh::SectionVertex::from_vertex).collect();
+            view.hand = (bytemuck::cast_slice(&vertices).to_vec(), indices);
             // Reverse-Z with no far plane, as the scene's; 70 degrees up.
             let f = 1.0 / (35.0f32.to_radians()).tan();
             let near = 0.05;
@@ -2207,6 +2292,27 @@ fn update(
     if let NetRole::Host(host) = &mut *net_role {
         changed.sort_unstable();
         changed.dedup();
+        host.columns.resample(&world.scene, &changed);
+        // The maps in players' hands fill in where they stand: the host's
+        // own player's, and each client's, as the host has them.
+        let mut holders = Vec::new();
+        if alive
+            && let Some(entities) = entities.as_ref()
+            && let Some(id) = entities.inventory.slots[entities.selected].as_ref().and_then(crate::minecraft_inventory::map_of)
+        {
+            holders.push((0, feet, id));
+        }
+        if let Some(authority) = authority.as_ref() {
+            for (&id, remote) in &host.remotes {
+                let Some(map) = remote.inventory.slots[remote.selected].as_ref().and_then(crate::minecraft_inventory::map_of) else {
+                    continue;
+                };
+                if let Some(ps) = authority.0.player(sim::ClientId(id)).filter(|ps| ps.pm_type == 0) {
+                    holders.push((crate::minecraft_entities::remote_key(id), sim::voxel::to_block(origin, ps.origin), map));
+                }
+            }
+        }
+        host.tick_maps(dt, &holders);
         for pos in changed {
             // A block set in a chunk not generated yet waits in `deferred`;
             // the scene would answer air for it.

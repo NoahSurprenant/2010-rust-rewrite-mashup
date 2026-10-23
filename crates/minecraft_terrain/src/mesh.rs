@@ -77,6 +77,8 @@ impl From<ChunkMesh> for SectionMesh {
     }
 }
 
+/// A white atlas cell, for geometry whose vertices carry its colour.
+pub const WHITE_TEXTURE: &str = "iw4l:white";
 #[derive(Default)]
 pub struct ChunkMesh {
     pub vertices: Vec<Vertex>,
@@ -382,6 +384,11 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     let mut textures = BTreeMap::<ResourceId, ()>::new();
     // A broken chest can remain as a dropped item after its block mesh is gone.
     textures.insert(ResourceId::parse("minecraft:entity/chest/normal")?, ());
+    // A filled map in hand: its paper, the holder's marker, and white for
+    // its pixels, which take their colours from their vertices.
+    for id in crate::filled_map::TEXTURES.iter().chain([&WHITE_TEXTURE]) {
+        textures.insert(ResourceId::parse(id)?, ());
+    }
     textures.insert(ResourceId::parse("minecraft:entity/bat/bat")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/zombie/zombie")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/player/wide/steve")?, ());
@@ -1421,6 +1428,8 @@ pub fn make_atlas(packs: &PackStack, mut textures: Vec<ResourceId>) -> Result<At
             } else {
                 image::imageops::resize(&frame, span_w * tile, span_h * tile, FilterType::Nearest)
             }
+        } else if id.key() == WHITE_TEXTURE {
+            RgbaImage::from_pixel(tile, tile, image::Rgba([255; 4]))
         } else {
             if id.path != "missingno" {
                 missing.push(id.clone());

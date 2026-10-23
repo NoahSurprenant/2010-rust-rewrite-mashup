@@ -44,7 +44,9 @@ pub(crate) fn item_model_tints(
                     .get("value")
                     .and_then(serde_json::Value::as_i64)
                     .map(|color| color as u32),
-                Some("minecraft:potion") => tint
+                // A map's markings in their default colour (no map colour
+                // component on a filled map).
+                Some("minecraft:potion" | "minecraft:map_color") => tint
                     .get("default")
                     .and_then(serde_json::Value::as_i64)
                     .map(|color| color as u32),
