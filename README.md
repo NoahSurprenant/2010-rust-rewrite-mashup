@@ -88,6 +88,7 @@ Plug in a controller and play; the game follows whichever controller you last to
 - **Aim assist** works as it does in MW2 on console: **Standard** slows your aim over an enemy and follows them as they move; **Full** also pulls your aim onto the nearest enemy when you aim down the sight. It's off with the mouse.
 - Click both sticks in to switch to and from Skate 3 mode, as **J** does.
 - On the Minecraft map, **D-pad down** opens the inventory (or the crafting table you look at) in every button layout; it keeps D-pad down's MW2 action, which multiplayer leaves empty. Rebind it as **Inventory (Minecraft)** in Options → Controls. Inside, a cursor follows the D-pad or left stick: **A** takes and places, **X** takes half or places one, **Y** moves a stack across, **LB**/**RB** throw, **B** closes. The buttons show under the inventory.
+
 ## Known issues
 
 - The skateboard is invisible on some maps.
