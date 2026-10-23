@@ -6,9 +6,12 @@
 //! (the same seed), see a block the host sets and one the host clears; the
 //! host must see a block the client sets, one it places by hand (a right
 //! click with planks the host gave it on its `mc give`) and one it breaks
-//! by hand. Far from the host, in a walled arena, a husk summoned beside the
-//! client must reach the client with the host's id and stand where the host
-//! has it, hurt the client, and die to the client's gun as the host sees;
+//! by hand; after the host's server dropped items of its own, the client
+//! must break an oak log by hand and stone with a pickaxe and pick up the
+//! log and the cobblestone. Far from the host, in a walled arena, a husk
+//! summoned beside the client must reach the client with the host's id and
+//! stand where the host has it, hurt the client, and die to the client's
+//! gun as the host sees;
 //! a pig shot dead there must drop its porkchop where the client sees it.
 //! The client must have heard the husk (its sounds, from the host), kill a
 //! husk with MW2's knife and a penned pig with its fists as the host sees,
@@ -47,6 +50,8 @@ pub const PARTS: Parts = &[
             "client_place_on_host",
             "client_break_on_host",
             "client_picks_up_drop",
+            "client_breaks_log_and_stone",
+            "client_picks_up_log_and_cobblestone",
             "restart_same_seed",
             "restart_world_kept",
             "restart_host_inventory",
@@ -282,8 +287,105 @@ fn world_steps(pair: &mut Pair, facts: &mut Facts, client: &Event) -> Result<(),
         facts.keep("h_ground", ground);
     }
     facts.keep("c_picked", picked);
+    block_drops(pair, facts, feet)?;
     let last = pair.ask(true, "key 1; wait 1s; mc state c_final", "c_final", step)?;
     facts.keep("c_final", last);
+    Ok(())
+}
+
+/// Hotbar slot (from 0) of the first stack `stack` (`minecraft:…*count`)
+/// or empty slot (`-`).
+fn hotbar_slot(event: &Event, stack: &str) -> Option<usize> {
+    slots(event).iter().take(9).position(|s| s == stack)
+}
+
+/// Whether a state line's slots hold a stack of `id`.
+fn holds(event: &Event, id: &str) -> bool {
+    let stack = format!("{id}*");
+    slots(event).iter().any(|s| s.starts_with(&stack))
+}
+
+/// Back in its corridor (`feet`, as it started), the client breaks an oak
+/// log by hand and stone with a wooden pickaxe, and picks up what they
+/// drop: a log and cobblestone. First the host's server drops items of its
+/// own, three torches that lose their stone south of the corridor, out of
+/// the client's reach: the drops of the client's breaks must reach the
+/// server all the same (they were lost when their IDs met a lying item's).
+fn block_drops(pair: &mut Pair, facts: &mut Facts, feet: [i32; 3]) -> Result<(), String> {
+    let step = Duration::from_secs(STEP_SECS);
+    let sync = Duration::from_secs(SYNC_SECS);
+    let [x, y, z] = feet;
+    let row = |dy: i32, block: &str| {
+        format!(
+            "mc set {x} {} {} {} {} {} {block}",
+            y + dy,
+            z + 4,
+            x + 2,
+            y + dy,
+            z + 4
+        )
+    };
+    let script = format!(
+        "{}; wait 1s; {}; wait 1s; {}; wait 3s; mc mobs c_torches -",
+        row(0, "stone"),
+        row(1, "torch"),
+        row(0, "air")
+    );
+    let torches = pair.ask(true, &script, "c_torches", step)?;
+    facts.keep("c_torches", torches);
+    // Back from the plank's spot, a log and stone above it where the plank
+    // was, and a pickaxe.
+    let log = add(feet, [2, 0, 0]);
+    let stone = add(feet, [2, 1, 0]);
+    let script = format!(
+        "hold +back; wait 0.5s; release +back; wait 1s; {}; {}; mc give wooden_pickaxe 1; wait 2s; mc state c_tools",
+        set(log, "oak_log"),
+        set(stone, "stone")
+    );
+    let tools = pair.ask(true, &script, "c_tools", step)?;
+    let tools = facts.keep("c_tools", tools);
+    let pickaxe = hotbar_slot(&tools, "minecraft:wooden_pickaxe*1")
+        .ok_or("the client's pickaxe is not on its hotbar")?;
+    let hand = hotbar_slot(&tools, "-").ok_or("no empty hotbar slot on the client")?;
+    pair.poll_block(false, "h_log", log, "minecraft:oak_log", sync)?;
+    pair.poll_block(false, "h_stone", stone, "minecraft:stone", sync)?;
+    // The stone with the pickaxe, looking level; the log by hand, looking
+    // down.
+    pair.client.as_mut().ok_or("no client")?.send(&format!(
+        "key {}; wait 1s; look 0 0; wait 0.2s; key mouse1 4",
+        pickaxe + 1
+    ))?;
+    let gone = pair.poll_block(false, "h_stone_gone", stone, "air", Duration::from_secs(40))?;
+    facts.notes.insert("h_stone_gone", gone);
+    pair.client.as_mut().ok_or("no client")?.send(&format!(
+        "key {}; wait 1s; look 0 23; wait 0.2s; key mouse1 5",
+        hand + 1
+    ))?;
+    let gone = pair.poll_block(false, "h_log_gone", log, "air", Duration::from_secs(40))?;
+    facts.notes.insert("h_log_gone", gone);
+    // It walks onto the drops and picks both up, asking again on a slow
+    // machine until it has them or `sync` passes.
+    let mut picked = pair.ask(
+        true,
+        "hold +forward; wait 0.4s; release +forward; wait 3s; mc state c_drops_picked",
+        "c_drops_picked",
+        step,
+    )?;
+    let start = Instant::now();
+    let both = |e: &Event| holds(e, "minecraft:oak_log") && holds(e, "minecraft:cobblestone");
+    while !both(&picked) && start.elapsed() < sync {
+        picked = pair.ask(true, "wait 1s; mc state c_drops_picked", "c_drops_picked", step)?;
+    }
+    facts
+        .notes
+        .insert("c_drops_picked_after_secs", start.elapsed().as_secs().to_string());
+    if !both(&picked) {
+        let ground = mob_steps::census(pair, true, "c_drops_ground", Some("-"))?;
+        facts.keep("c_drops_ground", ground);
+        let ground = mob_steps::census(pair, false, "h_drops_ground", Some("-"))?;
+        facts.keep("h_drops_ground", ground);
+    }
+    facts.keep("c_drops_picked", picked);
     Ok(())
 }
 
@@ -449,7 +551,7 @@ fn want(got: &str, want: &str, what: &str) -> Result<(), String> {
 /// Judges what both games printed.
 pub fn judge(facts: &Facts) -> Vec<Check> {
     type Rule = fn(&Facts) -> Result<(), String>;
-    let rules: [(&'static str, Rule); 19] = [
+    let rules: [(&'static str, Rule); 21] = [
         ("seed_shared", |f| {
             let host = line(f, "h_ready")?.get("seed").unwrap_or("-");
             let client = line(f, "c_ready")?.get("seed").unwrap_or("-");
@@ -508,6 +610,26 @@ pub fn judge(facts: &Facts) -> Vec<Check> {
                 "minecraft:oak_planks*4",
                 "client slot after walking onto the drop",
             )
+        }),
+        ("client_breaks_log_and_stone", |f| {
+            want(note(f, "h_stone_gone")?, "air", "host sees the stone")?;
+            want(note(f, "h_log_gone")?, "air", "host sees the log")
+        }),
+        ("client_picks_up_log_and_cobblestone", |f| {
+            let picked = line(f, "c_drops_picked")?;
+            let missing: Vec<&str> = ["minecraft:oak_log", "minecraft:cobblestone"]
+                .into_iter()
+                .filter(|id| !holds(picked, id))
+                .collect();
+            if missing.is_empty() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "the client never had {} (slots {})",
+                    missing.join(" or "),
+                    slots(picked).join(",")
+                ))
+            }
         }),
         ("client_ground_far_from_host", |f| {
             let want = [FAR[0], FAR[1] + 1, FAR[2]];
@@ -716,6 +838,17 @@ mod tests {
             "c_picked".into(),
             ready("c_picked", "client", with(5, "minecraft:oak_planks*4")),
         );
+        let mut drops = slots.clone();
+        drops[5..9].copy_from_slice(&[
+            "minecraft:oak_planks*4",
+            "minecraft:wooden_pickaxe*1",
+            "minecraft:cobblestone*1",
+            "minecraft:oak_log*1",
+        ]);
+        f.lines.insert(
+            "c_drops_picked".into(),
+            ready("c_drops_picked", "client", drops.join(",")),
+        );
         for label in ["c_far1", "c_far2"] {
             f.lines
                 .insert(label.into(), event(&format!("label={label} feet=320,61,0")));
@@ -735,6 +868,8 @@ mod tests {
             ("planks_slot", "5"),
             ("h_plank", "minecraft:oak_planks"),
             ("h_plank_gone", "air"),
+            ("h_stone_gone", "air"),
+            ("h_log_gone", "air"),
         ] {
             f.notes.insert(key, value.into());
         }
@@ -822,6 +957,39 @@ mod tests {
             .map(|c| c.label)
             .collect();
         assert_eq!(failed, ["client_place_on_host"]);
+    }
+
+    #[test]
+    fn a_block_drop_never_picked_up_fails() {
+        let mut f = passing();
+        let mut slots = vec!["-"; 41];
+        slots[5..8].copy_from_slice(&[
+            "minecraft:oak_planks*4",
+            "minecraft:wooden_pickaxe*1",
+            "minecraft:oak_log*1",
+        ]);
+        f.lines.insert(
+            "c_drops_picked".into(),
+            event(&format!("label=c_drops_picked slots={}", slots.join(","))),
+        );
+        let failed: Vec<_> = judge(&f)
+            .into_iter()
+            .filter(|c| !c.failures.is_empty())
+            .map(|c| (c.label, c.failures))
+            .collect();
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(failed[0].0, "client_picks_up_log_and_cobblestone");
+        assert!(failed[0].1[0].starts_with("the client never had minecraft:cobblestone (slots"));
+    }
+
+    #[test]
+    fn hotbar_slots_by_stack() {
+        let e = event("label=x slots=iw4:weapon/1*1,-,minecraft:wooden_pickaxe*1,-");
+        assert_eq!(hotbar_slot(&e, "-"), Some(1));
+        assert_eq!(hotbar_slot(&e, "minecraft:wooden_pickaxe*1"), Some(2));
+        assert_eq!(hotbar_slot(&e, "minecraft:stone*1"), None);
+        assert!(holds(&e, "minecraft:wooden_pickaxe"));
+        assert!(!holds(&e, "minecraft:wooden"));
     }
 
     #[test]
