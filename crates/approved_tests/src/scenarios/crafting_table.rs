@@ -164,7 +164,11 @@ pub const STEPS: &[Step] = &[
         expect: &[Expect::Screen(Screen::None)],
     },
     Step {
-        commands: "key 6; wait 1s; look 0 23; wait 2t; key mouse2 0; wait 1s; screenshot approved/03_right_click_with_item",
+        // Digit 2 (slot 1, the planks), not 6: the planks sit right of the
+        // one starter gun now, not after five class-loadout guns. This
+        // selection also carries into the next (crouched) step, which
+        // needs a real item in hand to place rather than open the table.
+        commands: "key 2; wait 1s; look 0 23; wait 2t; key mouse2 0; wait 1s; screenshot approved/03_right_click_with_item",
         label: "right_click_with_item_opens",
         expect: &[Expect::Screen(Screen::Table)],
     },

@@ -192,9 +192,19 @@ pub(crate) fn sync_minecraft_arsenal(world: &mut FrameWorld) {
                 continue;
             }
             give_weapon_to_ps_akimbo(&mut ps, weapon, false);
-            if let Some(facts) = world.combat_facts_for(weapon) {
-                let clip_key = clip_table_key(facts.clip_index, weapon);
-                set_clip_for_hand(&mut ps.ammoclip, clip_key, 0, facts.clip_size);
+            match world.combat_facts_for(weapon) {
+                Some(facts) => {
+                    let clip_key = clip_table_key(facts.clip_index, weapon);
+                    set_clip_for_hand(&mut ps.ammoclip, clip_key, 0, facts.clip_size);
+                    let now = get_clip_for_hand(&ps.ammoclip, clip_key, 0);
+                    diag::info!(
+                        Sim,
+                        "TEMP-GUN-DEBUG: granted weapon={weapon} clip_index={} clip_size={} clip_key={clip_key} now_in_clip={now}",
+                        facts.clip_index,
+                        facts.clip_size
+                    );
+                }
+                None => diag::info!(Sim, "TEMP-GUN-DEBUG: granted weapon={weapon} but combat_facts_for returned None"),
             }
         }
         for weapon in ps.weapons {
@@ -235,6 +245,9 @@ pub(crate) fn sync_minecraft_arsenal(world: &mut FrameWorld) {
         {
             let ammo_key = ammo_table_key(facts.ammo_index, active);
             set_ammo_not_in_clip(&mut ps.ammo, ammo_key, seed);
+            let clip_key = clip_table_key(facts.clip_index, active);
+            let clip_now = get_clip_for_hand(&ps.ammoclip, clip_key, 0);
+            diag::info!(Sim, "TEMP-GUN-DEBUG2: active={active} clip_now={clip_now} reserve_seed={seed}");
         }
         world.client_meta_mut(id).minecraft_ammo_seed = seed;
         world.client_meta_mut(id).mirror_held_ammo(ps.weapon);
