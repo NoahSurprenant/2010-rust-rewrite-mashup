@@ -114,6 +114,7 @@ impl Mining {
                     let entry = self.progress.entry(pos).or_insert((0.0, now));
                     entry.0 += if hardness <= 0.0 { 1.0 } else { damage / DAMAGE_PER_HARDNESS / hardness };
                     entry.1 = now;
+                    diag::info!(World, "TEMP-GUN-DEBUG7: Shot by={by:?} pos={pos:?} damage={damage} hardness={hardness} progress={}", entry.0);
                     if entry.0 >= 1.0 {
                         self.progress.remove(&pos);
                         if let Some(block) = Scene::block(&*world.scene, pos).cloned()
