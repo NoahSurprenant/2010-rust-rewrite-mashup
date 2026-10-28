@@ -2181,6 +2181,12 @@ fn update(
         // The local player's permanent gun unlocks and universal ammo, host
         // authoritative only (a pure client waits for the host's state); a
         // dedicated server has no local player of its own.
+        diag::info!(
+            World,
+            "TEMP-GUN-DEBUG3: dedicated={dedicated} is_host={} ammo_in_inventory={}",
+            matches!(net_role, NetRole::Host(_)),
+            entities.inventory.count(crate::minecraft_inventory::AMMO_ITEM)
+        );
         if !dedicated
             && let NetRole::Host(host) = net_role
             && let Some(authority) = authority.as_mut()
