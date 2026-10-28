@@ -608,7 +608,7 @@ mod tests {
             }
             state(&format!(
                 "label={label} stance=stand menu=false table_in_view=1,2,3 screen={screen} grid={grid} result={result} cursor={cursor} pad={pad} slots={guns},{}",
-                s[5..].join(",")
+                s[1..].join(",")
             ))
         };
         let line = |label: &str,
