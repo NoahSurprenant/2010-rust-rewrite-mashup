@@ -2260,6 +2260,11 @@ fn update(
             client.send(net.inbox.as_deref_mut(), net.ids.as_deref_mut(), local.0, &Intent::Select { slot: selected as u8 });
         }
         entities.selected = selected;
+        diag::info!(
+            World,
+            "TEMP-GUN-DEBUG5: right before publish, ammo_in_inventory={}",
+            entities.inventory.count(crate::minecraft_inventory::AMMO_ITEM)
+        );
         if !dedicated {
             inventory_ui.publish(&mut ui, &entities.inventory, selected, &world.packs, &mut images, draws);
         }
