@@ -31,8 +31,11 @@ pub const QUIT_TIMEOUT_SECS: u64 = 60;
 /// right click rather than aiming.
 pub const CLASSES: &str = "iw4l-classes 1\nmg4_bling\tiw4:weapon/mg4_mp\tgrip,heartbeat\tiw4:weapon/at4_mp\t\tiw4:weapon/frag_grenade_mp\tiw4:weapon/smoke_grenade_mp\tspecialty_bling\tspecialty_bulletdamage\tspecialty_detectexplosive\tspecialty_copycat\n";
 
-/// The planks' slot once the inventory is cleared: after MW2's five guns.
-const PLANKS: usize = 5;
+/// The planks' slot once the inventory is cleared: after the starter
+/// pistol, the only gun a Minecraft player now starts with (class loadouts
+/// hand out none there; this arena's own `mc give` never touches the
+/// reserved ammo or map slots near the end of the hotbar).
+const PLANKS: usize = 1;
 
 pub struct Step {
     pub commands: &'static str,
@@ -573,14 +576,17 @@ mod tests {
     }
 
     fn passing_states() -> Vec<Event> {
-        let guns = "iw4:weapon/1*1,iw4:weapon/2*1,iw4:weapon/3*1,iw4:weapon/4*1,iw4:weapon/5*1";
+        // Only the starter pistol now (the owner's decision): class
+        // loadouts hand out no guns on the Minecraft map, and the other
+        // four slots this fixture used to reserve for them are free.
+        let guns = "iw4:weapon/1*1";
         let slots_at = |p: &str, at: usize, extra: &str| {
             let mut s: Vec<String> = vec!["-".into(); 41];
             s[PLANKS] = p.into();
             if !extra.is_empty() {
                 s[at] = extra.into();
             }
-            format!("{guns},{}", s[5..].join(","))
+            format!("{guns},{}", s[1..].join(","))
         };
         let slots = |p: &str, extra: &str| slots_at(p, 20, extra);
         let grid9 = |cells: &[&str]| cells.join(",");

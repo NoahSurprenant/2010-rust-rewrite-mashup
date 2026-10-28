@@ -142,23 +142,25 @@ fn set_ammo_on_ps(
     }
 }
 
-/// Guns every player on a Minecraft map carries besides its class.
-const BLOCK_WORLD_GUNS: [&str; 3] = ["cheytac_mp", "spas12_mp", "ump45_mp"];
-
-/// On a Minecraft map every player also carries the Intervention, SPAS-12
-/// and UMP45, and never runs out: each weapon's clips stay full and its
-/// reserve (grenades too) at the most it holds, as MW2's
-/// `player_sustainAmmo` keeps them.
-pub(crate) fn sustain_block_world_arsenal(world: &mut FrameWorld) {
+/// A Minecraft player's guns, host side: none from a class loadout (the
+/// owner's decision — the starter kit and the crafting table are the only
+/// way to one), only `ClientMatchState::minecraft_unlocked_weapons`, fed in
+/// once a tick by the Minecraft world (`FrameWorld::set_minecraft_unlocked_weapons`)
+/// before this runs. Equipment a class still grants (grenades, killstreak
+/// items) keeps MW2's `player_sustainAmmo`: it never runs out, as it always
+/// has on this map; only guns are ammo-limited.
+///
+/// Run before a tick's weapon processing: takes away a primary gun not on
+/// the unlocked list, gives a newly-unlocked one a full magazine (Minecraft
+/// mode has no reserve of its own), then seeds the active weapon's MW2
+/// reserve from the Minecraft inventory's universal ammo count
+/// (`minecraft_ammo_available`), so this tick's reload — MW2's own
+/// animation and timing — can draw on it. `drain_minecraft_ammo_consumption`
+/// reads back how much it drew.
+pub(crate) fn sync_minecraft_arsenal(world: &mut FrameWorld) {
     if !crate::voxel::active() || !world.publishes_snapshot() {
         return;
     }
-    let names = world.weapon_script_names();
-    let extra: Vec<u32> = BLOCK_WORLD_GUNS
-        .iter()
-        .filter_map(|name| names.iter().position(|n| n == name))
-        .filter_map(|i| u32::try_from(i).ok())
-        .collect();
     for id in world.client_ids_sorted() {
         if !world.client_meta(id).is_some_and(|m| m.lifecycle == ClientLifecycle::Alive) {
             continue;
@@ -167,9 +169,32 @@ pub(crate) fn sustain_block_world_arsenal(world: &mut FrameWorld) {
             continue;
         };
         let before = ps;
-        for &weapon in &extra {
-            if !ps.weapons.contains(&(weapon as i32)) {
-                give_weapon_to_ps_akimbo(&mut ps, weapon, false);
+        let wanted = world
+            .client_meta(id)
+            .map(|m| m.minecraft_unlocked_weapons.clone())
+            .unwrap_or_default();
+        for weapon in ps.weapons {
+            let Ok(weapon) = u32::try_from(weapon) else {
+                continue;
+            };
+            if weapon == 0 || wanted.contains(&weapon) {
+                continue;
+            }
+            if world
+                .combat_facts_for(weapon)
+                .is_some_and(|f| f.inventory_type == WEAP_INVENTORY_PRIMARY)
+            {
+                take_player_weapon(&mut ps, weapon);
+            }
+        }
+        for &weapon in &wanted {
+            if player_weapons_find_slot(&ps.weapons, weapon as i32) >= 0 {
+                continue;
+            }
+            give_weapon_to_ps_akimbo(&mut ps, weapon, false);
+            if let Some(facts) = world.combat_facts_for(weapon) {
+                let clip_key = clip_table_key(facts.clip_index, weapon);
+                set_clip_for_hand(&mut ps.ammoclip, clip_key, 0, facts.clip_size);
             }
         }
         for weapon in ps.weapons {
@@ -182,6 +207,9 @@ pub(crate) fn sustain_block_world_arsenal(world: &mut FrameWorld) {
             let Some(facts) = world.combat_facts_for(weapon) else {
                 continue;
             };
+            if facts.inventory_type == WEAP_INVENTORY_PRIMARY {
+                continue;
+            }
             let (clip_r, clip_l, stock) = ammo_from_ps(world, &ps, weapon);
             let full_stock = facts.max_ammo.max(facts.start_ammo);
             let full_l = if clip_l > 0 { facts.clip_size } else { 0 };
@@ -195,12 +223,79 @@ pub(crate) fn sustain_block_world_arsenal(world: &mut FrameWorld) {
                 meta.set_ammo(weapon, facts.clip_size, full_stock);
             }
         }
+        let active = ps.weapon;
+        let is_minecraft_gun = active != 0 && wanted.contains(&active);
+        let seed = if is_minecraft_gun {
+            world.client_meta(id).map_or(0, |m| m.minecraft_ammo_available)
+        } else {
+            0
+        };
+        if is_minecraft_gun
+            && let Some(facts) = world.combat_facts_for(active)
+        {
+            let ammo_key = ammo_table_key(facts.ammo_index, active);
+            set_ammo_not_in_clip(&mut ps.ammo, ammo_key, seed);
+        }
+        world.client_meta_mut(id).minecraft_ammo_seed = seed;
         world.client_meta_mut(id).mirror_held_ammo(ps.weapon);
         if ps != before
             && let Some(slot) = world.player_mut(id)
         {
             *slot = ps;
         }
+    }
+}
+
+/// After a tick's weapon processing: how many rounds a Minecraft gun's
+/// reload actually drew from the reserve `sync_minecraft_arsenal` seeded,
+/// for the Minecraft world to remove that many universal ammo items next
+/// (`FrameWorld::take_minecraft_ammo_consumed`).
+pub(crate) fn drain_minecraft_ammo_consumption(world: &mut FrameWorld) {
+    if !crate::voxel::active() || !world.publishes_snapshot() {
+        return;
+    }
+    for id in world.client_ids_sorted() {
+        let Some(ps) = world.player(id) else {
+            continue;
+        };
+        let active = ps.weapon;
+        let now = if active == 0 {
+            0
+        } else {
+            world.combat_facts_for(active).map_or(0, |facts| {
+                let ammo_key = ammo_table_key(facts.ammo_index, active);
+                get_ammo_not_in_clip(&ps.ammo, ammo_key)
+            })
+        };
+        let meta = world.client_meta_mut(id);
+        let consumed = (meta.minecraft_ammo_seed - now).max(0);
+        meta.minecraft_ammo_consumed += consumed;
+    }
+}
+
+impl FrameWorld<'_> {
+    /// Minecraft mode, host side: the weapons this client has permanently
+    /// unlocked (the starter kit, then the crafting table), fed in once a
+    /// tick before the step runs. Takes effect the same tick
+    /// (`sync_minecraft_arsenal`); the only source of a Minecraft player's
+    /// guns, since class loadouts hand out none there.
+    pub fn set_minecraft_unlocked_weapons(&mut self, id: ClientId, weapons: &[u32]) {
+        self.client_meta_mut(id).minecraft_unlocked_weapons = weapons.to_vec();
+    }
+
+    /// Minecraft mode, host side: how many universal ammo items the
+    /// client's Minecraft inventory currently holds, fed in once a tick
+    /// before the step runs; there is no MW2 reserve ammo of its own there.
+    pub fn set_minecraft_ammo_available(&mut self, id: ClientId, count: i32) {
+        self.client_meta_mut(id).minecraft_ammo_available = count.max(0);
+    }
+
+    /// Minecraft mode, host side: rounds drawn from the fed-in ammo count
+    /// since the last call (a reload completing, or part of one), for the
+    /// Minecraft world to remove that many `iw4l:ammo` items. Zero outside
+    /// Minecraft mode or with nothing drawn.
+    pub fn take_minecraft_ammo_consumed(&mut self, id: ClientId) -> i32 {
+        std::mem::take(&mut self.client_meta_mut(id).minecraft_ammo_consumed)
     }
 }
 

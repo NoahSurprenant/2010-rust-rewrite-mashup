@@ -17,6 +17,20 @@ use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 /// Items that are MW2 guns: `iw4:weapon/<weapon index>`.
 const WEAPON_PREFIX: &str = "iw4:weapon/";
+/// A crafting table's result for a gun recipe (`with_mod_recipes`):
+/// `iw4l:gun/<script name>`. Never a real inventory item — taking it off
+/// the table is this player's permanent unlock of that MW2 weapon
+/// (`promote_crafted_guns`), which `sync_weapons` then mirrors into the
+/// inventory as a `WEAPON_PREFIX` stack, same as any other gun it has.
+const CRAFTED_GUN_PREFIX: &str = "iw4l:gun/";
+/// The universal ammo item every gun's reload draws from.
+pub(crate) const AMMO_ITEM: &str = "iw4l:ammo";
+/// The MW2 USP .45: every player's starter pistol (the owner's decision),
+/// besides being craftable like any other gun.
+pub(crate) const STARTER_WEAPON: &str = "usp_mp";
+/// The starter kit's ammo: enough for a reload or two of the starter
+/// pistol, not a stockpile.
+pub(crate) const STARTER_AMMO: u8 = 16;
 /// Icon cells: 32 pixels (a 16-pixel item at GUI scale 2), 16 to a row.
 const ICON: u32 = 32;
 const ATLAS: u32 = ICON * 16;
@@ -371,9 +385,65 @@ pub(crate) fn starting_map_slot(inventory: &Inventory) -> Option<usize> {
         .find(|&i| inventory.slots[i].is_none())
 }
 
+/// A player's starter ammo stack: the hotbar slot before the map's, clear
+/// of the guns that fill in from the first, else the first free slot
+/// (same reasoning as `starting_map_slot`, one slot earlier so the two
+/// never contend). False when the inventory is full.
+pub(crate) fn give_starter_ammo(inventory: &mut Inventory) -> bool {
+    let Some(slot) = starter_ammo_slot(inventory) else {
+        return false;
+    };
+    inventory.slots[slot] = Some(inventory.recipes.stack(AMMO_ITEM, STARTER_AMMO));
+    true
+}
+
+/// Where the starter kit's ammo goes.
+pub(crate) fn starter_ammo_slot(inventory: &Inventory) -> Option<usize> {
+    let anchor = frame::minecraft_ui::MC_HOTBAR - 2;
+    std::iter::once(anchor)
+        .chain(frame::minecraft_ui::MC_HOTBAR..36)
+        .chain(0..anchor)
+        .find(|&i| inventory.slots[i].is_none())
+}
+
 /// The map a stack is, by its id.
 pub(crate) fn map_of(stack: &ItemStack) -> Option<u32> {
     minecraft_terrain::filled_map::map_id(&stack.id, stack.components.as_ref())
+}
+
+/// A crafted gun's script name, by a stack's id.
+pub(crate) fn crafted_gun_of(stack: &ItemStack) -> Option<&str> {
+    stack.id.strip_prefix(CRAFTED_GUN_PREFIX)
+}
+
+/// Taking a gun recipe's result off a crafting table is this player's
+/// permanent unlock of that MW2 weapon: every crafting-table marker stack
+/// (`CRAFTED_GUN_PREFIX`) anywhere in the inventory (a slot, the cursor, or
+/// a crafting grid a close did not settle) is consumed here, added to
+/// `unlocked` if it is not there already, and never becomes a real item.
+/// Returns the weapons newly unlocked this call, for the caller to persist
+/// (a keyed player's record) and log.
+pub(crate) fn promote_crafted_guns(inventory: &mut Inventory, unlocked: &mut Vec<String>) -> Vec<String> {
+    let mut newly = Vec::new();
+    let mut take = |slot: &mut Option<ItemStack>| {
+        if let Some(name) = slot.as_ref().and_then(|s| crafted_gun_of(s)) {
+            if !unlocked.iter().any(|w| w == name) && !newly.iter().any(|w| w == name) {
+                newly.push(name.to_owned());
+            }
+            *slot = None;
+        }
+    };
+    for slot in inventory
+        .slots
+        .iter_mut()
+        .chain(inventory.crafting.iter_mut())
+        .chain(inventory.workbench.iter_mut())
+        .chain(std::iter::once(&mut inventory.cursor))
+    {
+        take(slot);
+    }
+    unlocked.extend(newly.iter().cloned());
+    newly
 }
 
 #[cfg(test)]
@@ -405,5 +475,62 @@ mod tests {
             slot.get_or_insert_with(|| ItemStack::new("minecraft:dirt", 1));
         }
         assert!(!give_starting_map(&mut inventory, 7), "a full inventory");
+    }
+
+    #[test]
+    fn the_starter_ammo_goes_one_slot_before_the_map_clear_of_a_gun() {
+        let mut inventory = Inventory::default();
+        InventoryUi::default().sync_weapons(&mut inventory, &[1]);
+        assert!(give_starter_ammo(&mut inventory));
+        let last = frame::minecraft_ui::MC_HOTBAR - 1;
+        assert_eq!(inventory.slots[last - 1].as_ref().map(|s| s.id.as_str()), Some(AMMO_ITEM));
+        assert_eq!(inventory.slots[last - 1].as_ref().unwrap().count, STARTER_AMMO);
+        // Giving the map after does not contend with the ammo's slot.
+        assert!(give_starting_map(&mut inventory, 1));
+        assert_eq!(inventory.slots[last].as_ref().and_then(map_of), Some(1));
+        assert!(inventory.slots[0].as_ref().and_then(weapon_of).is_some(), "the gun kept slot 0");
+    }
+
+    #[test]
+    fn a_crafted_gun_s_marker_unlocks_it_and_never_becomes_an_item() {
+        let mut inventory = Inventory::default();
+        inventory.slots[3] = Some(ItemStack::new("iw4l:gun/usp_mp", 1));
+        let mut unlocked = Vec::new();
+        let newly = promote_crafted_guns(&mut inventory, &mut unlocked);
+        assert_eq!(newly, vec!["usp_mp".to_owned()]);
+        assert_eq!(unlocked, vec!["usp_mp".to_owned()]);
+        assert!(inventory.slots[3].is_none(), "the marker is never a real item");
+    }
+
+    #[test]
+    fn a_gun_already_unlocked_crafts_nothing_new() {
+        let mut inventory = Inventory::default();
+        inventory.cursor = Some(ItemStack::new("iw4l:gun/usp_mp", 1));
+        let mut unlocked = vec!["usp_mp".to_owned()];
+        let newly = promote_crafted_guns(&mut inventory, &mut unlocked);
+        assert!(newly.is_empty());
+        assert_eq!(unlocked, vec!["usp_mp".to_owned()]);
+        assert!(inventory.cursor.is_none());
+    }
+
+    #[test]
+    fn two_different_crafted_guns_both_unlock_in_one_pass() {
+        let mut inventory = Inventory::default();
+        inventory.slots[0] = Some(ItemStack::new("iw4l:gun/ak47_mp", 1));
+        inventory.workbench[0] = Some(ItemStack::new("iw4l:gun/spas12_mp", 1));
+        let mut unlocked = Vec::new();
+        let mut newly = promote_crafted_guns(&mut inventory, &mut unlocked);
+        newly.sort();
+        assert_eq!(newly, vec!["ak47_mp".to_owned(), "spas12_mp".to_owned()]);
+        assert_eq!(unlocked.len(), 2);
+    }
+
+    #[test]
+    fn a_normal_item_is_not_a_crafted_gun() {
+        let mut inventory = Inventory::default();
+        inventory.slots[0] = Some(ItemStack::new("minecraft:iron_ingot", 1));
+        let mut unlocked = Vec::new();
+        assert!(promote_crafted_guns(&mut inventory, &mut unlocked).is_empty());
+        assert!(inventory.slots[0].is_some(), "a real item is left alone");
     }
 }

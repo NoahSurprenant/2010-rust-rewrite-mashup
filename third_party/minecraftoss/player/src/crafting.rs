@@ -2,7 +2,7 @@
 //! player's external, pinned Minecraft data JAR. No vanilla data is bundled.
 use crate::{inventory::ItemStack, item_catalog::ItemCatalog};
 use anyhow::{Context, Result};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
@@ -347,6 +347,39 @@ impl RecipeBook {
     pub fn max_stack(&self, id: &str) -> u8 {
         self.item_catalog()
             .map_or(64, |catalog| catalog.max_stack(id))
+    }
+
+    /// This mashup's own recipes, laid over whatever vanilla gave (or
+    /// nothing, without the data JAR): a universal ammo item from vanilla
+    /// materials, and a crafting-table recipe for every gun this mod lets a
+    /// player unlock besides the one it starts with. Not vanilla data (no
+    /// JAR entry for any of this), so it is written here rather than read.
+    ///
+    /// A gun's result is `iw4l:gun/<script name>` (never a real inventory
+    /// item): taking it off a crafting table is this player's permanent
+    /// unlock of that MW2 weapon, which the Minecraft world turns into one
+    /// the moment it sees the stack (`minecraft_world`'s arsenal sync) —
+    /// the stack itself never sits in an inventory.
+    pub fn with_mod_recipes(mut self) -> Self {
+        self.recipes.push(mod_recipe(
+            "iw4l:ammo",
+            "misc",
+            &[" I ", " G "],
+            &[('I', "minecraft:iron_ingot"), ('G', "minecraft:gunpowder")],
+            "iw4l:ammo",
+            8,
+        ));
+        for &(id, pattern, key) in MOD_GUN_RECIPES {
+            self.recipes.push(mod_recipe(
+                &format!("iw4l:gun_{id}"),
+                "misc",
+                pattern,
+                key,
+                &format!("iw4l:gun/{id}"),
+                1,
+            ));
+        }
+        self
     }
 
     /// A stack's explicit component patch takes precedence over its default
@@ -980,6 +1013,133 @@ fn parse_result(value: &Value) -> Option<ItemStack> {
     Some(ItemStack::new(id, count))
 }
 
+/// This mashup's own shaped recipes (`with_mod_recipes`): id, a 1-3 row
+/// pattern (vanilla's shaped JSON shorthand, space is empty) and its key
+/// (symbol to item id or `#tag`), the same shape `parse_recipe` reads from
+/// the data JAR, built in code because this is new data, not vanilla's.
+///
+/// Sidearm, SMGs and ARs and the shotgun cost iron, wood, gunpowder and a
+/// little redstone; the LMG and the two snipers (the owner's "higher
+/// tiers") also need a diamond.
+const MOD_GUN_RECIPES: &[(&str, &[&str], &[(char, &str)])] = &[
+    (
+        "usp_mp",
+        &[" I ", "SIS", " P "],
+        &[('I', "minecraft:iron_ingot"), ('S', "minecraft:stick"), ('P', "minecraft:oak_planks")],
+    ),
+    (
+        "ump45_mp",
+        &["SIS", "IGI", " P "],
+        &[
+            ('I', "minecraft:iron_ingot"),
+            ('S', "minecraft:stick"),
+            ('G', "minecraft:gunpowder"),
+            ('P', "minecraft:oak_planks"),
+        ],
+    ),
+    (
+        "mp5k_mp",
+        &["SIS", "IRI", " P "],
+        &[
+            ('I', "minecraft:iron_ingot"),
+            ('S', "minecraft:stick"),
+            ('R', "minecraft:redstone"),
+            ('P', "minecraft:oak_planks"),
+        ],
+    ),
+    (
+        "ak47_mp",
+        &["IPI", "IGI", " S "],
+        &[
+            ('I', "minecraft:iron_ingot"),
+            ('P', "minecraft:oak_planks"),
+            ('G', "minecraft:gunpowder"),
+            ('S', "minecraft:stick"),
+        ],
+    ),
+    (
+        "m4_mp",
+        &["IPI", "IRI", " S "],
+        &[
+            ('I', "minecraft:iron_ingot"),
+            ('P', "minecraft:oak_planks"),
+            ('R', "minecraft:redstone"),
+            ('S', "minecraft:stick"),
+        ],
+    ),
+    (
+        "scar_mp",
+        &["IPI", "IGI", " R "],
+        &[
+            ('I', "minecraft:iron_ingot"),
+            ('P', "minecraft:oak_planks"),
+            ('G', "minecraft:gunpowder"),
+            ('R', "minecraft:redstone"),
+        ],
+    ),
+    (
+        "spas12_mp",
+        &["I I", "PGP", " I "],
+        &[
+            ('I', "minecraft:iron_ingot"),
+            ('P', "minecraft:oak_planks"),
+            ('G', "minecraft:gunpowder"),
+        ],
+    ),
+    (
+        "rpd_mp",
+        &["BIB", "IDI", "GRG"],
+        &[
+            ('B', "minecraft:iron_block"),
+            ('I', "minecraft:iron_ingot"),
+            ('D', "minecraft:diamond"),
+            ('G', "minecraft:gunpowder"),
+            ('R', "minecraft:redstone"),
+        ],
+    ),
+    (
+        "cheytac_mp",
+        &[" D ", "IRI", "SIS"],
+        &[
+            ('D', "minecraft:diamond"),
+            ('I', "minecraft:iron_ingot"),
+            ('R', "minecraft:redstone"),
+            ('S', "minecraft:stick"),
+        ],
+    ),
+    (
+        "barrett_mp",
+        &[" D ", "IGI", "SIS"],
+        &[
+            ('D', "minecraft:diamond"),
+            ('I', "minecraft:iron_ingot"),
+            ('G', "minecraft:gunpowder"),
+            ('S', "minecraft:stick"),
+        ],
+    ),
+];
+
+/// Builds one of this mashup's own recipes through vanilla's own shaped
+/// parser (`parse_recipe`), from a pattern and key in the same shorthand
+/// the data JAR uses, rather than hand-building `Kind::Shaped`.
+fn mod_recipe(id: &str, category: &str, pattern: &[&str], key: &[(char, &str)], result_id: &str, result_count: u8) -> Recipe {
+    // Plain item ids, not tags (`#minecraft:...`): a tag only resolves
+    // against `self.tags`, read from the data JAR, which `with_mod_recipes`
+    // must work without (unit tests on hosted runners have no JAR).
+    let key_obj: serde_json::Map<String, Value> =
+        key.iter().map(|&(symbol, item)| (symbol.to_string(), Value::String(item.to_owned()))).collect();
+    let value = json!({
+        "type": "minecraft:crafting_shaped",
+        "pattern": pattern,
+        "key": key_obj,
+        "result": { "id": result_id, "count": result_count },
+    });
+    let mut recipe = parse_recipe(&value).unwrap_or_else(|| panic!("mod recipe {id} is malformed"));
+    recipe.id = id.to_owned();
+    recipe.category = category.to_owned();
+    recipe
+}
+
 fn trim_pattern(rows: Vec<Vec<Option<Ingredient>>>) -> Option<Vec<Vec<Option<Ingredient>>>> {
     let mut top = rows.len();
     let mut bottom = 0;
@@ -1103,6 +1263,69 @@ mod tests {
         assert_eq!(inv.count("minecraft:oak_log"), 3);
         assert!(inv.workbench.iter().all(Option::is_none));
     }
+    /// This mashup's own recipes work without the data JAR (unit tests on
+    /// hosted runners have none): ammo from gunpowder and iron, and a gun
+    /// from its own pattern, each a permanent-unlock marker, never a real
+    /// item id.
+    #[test]
+    fn mod_recipes_match_without_the_data_jar() {
+        let book = RecipeBook::default().with_mod_recipes();
+        let mut inv = Inventory::default().with_recipes(book);
+        inv.workbench[0] = Some(ItemStack::new("minecraft:iron_ingot", 1));
+        inv.workbench[3] = Some(ItemStack::new("minecraft:gunpowder", 1));
+        let ammo = inv.workbench_output().unwrap();
+        assert_eq!(ammo.id, "iw4l:ammo");
+        assert_eq!(ammo.count, 8);
+        assert!(inv.take_workbench_output(false));
+        assert_eq!(inv.count("iw4l:ammo"), 8);
+
+        for slot in &mut inv.workbench {
+            *slot = None;
+        }
+        inv.workbench[1] = Some(ItemStack::new("minecraft:iron_ingot", 1));
+        inv.workbench[3] = Some(ItemStack::new("minecraft:stick", 1));
+        inv.workbench[4] = Some(ItemStack::new("minecraft:iron_ingot", 1));
+        inv.workbench[5] = Some(ItemStack::new("minecraft:stick", 1));
+        inv.workbench[7] = Some(ItemStack::new("minecraft:oak_planks", 1));
+        let gun = inv.workbench_output().unwrap();
+        assert_eq!(gun.id, "iw4l:gun/usp_mp");
+        assert_eq!(gun.count, 1);
+    }
+
+    /// Only a crafting table's 3x3 fits the LMG and sniper patterns (top
+    /// row only reaches the grid's corners at 3 wide): the inventory's 2x2
+    /// crafting grid never matches them.
+    #[test]
+    fn a_diamond_tier_gun_needs_the_crafting_table() {
+        let book = RecipeBook::default().with_mod_recipes();
+        let mut inv = Inventory::default().with_recipes(book);
+        inv.crafting[0] = Some(ItemStack::new("minecraft:diamond", 1));
+        inv.crafting[1] = Some(ItemStack::new("minecraft:iron_ingot", 1));
+        inv.crafting[2] = Some(ItemStack::new("minecraft:redstone", 1));
+        inv.crafting[3] = Some(ItemStack::new("minecraft:stick", 1));
+        assert!(inv.crafting_output().is_none());
+    }
+
+    #[test]
+    fn every_mod_gun_recipe_matches_its_own_pattern() {
+        for &(id, pattern, key) in MOD_GUN_RECIPES {
+            let book = RecipeBook::default().with_mod_recipes();
+            let mut inv = Inventory::default().with_recipes(book);
+            let width = pattern[0].chars().count();
+            for (y, row) in pattern.iter().enumerate() {
+                for (x, symbol) in row.chars().enumerate() {
+                    if symbol == ' ' {
+                        continue;
+                    }
+                    let item = key.iter().find(|&&(k, _)| k == symbol).unwrap().1;
+                    inv.workbench[y * width + x] = Some(ItemStack::new(item, 1));
+                }
+            }
+            let result = inv.workbench_output();
+            assert_eq!(result.map(|s| s.id), Some(format!("iw4l:gun/{id}")), "recipe {id}");
+        }
+    }
+
     #[test]
     fn pinned_jar_furnace_recipe_matches_when_available() {
         let jar = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(

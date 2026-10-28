@@ -38,6 +38,7 @@ pub use occupancy::{
 };
 pub use plugin::RenderAnimPlugin;
 
+mod minecraft_arsenal;
 mod minecraft_entities;
 mod minecraft_hand;
 mod minecraft_inventory;

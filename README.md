@@ -19,7 +19,10 @@ Modern Warfare 2, Skate 3 and Minecraft in one game, all running on
 - Hold a block to place it. With an empty hand you punch and mine with your bare MW2 hands.
 - Crafting tables: right click one, or press E (D-pad down on a controller) or Use at it, for vanilla's 3x3 crafting grid in MW2's look.
 - Minecraft's block, mob and footstep sounds.
-- Unlimited ammo and grenades. The Intervention, SPAS-12 and UMP45 are always in your inventory. No time or score limit.
+- **Getting guns**: you start with one USP .45 pistol and a little ammo, given once per world. Every other gun is crafted at a table (below); class loadouts hand out none here. Guns are not enchantable.
+- **Ammo**: one universal item, `iw4l:ammo`, crafted from gunpowder and iron (a shaped recipe, like the guns). A gun's magazine is the rounds it actually has loaded, shown and reloaded with MW2's own HUD and animation; reloading takes rounds from your ammo items, and with none to take, it can't. There is no separate reserve pool here, unlike MW2 multiplayer.
+- **Crafting a gun**: shaped recipes at a crafting table, from iron, gunpowder, wood and redstone; the LMG and the two snipers also need a diamond. Taking a gun recipe's result unlocks that weapon for good (it does not sit in your inventory as a stack): `usp_mp` (pistol, also the starter kit), `ump45_mp` and `mp5k_mp` (SMGs), `ak47_mp`, `m4_mp` and `scar_mp` (assault rifles), `spas12_mp` (shotgun), `rpd_mp` (LMG), `cheytac_mp` (Intervention) and `barrett_mp` (snipers).
+- Grenades still never run out. No time or score limit.
 - The minimap shows the Minecraft world around you.
 - Skate 3 mode works here too, with full block collision.
 

@@ -9,6 +9,9 @@ use std::collections::HashMap;
 /// An item's GUI icon: its block model rastered, its generated layers, or
 /// its flat texture.
 pub fn item_icon(packs: &PackStack, key: &str, icon_size: usize) -> Result<Option<RgbaImage>> {
+    if let Some(icon) = mod_item_icon(key, icon_size) {
+        return Ok(Some(icon));
+    }
     let id = ResourceId::parse(key)?;
     let definition = packs.item_definition(&id)?;
     let model = definition.as_ref().and_then(|value| item_model_reference(&value["model"]));
@@ -64,6 +67,38 @@ pub fn language(packs: &PackStack) -> Result<HashMap<String, String>> {
                 .collect()
         })
         .unwrap_or_default())
+}
+
+/// A plain icon for this mashup's own items that have no resource-pack
+/// model or texture to raster (there is no vanilla one): a brass cartridge
+/// swatch for the universal ammo item. Everything else (including a
+/// crafted gun's never-real `iw4l:gun/...` marker) falls through to the
+/// usual lookup, which draws nothing for an id with no pack entry, the
+/// same known gap as any other item this engine has yet to give one.
+fn mod_item_icon(id: &str, icon_size: usize) -> Option<RgbaImage> {
+    if id != "iw4l:ammo" {
+        return None;
+    }
+    let size = icon_size as u32;
+    let brass = [196, 164, 88, 255];
+    let case = [107, 90, 48, 255];
+    let primer = [224, 204, 150, 255];
+    let mut image = RgbaImage::from_pixel(size, size, image::Rgba(case));
+    let margin = (size / 8).max(1);
+    for y in margin..size.saturating_sub(margin) {
+        for x in margin..size.saturating_sub(margin) {
+            image.put_pixel(x, y, image::Rgba(brass));
+        }
+    }
+    let highlight = (size * 3 / 8).max(margin + 1)..(size * 5 / 8).max(margin + 2);
+    for y in margin..size.saturating_sub(margin) {
+        for x in highlight.clone() {
+            if x < size.saturating_sub(margin) {
+                image.put_pixel(x, y, image::Rgba(primer));
+            }
+        }
+    }
+    Some(image)
 }
 
 /// `item_name`: the item's or its block's name, else its id's path.
@@ -199,4 +234,31 @@ fn model_texture(packs: &PackStack, model: &str) -> Result<Option<ResourceId>> {
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_universal_ammo_item_gets_a_generated_icon() {
+        let icon = mod_item_icon("iw4l:ammo", 32).expect("a generated icon");
+        assert_eq!(icon.width(), 32);
+        assert_eq!(icon.height(), 32);
+        // The corner is the case colour, the centre the brighter primer.
+        assert_ne!(icon.get_pixel(0, 0), icon.get_pixel(16, 16));
+    }
+
+    #[test]
+    fn a_crafted_gun_s_marker_and_a_vanilla_item_get_no_generated_icon() {
+        assert!(mod_item_icon("iw4l:gun/usp_mp", 32).is_none());
+        assert!(mod_item_icon("minecraft:dirt", 32).is_none());
+    }
+
+    #[test]
+    fn item_icon_draws_the_ammo_item_through_the_normal_lookup() {
+        let packs = PackStack::open(Vec::new()).expect("an empty pack stack opens fine");
+        let icon = item_icon(&packs, "iw4l:ammo", 16).unwrap();
+        assert!(icon.is_some());
+    }
 }

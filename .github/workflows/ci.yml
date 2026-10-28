@@ -165,6 +165,9 @@ jobs:
         run: |
           cargo test --profile play -p render_anim --lib minecraft_hand
           cargo test --profile play -p render_anim --lib minecraft_inventory::tests
+      # A crafted gun's permanent unlock resolved to MW2's weapon index.
+      - name: Minecraft gun unlock unit tests (render_anim minecraft_arsenal)
+        run: cargo test --profile play -p render_anim --lib minecraft_arsenal
       - name: player key, admin and console socket unit tests (player_key, net identity and admins, console debug_admins and control)
         run: |
           cargo test --profile play -p player_key

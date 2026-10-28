@@ -33,6 +33,17 @@ pub struct PlayerRecord {
     /// before maps has none, and its player is given one on its next join.
     #[serde(default)]
     pub map_given: bool,
+    /// The player was given its starter pistol and ammo in this world. A
+    /// record from before the starter kit has none, and its player is
+    /// given one on its next join, the same way `map_given` is.
+    #[serde(default)]
+    pub starter_kit_given: bool,
+    /// The MW2 weapons (script names, e.g. `usp_mp`) this player has
+    /// permanently unlocked in this world: the starter kit, then whatever
+    /// the crafting table has given. The only source of a Minecraft
+    /// player's guns; a class loadout hands out none there.
+    #[serde(default)]
+    pub unlocked_weapons: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -105,6 +116,8 @@ impl Players {
                     last_seen: now,
                     inventory: claimed,
                     map_given: false,
+                    starter_kit_given: false,
+                    unlocked_weapons: Vec::new(),
                 }),
             );
         }
@@ -130,6 +143,39 @@ impl Players {
         match self.0.get_mut(&entry(fingerprint)) {
             Some(PlayerEntry::Keyed(record)) if !record.map_given => {
                 record.map_given = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether a player in the game is still owed its starter pistol and
+    /// ammo; once asked, it is owed no more, through saves and rejoins.
+    pub fn take_starter_kit(&mut self, fingerprint: &str) -> bool {
+        match self.0.get_mut(&entry(fingerprint)) {
+            Some(PlayerEntry::Keyed(record)) if !record.starter_kit_given => {
+                record.starter_kit_given = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The weapons (script names) a keyed player has permanently unlocked
+    /// in this world: empty for a guest (no record) or an unknown key.
+    pub fn unlocked_weapons(&self, fingerprint: &str) -> &[String] {
+        self.record(fingerprint).map_or(&[], |record| &record.unlocked_weapons)
+    }
+
+    /// Crafting a gun unlocks it for good: adds `weapon` to the player's
+    /// permanent set if it is not there already. Returns whether it was
+    /// newly added (a guest's crafting is not persisted: there is no
+    /// record to add it to, and it is re-added every join, same as a
+    /// guest's map).
+    pub fn add_unlocked_weapon(&mut self, fingerprint: &str, weapon: &str) -> bool {
+        match self.0.get_mut(&entry(fingerprint)) {
+            Some(PlayerEntry::Keyed(record)) if !record.unlocked_weapons.iter().any(|w| w == weapon) => {
+                record.unlocked_weapons.push(weapon.to_owned());
                 true
             }
             _ => false,
@@ -180,15 +226,22 @@ impl Players {
         if old_key.as_deref() == Some(to) {
             return Err("the old and the new key are the same".to_owned());
         }
-        let (name, first_seen, inventory, map_given) = match &old_key {
+        let (name, first_seen, inventory, map_given, starter_kit_given, unlocked_weapons) = match &old_key {
             Some(old) => match self.0.remove(&entry(old)) {
-                Some(PlayerEntry::Keyed(record)) => {
-                    (record.name, record.first_seen, record.inventory, record.map_given)
-                }
+                Some(PlayerEntry::Keyed(record)) => (
+                    record.name,
+                    record.first_seen,
+                    record.inventory,
+                    record.map_given,
+                    record.starter_kit_given,
+                    record.unlocked_weapons,
+                ),
                 _ => unreachable!("checked"),
             },
             None => match self.0.remove(from) {
-                Some(PlayerEntry::Named(inventory)) => (from.to_owned(), now, Some(inventory), false),
+                Some(PlayerEntry::Named(inventory)) => {
+                    (from.to_owned(), now, Some(inventory), false, false, Vec::new())
+                }
                 _ => unreachable!("checked"),
             },
         };
@@ -204,6 +257,8 @@ impl Players {
                 last_seen: now,
                 inventory,
                 map_given,
+                starter_kit_given,
+                unlocked_weapons,
             }),
         );
         Ok(Transfer {
@@ -331,6 +386,63 @@ mod tests {
         players.transfer(&key(1), &key(2), 2).unwrap();
         players.join(&key(2), "noah", 3);
         assert!(!players.take_map(&key(2)));
+    }
+
+    /// A new player is owed its starter kit once, the same way a map is.
+    #[test]
+    fn a_starter_kit_is_given_once_through_saves() {
+        let mut players = Players::default();
+        assert!(!players.take_starter_kit(&key(1)), "only a player in the game");
+        players.join(&key(1), "noah", 1);
+        assert!(players.take_starter_kit(&key(1)));
+        assert!(!players.take_starter_kit(&key(1)));
+        players.keep(&key(1), "noah", inventory(2), 2);
+        assert!(players.record(&key(1)).unwrap().starter_kit_given);
+        let text = serde_json::to_string(&players).unwrap();
+        let mut read: Players = serde_json::from_str(&text).unwrap();
+        read.join(&key(1), "noah", 3);
+        assert!(!read.take_starter_kit(&key(1)), "given before the save");
+        read.join(&key(2), "ann", 4);
+        assert!(read.take_starter_kit(&key(2)));
+    }
+
+    /// A players.json from before the starter kit reads (no
+    /// `starter_kit_given`), and each of its players is given one once.
+    #[test]
+    fn an_old_save_without_the_flag_gets_its_starter_kit_once() {
+        let old = format!(
+            "{{\"key:{}\": {{\"name\": \"noah\", \"first_seen\": 1, \"last_seen\": 2, \"inventory\": {}}}}}",
+            key(1),
+            serde_json::to_string(&inventory(3)).unwrap()
+        );
+        let players: Players = serde_json::from_str(&old).unwrap();
+        assert!(!players.record(&key(1)).unwrap().starter_kit_given);
+        assert!(players.unlocked_weapons(&key(1)).is_empty());
+    }
+
+    #[test]
+    fn crafting_a_gun_unlocks_it_once_and_a_second_craft_adds_nothing() {
+        let mut players = Players::default();
+        players.join(&key(1), "noah", 1);
+        assert!(players.add_unlocked_weapon(&key(1), "ak47_mp"));
+        assert!(!players.add_unlocked_weapon(&key(1), "ak47_mp"));
+        assert!(players.add_unlocked_weapon(&key(1), "usp_mp"));
+        assert_eq!(players.unlocked_weapons(&key(1)), ["ak47_mp", "usp_mp"]);
+        // A guest (no record) persists nothing.
+        assert!(!players.add_unlocked_weapon(&key(9), "spas12_mp"));
+        assert!(players.unlocked_weapons(&key(9)).is_empty());
+    }
+
+    #[test]
+    fn a_transfer_keeps_unlocked_weapons_and_the_starter_kit_flag() {
+        let mut players = Players::default();
+        players.join(&key(1), "noah", 1);
+        assert!(players.take_starter_kit(&key(1)));
+        players.add_unlocked_weapon(&key(1), "usp_mp");
+        players.add_unlocked_weapon(&key(1), "ak47_mp");
+        players.transfer(&key(1), &key(2), 2).unwrap();
+        assert!(!players.take_starter_kit(&key(2)));
+        assert_eq!(players.unlocked_weapons(&key(2)), ["usp_mp", "ak47_mp"]);
     }
 
     #[test]

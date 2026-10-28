@@ -1024,6 +1024,36 @@ impl Inventory {
             .map(|s| s.count as u32)
             .sum()
     }
+
+    /// Removes up to `amount` of `id`, any stack that holds it, hotbar and
+    /// backpack first (the cursor and the crafting grids last, so a held or
+    /// half-placed stack is the last one touched): how many it actually
+    /// removed. A reload's universal ammo item draws this way.
+    pub fn remove_count(&mut self, id: &str, amount: u32) -> u32 {
+        let mut left = amount;
+        for slot in self
+            .slots
+            .iter_mut()
+            .chain(self.crafting.iter_mut())
+            .chain(self.workbench.iter_mut())
+            .chain(std::iter::once(&mut self.cursor))
+        {
+            if left == 0 {
+                break;
+            }
+            let Some(stack) = slot else { continue };
+            if stack.id != id {
+                continue;
+            }
+            let take = left.min(u32::from(stack.count));
+            stack.count -= take as u8;
+            left -= take;
+            if stack.count == 0 {
+                *slot = None;
+            }
+        }
+        amount - left
+    }
 }
 
 pub(crate) fn click_stack(
