@@ -519,10 +519,13 @@ fn host_tool_drops(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     let guns = pair.ask(false, &script, "h_guns", step)?;
     let gun = mob_steps::guns(&guns).first().copied().ok_or("the host holds no bullet gun")?;
     facts.keep("h_guns", guns);
-    pair.host.send(&format!("key {gun}; wait 2s; look 0 0; wait 0.2s; key mouse1 3"))?;
+    // Held for longer than 3 old forced guns needed: the starter kit's own
+    // USP .45 is the only gun a Minecraft player now starts with, and its
+    // semi-auto fire rate needs more than 3s to land as many rounds.
+    pair.host.send(&format!("key {gun}; wait 2s; look 0 0; wait 0.2s; key mouse1 8"))?;
     let broke = pair.poll_block(false, "h_shot_stone", stone, "air", gone)?;
     facts.notes.insert("h_shot_stone", broke);
-    pair.host.send("look 0 23; wait 0.2s; key mouse1 3")?;
+    pair.host.send("look 0 23; wait 0.2s; key mouse1 8")?;
     let broke = pair.poll_block(false, "h_shot_log", log, "air", gone)?;
     facts.notes.insert("h_shot_log", broke);
     pair.host.send("wait 2s")?;

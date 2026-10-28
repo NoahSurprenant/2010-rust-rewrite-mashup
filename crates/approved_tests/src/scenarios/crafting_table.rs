@@ -106,11 +106,11 @@ pub const STEPS: &[Step] = &[
         ],
     },
     Step {
-        commands: "mc click inv 5; wait 2t; \
+        commands: "mc click inv 1; wait 2t; \
                    mc click grid 0 right; mc click grid 1 right; mc click grid 2 right; \
                    mc click grid 3 right; mc click grid 5 right; mc click grid 6 right; \
                    mc click grid 7 right; mc click grid 8 right; wait 2t; \
-                   mc click inv 5; wait 2t",
+                   mc click inv 1; wait 2t",
         label: "chest_recipe",
         expect: &[
             Expect::Screen(Screen::Table),
@@ -136,7 +136,7 @@ pub const STEPS: &[Step] = &[
         ],
     },
     Step {
-        commands: "mc click inv 5; wait 2t; mc click grid 4; wait 2t",
+        commands: "mc click inv 1; wait 2t; mc click grid 4; wait 2t",
         label: "plank_left_in_grid",
         expect: &[
             Expect::Grid("minecraft:oak_planks*8", 1),
@@ -214,18 +214,21 @@ pub const STEPS: &[Step] = &[
     // as its box model (a `minecraft:special` item: a block entity's
     // renderer), then thrown, on the ground.
     Step {
-        commands: "mc click inv 20; wait 2t; mc click inv 7; wait 2t; key e; wait 1s; key 8; wait 1s",
+        // Slot 6, not 7: the starter kit's ammo now reserves 7 (one before
+        // the map's slot 8), so this scratch move needs a hotbar slot
+        // neither a gun, planks, ammo nor the map ever touch.
+        commands: "mc click inv 20; wait 2t; mc click inv 6; wait 2t; key e; wait 1s; key 7; wait 1s",
         label: "chest_held",
         expect: &[
             Expect::Screen(Screen::None),
-            Expect::Slot(7, "minecraft:chest*1"),
+            Expect::Slot(6, "minecraft:chest*1"),
             Expect::Hand("minecraft:chest"),
         ],
     },
     Step {
         commands: "screenshot approved/04_chest_held; key q; wait 10t",
         label: "chest_dropped",
-        expect: &[Expect::Slot(7, "-"), Expect::Dropped("minecraft:chest")],
+        expect: &[Expect::Slot(6, "-"), Expect::Dropped("minecraft:chest")],
     },
     Step {
         commands: "screenshot approved/05_chest_dropped; key 1; wait 1s; look 0 23; wait 2t; key e; wait 1s",
@@ -288,26 +291,29 @@ pub const STEPS: &[Step] = &[
         ],
     },
     Step {
-        commands: "pad d-right; wait 0.3s; pad d-right; wait 0.3s; pad d-right; wait 0.3s; \
-                   pad d-right; wait 0.3s; pad d-right; wait 0.3s; pad a; wait 0.5s",
+        // Planks land one slot right of the gun now (PLANKS = 1, not 5):
+        // one d-right, not five.
+        commands: "pad d-right; wait 0.3s; pad a; wait 0.5s",
         label: "pad_picks_planks",
         expect: &[
-            Expect::Pad("inv5"),
+            Expect::Pad("inv1"),
             Expect::Cursor("minecraft:oak_planks*16"),
             Expect::Slot(PLANKS, "-"),
         ],
     },
     // Up the backpack to the grid's corner, then one plank on each slot of
-    // its ring.
+    // its ring. Column 1's nearest corner is the grid's bottom-left
+    // (`Crafting(6)`, not column 5's bottom-right): the ring walks the
+    // mirror image, right/right/up/up/left/left/down, ending at grid 3.
     Step {
         commands: "pad d-up; wait 0.3s; pad d-up; wait 0.3s; pad d-up; wait 0.3s; pad d-up; wait 0.3s; \
-                   pad x; wait 0.3s; pad d-left; wait 0.3s; pad x; wait 0.3s; pad d-left; wait 0.3s; \
-                   pad x; wait 0.3s; pad d-up; wait 0.3s; pad x; wait 0.3s; pad d-up; wait 0.3s; \
                    pad x; wait 0.3s; pad d-right; wait 0.3s; pad x; wait 0.3s; pad d-right; wait 0.3s; \
+                   pad x; wait 0.3s; pad d-up; wait 0.3s; pad x; wait 0.3s; pad d-up; wait 0.3s; \
+                   pad x; wait 0.3s; pad d-left; wait 0.3s; pad x; wait 0.3s; pad d-left; wait 0.3s; \
                    pad x; wait 0.3s; pad d-down; wait 0.3s; pad x; wait 0.5s",
         label: "pad_chest_recipe",
         expect: &[
-            Expect::Pad("grid5"),
+            Expect::Pad("grid3"),
             Expect::Grid("minecraft:oak_planks*1", 8),
             Expect::Grid("-", 1),
             Expect::Result("minecraft:chest*1"),
@@ -315,16 +321,21 @@ pub const STEPS: &[Step] = &[
         ],
     },
     Step {
+        // From grid 3, two d-downs land on backpack slot 11 (column 0's
+        // nearest backpack column), not 13 (column 2's, where the old
+        // grid 5 landed).
         commands: "pad d-down; wait 0.3s; pad d-down; wait 0.3s; pad a; wait 0.5s",
         label: "pad_planks_put_back",
         expect: &[
-            Expect::Pad("inv13"),
+            Expect::Pad("inv11"),
             Expect::Cursor("-"),
-            Expect::Slot(13, "minecraft:oak_planks*8"),
+            Expect::Slot(11, "minecraft:oak_planks*8"),
         ],
     },
     Step {
-        commands: "pad d-up; wait 0.3s; pad d-right; wait 0.3s; pad a; wait 0.5s",
+        // Grid 6 (column 0) is not next to the result slot the way grid 8
+        // (column 2) was: two extra d-rights walk the grid's row first.
+        commands: "pad d-up; wait 0.3s; pad d-right; wait 0.3s; pad d-right; wait 0.3s; pad d-right; wait 0.3s; pad a; wait 0.5s",
         label: "pad_takes_chest",
         expect: &[
             Expect::Pad("result"),
@@ -334,6 +345,8 @@ pub const STEPS: &[Step] = &[
         ],
     },
     Step {
+        // The result slot's own position does not depend on how the
+        // cursor got there, so this still lands on inv15.
         commands: "pad d-down; wait 0.3s; pad a; wait 0.5s",
         label: "pad_places_chest",
         expect: &[
@@ -358,7 +371,7 @@ pub const STEPS: &[Step] = &[
             Expect::Screen(Screen::None),
             Expect::Menu(false),
             Expect::Pad("-"),
-            Expect::Slot(13, "minecraft:oak_planks*8"),
+            Expect::Slot(11, "minecraft:oak_planks*8"),
             Expect::Slot(PLANKS, "minecraft:chest*1"),
         ],
     },
@@ -757,7 +770,7 @@ mod tests {
                     "none",
                     &empty4,
                     "-",
-                    slots_at("minecraft:oak_planks*7", 7, "minecraft:chest*1"),
+                    slots_at("minecraft:oak_planks*7", 6, "minecraft:chest*1"),
                 );
                 held.fields
                     .insert("hand".into(), "minecraft:chest:18".into());
@@ -815,19 +828,19 @@ mod tests {
                 slots("minecraft:oak_planks*7", "")
             )),
             pad_line("pad_opens_table", table, &empty9, "-", "-", "inv0", &[(PLANKS, "minecraft:oak_planks*16")]),
-            pad_line("pad_picks_planks", table, &empty9, "-", "minecraft:oak_planks*16", "inv5", &[]),
-            pad_line("pad_chest_recipe", table, &ring, "minecraft:chest*1", "minecraft:oak_planks*8", "grid5", &[]),
-            pad_line("pad_planks_put_back", table, &ring, "minecraft:chest*1", "-", "inv13", &[(13, "minecraft:oak_planks*8")]),
-            pad_line("pad_takes_chest", table, &empty9, "-", "minecraft:chest*1", "result", &[(13, "minecraft:oak_planks*8")]),
-            pad_line("pad_places_chest", table, &empty9, "-", "-", "inv15", &[(13, "minecraft:oak_planks*8"), (15, "minecraft:chest*1")]),
-            pad_line("pad_quick_moves", table, &empty9, "-", "-", "inv15", &[(13, "minecraft:oak_planks*8"), (PLANKS, "minecraft:chest*1")]),
-            pad_line("pad_b_closes", "none", &empty4, "-", "-", "-", &[(13, "minecraft:oak_planks*8"), (PLANKS, "minecraft:chest*1")]),
+            pad_line("pad_picks_planks", table, &empty9, "-", "minecraft:oak_planks*16", "inv1", &[]),
+            pad_line("pad_chest_recipe", table, &ring, "minecraft:chest*1", "minecraft:oak_planks*8", "grid3", &[]),
+            pad_line("pad_planks_put_back", table, &ring, "minecraft:chest*1", "-", "inv11", &[(11, "minecraft:oak_planks*8")]),
+            pad_line("pad_takes_chest", table, &empty9, "-", "minecraft:chest*1", "result", &[(11, "minecraft:oak_planks*8")]),
+            pad_line("pad_places_chest", table, &empty9, "-", "-", "inv15", &[(11, "minecraft:oak_planks*8"), (15, "minecraft:chest*1")]),
+            pad_line("pad_quick_moves", table, &empty9, "-", "-", "inv15", &[(11, "minecraft:oak_planks*8"), (PLANKS, "minecraft:chest*1")]),
+            pad_line("pad_b_closes", "none", &empty4, "-", "-", "-", &[(11, "minecraft:oak_planks*8"), (PLANKS, "minecraft:chest*1")]),
             {
-                let mut away = pad_line("pad_opens_inventory", "inventory", &empty4, "-", "-", "inv0", &[(13, "minecraft:oak_planks*8"), (PLANKS, "minecraft:chest*1")]);
+                let mut away = pad_line("pad_opens_inventory", "inventory", &empty4, "-", "-", "inv0", &[(11, "minecraft:oak_planks*8"), (PLANKS, "minecraft:chest*1")]);
                 away.fields.insert("table_in_view".into(), "-".into());
                 away
             },
-            pad_line("pad_start_closes", "none", &empty4, "-", "-", "-", &[(13, "minecraft:oak_planks*8"), (PLANKS, "minecraft:chest*1")]),
+            pad_line("pad_start_closes", "none", &empty4, "-", "-", "-", &[(11, "minecraft:oak_planks*8"), (PLANKS, "minecraft:chest*1")]),
         ]
     }
 
