@@ -1138,14 +1138,18 @@ fn update(
                     entities.selected = selected.min(frame::minecraft_ui::MC_HOTBAR - 1);
                     diag::info!(World, "Minecraft: the inventory of `{name}` restored");
                 }
-                // Its starting map, if this world owes it one.
+                let mut unlocked = host.players.unlocked_weapons(&key).to_vec();
+                // Its starting map and starter kit, if this world owes it them.
                 if let Some(entities) = entities.as_mut() {
                     host.give_map_once(Some(&key), &mut entities.inventory, &name);
+                    host.give_starter_kit_once(Some(&key), &mut entities.inventory, &mut unlocked, &name);
                 }
+                host.local_unlocked_weapons = unlocked;
                 host.local = Some((key, name));
             }
         }
-        // A player without a key keeps nothing: its map, once a session.
+        // A player without a key keeps nothing: its map and starter kit,
+        // once a session.
         if !host.local_map_given
             && host.local.is_none()
             && !dedicated
@@ -1156,6 +1160,20 @@ fn update(
             if !name.is_empty() {
                 host.local_map_given = true;
                 host.give_map_once(None, &mut entities.inventory, &name);
+            }
+        }
+        if !host.local_starter_kit_given
+            && host.local.is_none()
+            && !dedicated
+            && net.local_key.is_none()
+            && let Some(entities) = entities.as_mut()
+        {
+            let name = net::client_name_string(authority, local.0);
+            if !name.is_empty() {
+                host.local_starter_kit_given = true;
+                let mut unlocked = std::mem::take(&mut host.local_unlocked_weapons);
+                host.give_starter_kit_once(None, &mut entities.inventory, &mut unlocked, &name);
+                host.local_unlocked_weapons = unlocked;
             }
         }
         let clients: Vec<u32> = net
@@ -1212,8 +1230,15 @@ fn update(
                 let mut inventory = minecraftoss_player::inventory::Inventory::default();
                 inventory.recipes = entities.inventory.recipes.clone();
                 let mut remote = crate::minecraft_mp::Remote::new(name.clone(), key, inventory, saved.as_ref());
-                // Its starting map, if this world owes it one.
+                remote.unlocked_weapons = remote
+                    .key
+                    .as_deref()
+                    .map_or_else(Vec::new, |key| host.players.unlocked_weapons(key).to_vec());
+                // Its starting map and starter kit, if this world owes it them.
                 host.give_map_once(remote.key.as_deref(), &mut remote.inventory, &name);
+                let mut unlocked = std::mem::take(&mut remote.unlocked_weapons);
+                host.give_starter_kit_once(remote.key.as_deref(), &mut remote.inventory, &mut unlocked, &name);
+                remote.unlocked_weapons = unlocked;
                 diag::info!(
                     World,
                     "Minecraft: `{name}` joined as client {id}; {} block changes to send",
@@ -1255,6 +1280,27 @@ fn update(
                 .filter(|&w| authority.weapon_combat_row(w).is_some_and(|facts| facts.inventory_type == 0))
                 .collect();
             inventory_ui.sync_weapons(&mut remote.inventory, &owned);
+            // Its permanent gun unlocks and universal ammo: the crafting
+            // table's output just taken (host authoritative, this client's
+            // own inventory), and what a reload just drew.
+            crate::minecraft_arsenal::drain_ammo(authority, sim::ClientId(id), &mut remote.inventory);
+            let fingerprint = remote.key.clone();
+            let name = remote.name.clone();
+            let mut crafted_dirty = false;
+            crate::minecraft_arsenal::feed_arsenal(
+                authority,
+                sim::ClientId(id),
+                &mut remote.inventory,
+                &mut remote.unlocked_weapons,
+                |weapon| {
+                    if let Some(key) = fingerprint.as_deref() {
+                        host.players.add_unlocked_weapon(key, weapon);
+                    }
+                    crafted_dirty = true;
+                    diag::info!(World, "Minecraft: `{name}` crafted {weapon}");
+                },
+            );
+            host.dirty |= crafted_dirty;
         }
         // A dedicated server's own stream follows its first client, out to
         // the mobs' distance: that client needs no mob stream of its own.
@@ -2132,6 +2178,30 @@ fn update(
             ui.clicks.push(frame::McClick::Close);
         }
         inventory_ui.sync_weapons(&mut entities.inventory, &owned);
+        // The local player's permanent gun unlocks and universal ammo, host
+        // authoritative only (a pure client waits for the host's state); a
+        // dedicated server has no local player of its own.
+        if !dedicated
+            && let NetRole::Host(host) = net_role
+            && let Some(authority) = authority.as_mut()
+        {
+            let authority = &mut authority.0;
+            let fingerprint = host.local.as_ref().map(|(key, _)| key.clone());
+            let mut unlocked = std::mem::take(&mut host.local_unlocked_weapons);
+            crate::minecraft_arsenal::drain_ammo(authority, local.0, &mut entities.inventory);
+            let mut crafted = false;
+            crate::minecraft_arsenal::feed_arsenal(authority, local.0, &mut entities.inventory, &mut unlocked, |weapon| {
+                if let Some(key) = fingerprint.as_deref() {
+                    host.players.add_unlocked_weapon(key, weapon);
+                }
+                crafted = true;
+                diag::info!(World, "Minecraft: crafted {weapon}");
+            });
+            host.local_unlocked_weapons = unlocked;
+            if crafted {
+                host.dirty = true;
+            }
+        }
         let mut selected = entities.selected;
         // A client applies its clicks itself and asks its host to apply them
         // too, in the order it made them.

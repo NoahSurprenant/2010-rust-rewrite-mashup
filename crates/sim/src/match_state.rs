@@ -141,6 +141,26 @@ pub struct ClientMatchState {
     pub(crate) controls: ScriptControls,
 
     pub(crate) max_health: i32,
+
+    /// Minecraft mode, host side: the weapons this player has permanently
+    /// unlocked (the starter kit, then whatever the crafting table has
+    /// given), fed in once a tick by the Minecraft world before the step
+    /// runs (`FrameWorld::set_minecraft_unlocked_weapons`). The only source
+    /// of a Minecraft player's guns: class loadouts hand out none there.
+    pub(crate) minecraft_unlocked_weapons: Vec<u32>,
+    /// Minecraft mode, host side: how many universal ammo items
+    /// (`iw4l:ammo`) the player's Minecraft inventory holds, fed in once a
+    /// tick the same way. There is no MW2 reserve ammo pool of its own on
+    /// the Minecraft map; the active weapon's reserve is seeded from this
+    /// each tick so MW2's own reload (its animation and timing) can draw it.
+    pub(crate) minecraft_ammo_available: i32,
+    /// The reserve `sync_minecraft_arsenal` seeded this tick, to tell how
+    /// many rounds a reload actually drew down (`drain_minecraft_ammo_consumption`).
+    pub(crate) minecraft_ammo_seed: i32,
+    /// Rounds drawn from `minecraft_ammo_available` since the Minecraft
+    /// world last took this: that many `iw4l:ammo` items to remove
+    /// (`FrameWorld::take_minecraft_ammo_consumed`).
+    pub(crate) minecraft_ammo_consumed: i32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

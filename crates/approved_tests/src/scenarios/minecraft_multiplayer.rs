@@ -514,15 +514,28 @@ fn host_tool_drops(pair: &mut Pair, facts: &mut Facts) -> Result<(), String> {
     facts.notes.insert("h_stone_iron", broke);
     pair.host.send("wait 2s")?;
     count(pair, facts, "h_tools4")?;
-    // Its gun (a bullet gun, not the launcher), at stone and at a log.
-    let script = format!("{}; {}; wait 1s; mc mobs h_guns -", set(log, "oak_log"), set(stone, "stone"));
+    // Its gun (a bullet gun, not the launcher), at stone and at a log: an
+    // admin cheat unlocks the UMP45 for this probe (`mc give` a crafting
+    // table's own result marker, same as taking it off one) rather than
+    // relying on the starter kit's USP .45 and its own MW2 damage against
+    // stone's hardness, which this map never promises any floor on (it is
+    // a sidearm, not the block-breaking benchmark). An automatic SMG, not
+    // the Intervention: a block's mining progress is forgotten after 6s
+    // unshot (`PROGRESS_SECONDS`), which a bolt-action rifle's own cycle
+    // can be slower than; guns() keeps both now, so the UMP45 (given last)
+    // is the last one listed.
+    let script = format!(
+        "{}; {}; mc give iw4l:gun/ump45_mp; wait 1s; mc mobs h_guns -",
+        set(log, "oak_log"),
+        set(stone, "stone")
+    );
     let guns = pair.ask(false, &script, "h_guns", step)?;
-    let gun = mob_steps::guns(&guns).first().copied().ok_or("the host holds no bullet gun")?;
+    let gun = mob_steps::guns(&guns).last().copied().ok_or("the host holds no bullet gun")?;
     facts.keep("h_guns", guns);
-    pair.host.send(&format!("key {gun}; wait 2s; look 0 0; wait 0.2s; key mouse1 3"))?;
+    pair.host.send(&format!("key {gun}; wait 2s; look 0 0; wait 0.2s; key mouse1 8"))?;
     let broke = pair.poll_block(false, "h_shot_stone", stone, "air", gone)?;
     facts.notes.insert("h_shot_stone", broke);
-    pair.host.send("look 0 23; wait 0.2s; key mouse1 3")?;
+    pair.host.send("look 0 23; wait 0.2s; key mouse1 8")?;
     let broke = pair.poll_block(false, "h_shot_log", log, "air", gone)?;
     facts.notes.insert("h_shot_log", broke);
     pair.host.send("wait 2s")?;

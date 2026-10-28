@@ -279,6 +279,21 @@ impl SimWorld {
         self.frame().teleport(id, origin)
     }
 
+    /// Minecraft mode, host side: see `FrameWorld::set_minecraft_unlocked_weapons`.
+    pub fn set_minecraft_unlocked_weapons(&mut self, id: ClientId, weapons: &[u32]) {
+        self.frame().set_minecraft_unlocked_weapons(id, weapons);
+    }
+
+    /// Minecraft mode, host side: see `FrameWorld::set_minecraft_ammo_available`.
+    pub fn set_minecraft_ammo_available(&mut self, id: ClientId, count: i32) {
+        self.frame().set_minecraft_ammo_available(id, count);
+    }
+
+    /// Minecraft mode, host side: see `FrameWorld::take_minecraft_ammo_consumed`.
+    pub fn take_minecraft_ammo_consumed(&mut self, id: ClientId) -> i32 {
+        self.frame().take_minecraft_ammo_consumed(id)
+    }
+
     pub fn set_viewangles(&mut self, id: ClientId, viewangles: [f32; 3]) -> bool {
         self.frame().set_viewangles(id, viewangles)
     }

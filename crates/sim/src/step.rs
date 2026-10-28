@@ -271,6 +271,9 @@ fn run_players_system(ecs: &mut World) {
     let original_buttons = world.old_buttons_mut().clone();
     let original_angles = world.old_cmd_angles_mut().clone();
     let mut consumed = Vec::new();
+    // Before this tick's weapon processing: a Minecraft player's guns and
+    // the active one's reserve, from what the Minecraft world fed in.
+    crate::item::sync_minecraft_arsenal(&mut world);
     if allow_move {
         phase_materialize_entity_dobjs(&mut world);
         let model_brushes = world.model_movement_brushes();
@@ -513,7 +516,9 @@ fn run_players_system(ecs: &mut World) {
     *world.old_buttons_mut() = original_buttons;
     *world.old_cmd_angles_mut() = original_angles;
     crate::damage::apply_block_world_damage(&mut world, tick);
-    crate::item::sustain_block_world_arsenal(&mut world);
+    // After this tick's weapon processing: how much of the seeded reserve a
+    // reload just drew down, for the Minecraft world to take next.
+    crate::item::drain_minecraft_ammo_consumption(&mut world);
 
     restamp_debug_move_look(&mut world, &input.actions);
 

@@ -83,6 +83,10 @@ pub(crate) struct Remote {
     /// for a guest, whose inventory is not kept.
     pub key: Option<String>,
     pub inventory: Inventory,
+    /// The MW2 weapons it has permanently unlocked (the starter kit, then
+    /// the crafting table), seeded from its record if it has one; fed to
+    /// the host's simulation every tick (`FrameWorld::set_minecraft_unlocked_weapons`).
+    pub unlocked_weapons: Vec<String>,
     pub selected: usize,
     /// The crafting table it has open.
     pub table: Option<BlockPos>,
@@ -167,6 +171,13 @@ pub(crate) struct Host {
     map_clock: f64,
     /// The host's own player, without a key: given its map this session.
     pub local_map_given: bool,
+    /// The host's own player, without a key: given its starter kit this
+    /// session.
+    pub local_starter_kit_given: bool,
+    /// The host's own player's permanently unlocked MW2 weapons (the
+    /// starter kit, then the crafting table): kept for a keyed player,
+    /// fresh each session for a guest, same as `local_map_given`.
+    pub local_unlocked_weapons: Vec<String>,
 }
 
 #[derive(Default)]
@@ -256,6 +267,8 @@ impl Host {
             map_steps: HashMap::new(),
             map_clock: 0.0,
             local_map_given: false,
+            local_starter_kit_given: false,
+            local_unlocked_weapons: Vec::new(),
         }
     }
 
@@ -292,6 +305,40 @@ impl Host {
         diag::info!(World, "Minecraft: `{name}` given its map (map {id})");
         self.dirty = true;
         given
+    }
+
+    /// A player's starter pistol and ammo, once per player and world: a
+    /// keyed player owed one by its record (a new player, or one from a
+    /// world saved before the starter kit), or a guest, who is new at each
+    /// join, same as `give_map_once`. Unlocks `crate::minecraft_inventory::STARTER_WEAPON`
+    /// in `unlocked` (a keyed player's record too) and gives the ammo
+    /// stack; the unlock always lands (it has no slot to run out of, only
+    /// the ammo item can fail to fit), so this is only ever asked once.
+    pub(crate) fn give_starter_kit_once(
+        &mut self,
+        key: Option<&str>,
+        inventory: &mut Inventory,
+        unlocked: &mut Vec<String>,
+        name: &str,
+    ) -> bool {
+        if let Some(key) = key
+            && !self.players.take_starter_kit(key)
+        {
+            return false;
+        }
+        let weapon = crate::minecraft_inventory::STARTER_WEAPON;
+        if !unlocked.iter().any(|w| w == weapon) {
+            unlocked.push(weapon.to_owned());
+        }
+        if let Some(key) = key {
+            self.players.add_unlocked_weapon(key, weapon);
+        }
+        // A full inventory loses the ammo stack, same as a full one gets no
+        // map; a brand new inventory always has room.
+        crate::minecraft_inventory::give_starter_ammo(inventory);
+        diag::info!(World, "Minecraft: `{name}` given its starter kit ({weapon})");
+        self.dirty = true;
+        true
     }
 
     /// Fills in the maps held by `holders` (each a holder's key, its feet in
@@ -394,6 +441,7 @@ impl Remote {
             name,
             key,
             inventory,
+            unlocked_weapons: Vec::new(),
             selected: selected.min(frame::minecraft_ui::MC_HOTBAR - 1),
             table: None,
             applied: 0,
