@@ -335,12 +335,7 @@ impl Host {
         }
         // A full inventory loses the ammo stack, same as a full one gets no
         // map; a brand new inventory always has room.
-        let given = crate::minecraft_inventory::give_starter_ammo(inventory);
-        diag::info!(
-            World,
-            "TEMP-GUN-DEBUG4: give_starter_ammo returned {given}, inventory now has {} ammo",
-            inventory.count(crate::minecraft_inventory::AMMO_ITEM)
-        );
+        crate::minecraft_inventory::give_starter_ammo(inventory);
         diag::info!(World, "Minecraft: `{name}` given its starter kit ({weapon})");
         self.dirty = true;
         true
